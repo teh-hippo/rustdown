@@ -12,4 +12,5 @@ workspace = true
 [dependencies]
 eframe = "0.30"
 pulldown-cmark = "0.12"
+rfd = "0.15"
 rustdown-core = { path = "../rustdown-core" }

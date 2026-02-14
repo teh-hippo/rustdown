@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::{fs, path::PathBuf};
+
 use eframe::egui;
 
 mod highlight;
@@ -19,12 +21,15 @@ struct RustdownApp {
     docs: Vec<Document>,
     active: usize,
     mode: Mode,
+    error: Option<String>,
 }
 
 #[derive(Default)]
 struct Document {
     title: String,
+    path: Option<PathBuf>,
     text: String,
+    dirty: bool,
     preview: Option<preview::PreviewDoc>,
 }
 
@@ -40,7 +45,9 @@ impl eframe::App for RustdownApp {
         if self.docs.is_empty() {
             self.docs.push(Document {
                 title: "Untitled".to_owned(),
+                path: None,
                 text: String::new(),
+                dirty: false,
                 preview: None,
             });
             self.active = 0;
@@ -50,9 +57,23 @@ impl eframe::App for RustdownApp {
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                if ui.button("Open…").clicked() {
+                    self.open_file();
+                }
+
+                if ui.button("Save").clicked() {
+                    self.save_active();
+                }
+
+                ui.separator();
+
                 for (idx, doc) in self.docs.iter().enumerate() {
                     let selected = idx == self.active;
-                    if ui.selectable_label(selected, &doc.title).clicked() {
+                    let mut label = doc.title.clone();
+                    if doc.dirty {
+                        label.push('*');
+                    }
+                    if ui.selectable_label(selected, label).clicked() {
                         self.active = idx;
                     }
                 }
@@ -60,7 +81,9 @@ impl eframe::App for RustdownApp {
                 if ui.button("+").clicked() {
                     self.docs.push(Document {
                         title: format!("Untitled {}", self.docs.len() + 1),
+                        path: None,
                         text: String::new(),
+                        dirty: false,
                         preview: None,
                     });
                     self.active = self.docs.len() - 1;
@@ -100,6 +123,7 @@ impl eframe::App for RustdownApp {
                         );
                         if response.changed() {
                             doc.preview = None;
+                            doc.dirty = true;
                         }
                     });
                 }
@@ -111,5 +135,84 @@ impl eframe::App for RustdownApp {
                 }
             }
         });
+
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            let mut clear_error = false;
+            if let Some(error) = self.error.as_deref() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    if ui.button("x").clicked() {
+                        clear_error = true;
+                    }
+                });
+            }
+            if clear_error {
+                self.error = None;
+            }
+        });
+    }
+}
+
+impl RustdownApp {
+    fn open_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Markdown", &["md", "markdown"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                let title = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Untitled")
+                    .to_owned();
+
+                self.docs.push(Document {
+                    title,
+                    path: Some(path),
+                    text,
+                    dirty: false,
+                    preview: None,
+                });
+                self.active = self.docs.len() - 1;
+                self.error = None;
+            }
+            Err(err) => self.error = Some(format!("Open failed: {err}")),
+        }
+    }
+
+    fn save_active(&mut self) {
+        let doc = &mut self.docs[self.active];
+
+        let path = match &doc.path {
+            Some(path) => path.clone(),
+            None => {
+                let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Markdown", &["md", "markdown"])
+                    .save_file()
+                else {
+                    return;
+                };
+
+                doc.title = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Untitled")
+                    .to_owned();
+                doc.path = Some(path.clone());
+                path
+            }
+        };
+
+        match fs::write(&path, &doc.text) {
+            Ok(()) => {
+                doc.dirty = false;
+                self.error = None;
+            }
+            Err(err) => self.error = Some(format!("Save failed: {err}")),
+        }
     }
 }
