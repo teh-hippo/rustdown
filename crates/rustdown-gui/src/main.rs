@@ -3,6 +3,7 @@
 use eframe::egui;
 
 mod preview;
+mod highlight;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();
@@ -85,10 +86,17 @@ impl eframe::App for RustdownApp {
             match self.mode {
                 Mode::Edit => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                            let mut job = highlight::markdown_layout_job(ui, string);
+                            job.wrap.max_width = wrap_width;
+                            ui.fonts(|fonts| fonts.layout_job(job))
+                        };
+
                         let response = ui.add(
                             egui::TextEdit::multiline(&mut doc.text)
                                 .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace),
+                                .font(egui::TextStyle::Monospace)
+                                .layouter(&mut layouter),
                         );
                         if response.changed() {
                             doc.preview = None;
