@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/rustdown-core",
+  "crates/rustdown-cli",
+  "crates/rustdown-gui",
+]
