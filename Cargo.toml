@@ -5,3 +5,17 @@ members = [
   "crates/rustdown-cli",
   "crates/rustdown-gui",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/teh-hippo/rustdown"
+rust-version = "1.93"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
