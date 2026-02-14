@@ -10,10 +10,21 @@ pub(crate) struct PreviewDoc {
 
 #[derive(Clone, Debug)]
 enum Block {
-    Heading { level: u8, spans: Vec<Span> },
-    Paragraph { spans: Vec<Span> },
-    ListItem { depth: usize, spans: Vec<Span> },
-    CodeBlock { language: Option<String>, code: String },
+    Heading {
+        level: u8,
+        spans: Vec<Span>,
+    },
+    Paragraph {
+        spans: Vec<Span>,
+    },
+    ListItem {
+        depth: usize,
+        spans: Vec<Span>,
+    },
+    Code {
+        language: Option<String>,
+        code: String,
+    },
     Rule,
 }
 
@@ -103,7 +114,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
-                    blocks.push(Block::CodeBlock {
+                    blocks.push(Block::Code {
                         language: code_block_language.take(),
                         code: code_block_text.clone(),
                     });
@@ -223,7 +234,7 @@ pub(crate) fn show(ui: &mut egui::Ui, doc: &PreviewDoc) {
                 });
                 ui.add_space(4.0);
             }
-            Block::CodeBlock { language, code } => {
+            Block::Code { language, code } => {
                 if let Some(lang) = language.as_deref() {
                     ui.label(egui::RichText::new(lang).weak());
                 }
@@ -295,7 +306,11 @@ fn heading_font(ui: &egui::Ui, level: u8) -> egui::FontId {
     }
 }
 
-fn spans_layout_job(ui: &egui::Ui, spans: &[Span], base_font: egui::FontId) -> egui::text::LayoutJob {
+fn spans_layout_job(
+    ui: &egui::Ui,
+    spans: &[Span],
+    base_font: egui::FontId,
+) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
 
     for span in spans {
@@ -341,6 +356,6 @@ mod tests {
         assert!(matches!(doc.blocks[1], Block::Paragraph { .. }));
         assert!(matches!(doc.blocks[2], Block::ListItem { .. }));
         assert!(matches!(doc.blocks[3], Block::ListItem { .. }));
-        assert!(matches!(doc.blocks[4], Block::CodeBlock { .. }));
+        assert!(matches!(doc.blocks[4], Block::Code { .. }));
     }
 }

@@ -72,7 +72,7 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
             // rest of the line gets heading style
             let rest = &trimmed[hashes_len..];
             let mut heading_format = heading.clone();
-            heading_format.font_id.size = heading_format.font_id.size * (1.0 + (6 - level) as f32 * 0.02);
+            heading_format.font_id.size *= 1.0 + (6 - level) as f32 * 0.02;
             job.append(rest, 0.0, heading_format);
             continue;
         }
@@ -90,7 +90,10 @@ fn heading_level(line: &str) -> Option<u8> {
     }
 
     // markdown headings must have a space after the hashes
-    line.as_bytes().get(hashes).is_some_and(|b| *b == b' ').then(|| hashes as u8)
+    line.as_bytes()
+        .get(hashes)
+        .is_some_and(|b| *b == b' ')
+        .then_some(hashes as u8)
 }
 
 fn append_inline_code(

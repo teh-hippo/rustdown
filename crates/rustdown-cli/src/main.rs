@@ -35,9 +35,8 @@ fn main() -> anyhow::Result<()> {
                     .context("failed to read markdown from stdin")?;
                 buf
             } else {
-                fs::read_to_string(&path).with_context(|| {
-                    format!("failed to read markdown from {}", path.display())
-                })?
+                fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read markdown from {}", path.display()))?
             };
 
             let rendered = rustdown_core::markdown::plain_text(&source);

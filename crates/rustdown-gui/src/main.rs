@@ -2,8 +2,8 @@
 
 use eframe::egui;
 
-mod preview;
 mod highlight;
+mod preview;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();
