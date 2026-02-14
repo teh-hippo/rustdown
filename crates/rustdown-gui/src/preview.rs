@@ -1,0 +1,346 @@
+#![forbid(unsafe_code)]
+
+use eframe::egui;
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewDoc {
+    blocks: Vec<Block>,
+}
+
+#[derive(Clone, Debug)]
+enum Block {
+    Heading { level: u8, spans: Vec<Span> },
+    Paragraph { spans: Vec<Span> },
+    ListItem { depth: usize, spans: Vec<Span> },
+    CodeBlock { language: Option<String>, code: String },
+    Rule,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SpanStyle {
+    emphasis: bool,
+    code: bool,
+    link: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct Span {
+    text: String,
+    style: SpanStyle,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BlockKind {
+    Heading(u8),
+    Paragraph,
+    ListItem { depth: usize },
+}
+
+/// Parse markdown into a cached preview representation (no egui types).
+pub(crate) fn parse(source: &str) -> PreviewDoc {
+    let mut blocks = Vec::<Block>::new();
+
+    let mut kind: Option<BlockKind> = None;
+    let mut spans = Vec::<Span>::new();
+
+    let mut list_depth: usize = 0;
+    let mut emphasis_depth: usize = 0;
+    let mut link_stack: Vec<String> = Vec::new();
+
+    let mut in_code_block = false;
+    let mut code_block_language: Option<String> = None;
+    let mut code_block_text = String::new();
+
+    for event in rustdown_core::markdown::parser(source) {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::List(_) => list_depth = list_depth.saturating_add(1),
+                Tag::Item => {
+                    kind = Some(BlockKind::ListItem { depth: list_depth });
+                    spans.clear();
+                }
+                Tag::Paragraph => {
+                    if kind.is_none() {
+                        kind = Some(BlockKind::Paragraph);
+                        spans.clear();
+                    }
+                }
+                Tag::Heading {
+                    level,
+                    id: _,
+                    classes: _,
+                    attrs: _,
+                } => {
+                    kind = Some(BlockKind::Heading(heading_level(level)));
+                    spans.clear();
+                }
+                Tag::Emphasis => emphasis_depth = emphasis_depth.saturating_add(1),
+                Tag::Link {
+                    link_type: _,
+                    dest_url,
+                    title: _,
+                    id: _,
+                } => link_stack.push(dest_url.to_string()),
+                Tag::CodeBlock(code_kind) => {
+                    in_code_block = true;
+                    code_block_text.clear();
+                    code_block_language = match code_kind {
+                        CodeBlockKind::Fenced(lang) => {
+                            let lang = lang.trim();
+                            (!lang.is_empty()).then(|| lang.to_owned())
+                        }
+                        CodeBlockKind::Indented => None,
+                    };
+                }
+                _ => {}
+            },
+            Event::End(end) => match end {
+                TagEnd::List(_) => list_depth = list_depth.saturating_sub(1),
+                TagEnd::Emphasis => emphasis_depth = emphasis_depth.saturating_sub(1),
+                TagEnd::Link => {
+                    let _ = link_stack.pop();
+                }
+                TagEnd::CodeBlock => {
+                    in_code_block = false;
+                    blocks.push(Block::CodeBlock {
+                        language: code_block_language.take(),
+                        code: code_block_text.clone(),
+                    });
+                    code_block_text.clear();
+                }
+                TagEnd::Heading(_) => {
+                    if let Some(BlockKind::Heading(level)) = kind.take() {
+                        blocks.push(Block::Heading {
+                            level,
+                            spans: spans.clone(),
+                        });
+                    }
+                }
+                TagEnd::Paragraph => {
+                    if matches!(kind, Some(BlockKind::Paragraph)) {
+                        kind = None;
+                        blocks.push(Block::Paragraph {
+                            spans: spans.clone(),
+                        });
+                    }
+                }
+                TagEnd::Item => {
+                    if let Some(BlockKind::ListItem { depth }) = kind.take() {
+                        blocks.push(Block::ListItem {
+                            depth,
+                            spans: spans.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            },
+            Event::Text(text) => {
+                if in_code_block {
+                    code_block_text.push_str(text.as_ref());
+                } else {
+                    push_span(
+                        &mut spans,
+                        text.as_ref(),
+                        SpanStyle {
+                            emphasis: emphasis_depth > 0,
+                            code: false,
+                            link: link_stack.last().cloned(),
+                        },
+                    );
+                }
+            }
+            Event::Code(text) => {
+                if in_code_block {
+                    code_block_text.push_str(text.as_ref());
+                } else {
+                    push_span(
+                        &mut spans,
+                        text.as_ref(),
+                        SpanStyle {
+                            emphasis: false,
+                            code: true,
+                            link: None,
+                        },
+                    );
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if in_code_block {
+                    code_block_text.push('\n');
+                } else {
+                    push_span(
+                        &mut spans,
+                        "\n",
+                        SpanStyle {
+                            emphasis: emphasis_depth > 0,
+                            code: false,
+                            link: link_stack.last().cloned(),
+                        },
+                    );
+                }
+            }
+            Event::Rule => {
+                blocks.push(Block::Rule);
+            }
+            _ => {}
+        }
+    }
+
+    PreviewDoc { blocks }
+}
+
+pub(crate) fn show(ui: &mut egui::Ui, doc: &PreviewDoc) {
+    for block in &doc.blocks {
+        match block {
+            Block::Heading { level, spans } => {
+                let font = heading_font(ui, *level);
+                ui.add(egui::Label::new(spans_layout_job(ui, spans, font)).wrap());
+                ui.add_space(4.0);
+            }
+            Block::Paragraph { spans } => {
+                let font = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Body)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::proportional(16.0));
+                ui.add(egui::Label::new(spans_layout_job(ui, spans, font)).wrap());
+                ui.add_space(6.0);
+            }
+            Block::ListItem { depth, spans } => {
+                let font = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Body)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::proportional(16.0));
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(*depth as f32 * 12.0);
+                    ui.label("•");
+                    ui.add(egui::Label::new(spans_layout_job(ui, spans, font)).wrap());
+                });
+                ui.add_space(4.0);
+            }
+            Block::CodeBlock { language, code } => {
+                if let Some(lang) = language.as_deref() {
+                    ui.label(egui::RichText::new(lang).weak());
+                }
+
+                let frame = egui::Frame::group(ui.style())
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::same(8.0));
+
+                frame.show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(code).monospace())
+                            .wrap()
+                            .selectable(true),
+                    );
+                });
+                ui.add_space(6.0);
+            }
+            Block::Rule => {
+                ui.separator();
+                ui.add_space(6.0);
+            }
+        }
+    }
+}
+
+fn push_span(spans: &mut Vec<Span>, text: &str, style: SpanStyle) {
+    if text.is_empty() {
+        return;
+    }
+
+    match spans.last_mut() {
+        Some(last) if last.style == style => last.text.push_str(text),
+        _ => spans.push(Span {
+            text: text.to_owned(),
+            style,
+        }),
+    }
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn heading_font(ui: &egui::Ui, level: u8) -> egui::FontId {
+    let base = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Heading)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(22.0));
+
+    let scale = match level {
+        1 => 1.20,
+        2 => 1.10,
+        3 => 1.05,
+        _ => 1.0,
+    };
+
+    egui::FontId {
+        size: base.size * scale,
+        family: base.family,
+    }
+}
+
+fn spans_layout_job(ui: &egui::Ui, spans: &[Span], base_font: egui::FontId) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+
+    for span in spans {
+        let mut format = egui::text::TextFormat {
+            font_id: if span.style.code {
+                ui.style()
+                    .text_styles
+                    .get(&egui::TextStyle::Monospace)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::monospace(base_font.size))
+            } else {
+                base_font.clone()
+            },
+            color: ui.visuals().text_color(),
+            ..Default::default()
+        };
+
+        if span.style.emphasis {
+            format.italics = true;
+        }
+
+        if span.style.link.is_some() {
+            format.underline = egui::Stroke::new(1.0, ui.visuals().hyperlink_color);
+            format.color = ui.visuals().hyperlink_color;
+        }
+
+        job.append(&span.text, 0.0, format);
+    }
+
+    job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_common_blocks() {
+        let md = "# Title\n\nHello *world*.\n\n- a\n- b\n\n```rs\nlet x = 1;\n```\n";
+        let doc = parse(md);
+
+        assert!(matches!(doc.blocks[0], Block::Heading { .. }));
+        assert!(matches!(doc.blocks[1], Block::Paragraph { .. }));
+        assert!(matches!(doc.blocks[2], Block::ListItem { .. }));
+        assert!(matches!(doc.blocks[3], Block::ListItem { .. }));
+        assert!(matches!(doc.blocks[4], Block::CodeBlock { .. }));
+    }
+}

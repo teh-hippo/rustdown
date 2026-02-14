@@ -2,6 +2,8 @@
 
 use eframe::egui;
 
+mod preview;
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();
     eframe::run_native(
@@ -22,6 +24,7 @@ struct RustdownApp {
 struct Document {
     title: String,
     text: String,
+    preview: Option<preview::PreviewDoc>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -37,6 +40,7 @@ impl eframe::App for RustdownApp {
             self.docs.push(Document {
                 title: "Untitled".to_owned(),
                 text: String::new(),
+                preview: None,
             });
             self.active = 0;
         } else {
@@ -56,6 +60,7 @@ impl eframe::App for RustdownApp {
                     self.docs.push(Document {
                         title: format!("Untitled {}", self.docs.len() + 1),
                         text: String::new(),
+                        preview: None,
                     });
                     self.active = self.docs.len() - 1;
                 }
@@ -80,17 +85,20 @@ impl eframe::App for RustdownApp {
             match self.mode {
                 Mode::Edit => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(
+                        let response = ui.add(
                             egui::TextEdit::multiline(&mut doc.text)
                                 .desired_width(f32::INFINITY)
                                 .font(egui::TextStyle::Monospace),
                         );
+                        if response.changed() {
+                            doc.preview = None;
+                        }
                     });
                 }
                 Mode::Preview => {
-                    let rendered = rustdown_core::markdown::plain_text(&doc.text);
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(egui::Label::new(rendered).selectable(true));
+                        let preview = doc.preview.get_or_insert_with(|| preview::parse(&doc.text));
+                        preview::show(ui, preview);
                     });
                 }
             }

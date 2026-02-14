@@ -2629,6 +2629,7 @@ name = "rustdown-gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "pulldown-cmark",
  "rustdown-core",
 ]
 
