@@ -14,6 +14,11 @@ GUI:
 cargo run -p rustdown-gui
 ```
 
+Open a file directly:
+```bash
+cargo run -p rustdown-gui -- README.md
+```
+
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+O: Open…
 - Cmd/Ctrl+S: Save
