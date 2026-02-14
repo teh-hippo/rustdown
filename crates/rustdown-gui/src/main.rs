@@ -21,6 +21,7 @@ struct RustdownApp {
     active: usize,
     mode: Mode,
     error: Option<String>,
+    dialog: Option<Dialog>,
 }
 
 #[derive(Default)]
@@ -39,6 +40,18 @@ enum Mode {
     Preview,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialog {
+    ConfirmClose { idx: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveResult {
+    Saved,
+    Cancelled,
+    Failed,
+}
+
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.docs.is_empty() {
@@ -47,40 +60,47 @@ impl eframe::App for RustdownApp {
             self.active = self.active.min(self.docs.len().saturating_sub(1));
         }
 
-        let (open, save, new_tab, close_tab, toggle_mode, next_tab, prev_tab) = ctx.input(|i| {
-            let cmd = i.modifiers.command;
-            (
-                cmd && i.key_pressed(egui::Key::O),
-                cmd && i.key_pressed(egui::Key::S),
-                cmd && i.key_pressed(egui::Key::N),
-                cmd && i.key_pressed(egui::Key::W),
-                cmd && i.key_pressed(egui::Key::Enter),
-                cmd && i.key_pressed(egui::Key::Tab) && !i.modifiers.shift,
-                cmd && i.key_pressed(egui::Key::Tab) && i.modifiers.shift,
-            )
-        });
+        let dialog_open = self.dialog.is_some();
+        let (open, save, save_as, new_tab, close_tab, toggle_mode, next_tab, prev_tab) =
+            ctx.input(|i| {
+                let cmd = i.modifiers.command;
+                (
+                    cmd && i.key_pressed(egui::Key::O),
+                    cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
+                    cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
+                    cmd && i.key_pressed(egui::Key::N),
+                    cmd && i.key_pressed(egui::Key::W),
+                    cmd && i.key_pressed(egui::Key::Enter),
+                    cmd && i.key_pressed(egui::Key::Tab) && !i.modifiers.shift,
+                    cmd && i.key_pressed(egui::Key::Tab) && i.modifiers.shift,
+                )
+            });
 
-        if open {
-            self.open_file();
-        }
-        if save {
-            self.save_active();
-        }
-        if new_tab {
-            let next = self.docs.len() + 1;
-            self.new_blank_doc(format!("Untitled {next}"));
-        }
-        if close_tab {
-            self.close_active();
-        }
-        if toggle_mode {
-            self.toggle_mode();
-        }
-        if next_tab && !self.docs.is_empty() {
-            self.active = (self.active + 1) % self.docs.len();
-        }
-        if prev_tab && !self.docs.is_empty() {
-            self.active = (self.active + self.docs.len() - 1) % self.docs.len();
+        if !dialog_open {
+            if open {
+                self.open_file();
+            }
+            if save_as {
+                self.save_as_active();
+            } else if save {
+                self.save_active();
+            }
+            if new_tab {
+                let next = self.docs.len() + 1;
+                self.new_blank_doc(format!("Untitled {next}"));
+            }
+            if close_tab {
+                self.request_close_doc(self.active);
+            }
+            if toggle_mode {
+                self.toggle_mode();
+            }
+            if next_tab && !self.docs.is_empty() {
+                self.active = (self.active + 1) % self.docs.len();
+            }
+            if prev_tab && !self.docs.is_empty() {
+                self.active = (self.active + self.docs.len() - 1) % self.docs.len();
+            }
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -93,17 +113,61 @@ impl eframe::App for RustdownApp {
                     self.save_active();
                 }
 
+                if ui.button("Save As…").clicked() {
+                    self.save_as_active();
+                }
+
                 ui.separator();
 
-                for (idx, doc) in self.docs.iter().enumerate() {
+                let mut tab_action = None;
+                for idx in 0..self.docs.len() {
                     let selected = idx == self.active;
-                    let mut label = doc.title.clone();
-                    if doc.dirty {
+                    let doc_title = self.docs[idx].title.clone();
+                    let doc_path = self.docs[idx].path.clone();
+                    let doc_dirty = self.docs[idx].dirty;
+
+                    let mut label = doc_title;
+                    if doc_dirty {
                         label.push('*');
                     }
-                    if ui.selectable_label(selected, label).clicked() {
+
+                    let mut response = ui.selectable_label(selected, label);
+                    if let Some(path) = doc_path.as_deref() {
+                        response = response.on_hover_text(path.display().to_string());
+                    }
+                    if response.clicked() {
                         self.active = idx;
                     }
+
+                    response.context_menu(|ui| {
+                        if ui.button("Save").clicked() {
+                            tab_action = Some(TabAction::Save(idx));
+                            ui.close_menu();
+                        }
+                        if ui.button("Save As…").clicked() {
+                            tab_action = Some(TabAction::SaveAs(idx));
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        if ui.button("Close").clicked() {
+                            tab_action = Some(TabAction::Close(idx));
+                            ui.close_menu();
+                        }
+                        if ui.button("Close others").clicked() {
+                            tab_action = Some(TabAction::CloseOthers(idx));
+                            ui.close_menu();
+                        }
+                        if ui.button("Close all").clicked() {
+                            tab_action = Some(TabAction::CloseAll);
+                            ui.close_menu();
+                        }
+                    });
+                }
+
+                if let Some(action) = tab_action {
+                    self.apply_tab_action(action);
                 }
 
                 if ui.button("+").clicked() {
@@ -112,7 +176,7 @@ impl eframe::App for RustdownApp {
                 }
 
                 if ui.button("Close").clicked() {
-                    self.close_active();
+                    self.request_close_doc(self.active);
                 }
 
                 ui.separator();
@@ -178,6 +242,11 @@ impl eframe::App for RustdownApp {
                     ui.label("Unsaved");
                 }
 
+                if doc.dirty {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().warn_fg_color, "Modified");
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(error) = self.error.as_deref() {
                         if ui.button("x").clicked() {
@@ -192,6 +261,8 @@ impl eframe::App for RustdownApp {
                 self.error = None;
             }
         });
+
+        self.show_dialogs(ctx);
     }
 }
 
@@ -200,26 +271,7 @@ impl RustdownApp {
         let mut app = Self::default();
 
         for path in paths {
-            match fs::read_to_string(&path) {
-                Ok(text) => {
-                    let title = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Untitled")
-                        .to_owned();
-
-                    app.docs.push(Document {
-                        title,
-                        path: Some(path),
-                        text,
-                        dirty: false,
-                        preview: None,
-                    });
-                }
-                Err(err) => {
-                    app.error.get_or_insert(format!("Open failed: {err}"));
-                }
-            }
+            app.open_path(path);
         }
 
         if app.docs.is_empty() {
@@ -242,24 +294,6 @@ impl RustdownApp {
         self.active = self.docs.len() - 1;
     }
 
-    fn close_active(&mut self) {
-        if self.docs.is_empty() {
-            return;
-        }
-
-        if self.docs[self.active].dirty {
-            self.error = Some("Unsaved changes — save first".to_owned());
-            return;
-        }
-
-        self.docs.remove(self.active);
-        if self.docs.is_empty() {
-            self.new_blank_doc("Untitled".to_owned());
-        } else {
-            self.active = self.active.min(self.docs.len().saturating_sub(1));
-        }
-    }
-
     fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             Mode::Edit => Mode::Preview,
@@ -274,6 +308,29 @@ impl RustdownApp {
         else {
             return;
         };
+
+        self.open_path(path);
+    }
+
+    fn save_active(&mut self) {
+        let _ = self.save_doc(self.active, false);
+    }
+
+    fn save_as_active(&mut self) {
+        let _ = self.save_doc(self.active, true);
+    }
+
+    fn open_path(&mut self, path: PathBuf) {
+        let path = fs::canonicalize(&path).unwrap_or(path);
+        if let Some(idx) = self
+            .docs
+            .iter()
+            .position(|doc| doc.path.as_deref() == Some(&path))
+        {
+            self.active = idx;
+            self.error = None;
+            return;
+        }
 
         match fs::read_to_string(&path) {
             Ok(text) => {
@@ -293,39 +350,166 @@ impl RustdownApp {
                 self.active = self.docs.len() - 1;
                 self.error = None;
             }
-            Err(err) => self.error = Some(format!("Open failed: {err}")),
+            Err(err) => {
+                self.error.get_or_insert(format!("Open failed: {err}"));
+            }
         }
     }
 
-    fn save_active(&mut self) {
-        let doc = &mut self.docs[self.active];
+    fn save_doc(&mut self, idx: usize, save_as: bool) -> SaveResult {
+        let doc = &mut self.docs[idx];
 
-        let path = match &doc.path {
-            Some(path) => path.clone(),
+        let chosen = if save_as { None } else { doc.path.clone() };
+        let path = match chosen {
+            Some(path) => path,
             None => {
                 let Some(path) = rfd::FileDialog::new()
                     .add_filter("Markdown", &["md", "markdown"])
                     .save_file()
                 else {
-                    return;
+                    return SaveResult::Cancelled;
                 };
-
-                doc.title = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Untitled")
-                    .to_owned();
-                doc.path = Some(path.clone());
                 path
             }
         };
 
         match fs::write(&path, &doc.text) {
             Ok(()) => {
+                let path = fs::canonicalize(&path).unwrap_or(path);
+                doc.title = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Untitled")
+                    .to_owned();
+                doc.path = Some(path);
                 doc.dirty = false;
                 self.error = None;
+                SaveResult::Saved
             }
-            Err(err) => self.error = Some(format!("Save failed: {err}")),
+            Err(err) => {
+                self.error = Some(format!("Save failed: {err}"));
+                SaveResult::Failed
+            }
         }
     }
+
+    fn request_close_doc(&mut self, idx: usize) {
+        if idx >= self.docs.len() {
+            return;
+        }
+
+        if self.docs[idx].dirty {
+            self.dialog = Some(Dialog::ConfirmClose { idx });
+        } else {
+            self.force_close_doc(idx);
+        }
+    }
+
+    fn force_close_doc(&mut self, idx: usize) {
+        self.docs.remove(idx);
+        if self.docs.is_empty() {
+            self.new_blank_doc("Untitled".to_owned());
+            return;
+        }
+
+        if self.active > idx {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.docs.len() - 1);
+    }
+
+    fn close_others(&mut self, keep: usize) {
+        if self
+            .docs
+            .iter()
+            .enumerate()
+            .any(|(idx, doc)| idx != keep && doc.dirty)
+        {
+            self.error = Some("Unsaved changes — close tabs individually".to_owned());
+            return;
+        }
+
+        let keep_doc = self.docs.remove(keep);
+        self.docs.clear();
+        self.docs.push(keep_doc);
+        self.active = 0;
+    }
+
+    fn close_all(&mut self) {
+        if self.docs.iter().any(|doc| doc.dirty) {
+            self.error = Some("Unsaved changes — close tabs individually".to_owned());
+            return;
+        }
+
+        self.docs.clear();
+        self.new_blank_doc("Untitled".to_owned());
+    }
+
+    fn apply_tab_action(&mut self, action: TabAction) {
+        match action {
+            TabAction::Save(idx) => {
+                let _ = self.save_doc(idx, false);
+            }
+            TabAction::SaveAs(idx) => {
+                let _ = self.save_doc(idx, true);
+            }
+            TabAction::Close(idx) => self.request_close_doc(idx),
+            TabAction::CloseOthers(idx) => self.close_others(idx),
+            TabAction::CloseAll => self.close_all(),
+        }
+    }
+
+    fn show_dialogs(&mut self, ctx: &egui::Context) {
+        let Some(Dialog::ConfirmClose { idx }) = self.dialog else {
+            return;
+        };
+
+        if idx >= self.docs.len() {
+            self.dialog = None;
+            return;
+        }
+
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if escape {
+            self.dialog = None;
+            return;
+        }
+
+        let title = self.docs[idx].title.clone();
+
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!("\"{title}\" has unsaved changes."));
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() && self.save_doc(idx, false) == SaveResult::Saved
+                    {
+                        self.force_close_doc(idx);
+                        self.dialog = None;
+                    }
+
+                    if ui.button("Discard").clicked() {
+                        self.force_close_doc(idx);
+                        self.dialog = None;
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        self.dialog = None;
+                    }
+                });
+            });
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TabAction {
+    Save(usize),
+    SaveAs(usize),
+    Close(usize),
+    CloseOthers(usize),
+    CloseAll,
 }
