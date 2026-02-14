@@ -21,6 +21,7 @@ enum Block {
     },
     ListItem {
         depth: usize,
+        task: Option<bool>,
         spans: Vec<Span>,
     },
     Code {
@@ -71,6 +72,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
     let mut emphasis_depth: usize = 0;
     let mut strikethrough_depth: usize = 0;
     let mut link_stack: Vec<String> = Vec::new();
+    let mut task_marker: Option<bool> = None;
 
     let mut in_code_block = false;
     let mut code_block_language: Option<String> = None;
@@ -93,6 +95,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                     if !in_table {
                         kind = Some(BlockKind::ListItem { depth: list_depth });
                         spans.clear();
+                        task_marker = None;
                     }
                 }
                 Tag::Paragraph => {
@@ -197,6 +200,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                     if let Some(BlockKind::ListItem { depth }) = kind.take() {
                         blocks.push(Block::ListItem {
                             depth,
+                            task: task_marker.take(),
                             spans: std::mem::take(&mut spans),
                         });
                     }
@@ -224,6 +228,11 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                 }
                 _ => {}
             },
+            Event::TaskListMarker(checked) => {
+                if !in_table {
+                    task_marker = Some(checked);
+                }
+            }
             Event::Text(text) => {
                 if in_code_block {
                     if code_block_in_table && in_table_cell {
@@ -355,7 +364,7 @@ pub(crate) fn show(ui: &mut egui::Ui, doc: &PreviewDoc) {
                     ui.add(egui::Label::new(spans_layout_job(ui, spans, font)).wrap());
                     ui.add_space(6.0);
                 }
-                Block::ListItem { depth, spans } => {
+                Block::ListItem { depth, task, spans } => {
                     let font = ui
                         .style()
                         .text_styles
@@ -365,7 +374,12 @@ pub(crate) fn show(ui: &mut egui::Ui, doc: &PreviewDoc) {
 
                     ui.horizontal_wrapped(|ui| {
                         ui.add_space(*depth as f32 * 12.0);
-                        ui.label("•");
+                        if let Some(checked) = task {
+                            let mut checked = *checked;
+                            ui.add_enabled(false, egui::Checkbox::new(&mut checked, ""));
+                        } else {
+                            ui.label("•");
+                        }
                         ui.add(egui::Label::new(spans_layout_job(ui, spans, font)).wrap());
                     });
                     ui.add_space(4.0);
@@ -536,7 +550,7 @@ mod tests {
 
     #[test]
     fn parses_common_blocks() {
-        let md = "# Title\n\nHello *world* ~~gone~~.\n\n> quoted\n\n- a\n- b\n\n| a | b |\n| - | - |\n| c | d |\n\n```rs\nlet x = 1;\n```\n";
+        let md = "# Title\n\nHello *world* ~~gone~~.\n\n> quoted\n\n- [ ] a\n- [x] b\n\n| a | b |\n| - | - |\n| c | d |\n\n```rs\nlet x = 1;\n```\n";
         let doc = parse(md);
 
         assert!(matches!(doc.blocks[0], Block::Heading { .. }));
@@ -544,8 +558,15 @@ mod tests {
         assert!(matches!(doc.blocks[2], Block::QuoteStart));
         assert!(matches!(doc.blocks[3], Block::Paragraph { .. }));
         assert!(matches!(doc.blocks[4], Block::QuoteEnd));
-        assert!(matches!(doc.blocks[5], Block::ListItem { .. }));
-        assert!(matches!(doc.blocks[6], Block::ListItem { .. }));
+        let Block::ListItem { task, .. } = &doc.blocks[5] else {
+            panic!("expected list item");
+        };
+        assert_eq!(*task, Some(false));
+
+        let Block::ListItem { task, .. } = &doc.blocks[6] else {
+            panic!("expected list item");
+        };
+        assert_eq!(*task, Some(true));
         assert!(matches!(doc.blocks[7], Block::Table { .. }));
         assert!(matches!(doc.blocks[8], Block::Code { .. }));
 
