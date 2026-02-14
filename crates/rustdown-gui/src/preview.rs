@@ -116,15 +116,14 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                     in_code_block = false;
                     blocks.push(Block::Code {
                         language: code_block_language.take(),
-                        code: code_block_text.clone(),
+                        code: std::mem::take(&mut code_block_text),
                     });
-                    code_block_text.clear();
                 }
                 TagEnd::Heading(_) => {
                     if let Some(BlockKind::Heading(level)) = kind.take() {
                         blocks.push(Block::Heading {
                             level,
-                            spans: spans.clone(),
+                            spans: std::mem::take(&mut spans),
                         });
                     }
                 }
@@ -132,7 +131,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                     if matches!(kind, Some(BlockKind::Paragraph)) {
                         kind = None;
                         blocks.push(Block::Paragraph {
-                            spans: spans.clone(),
+                            spans: std::mem::take(&mut spans),
                         });
                     }
                 }
@@ -140,7 +139,7 @@ pub(crate) fn parse(source: &str) -> PreviewDoc {
                     if let Some(BlockKind::ListItem { depth }) = kind.take() {
                         blocks.push(Block::ListItem {
                             depth,
-                            spans: spans.clone(),
+                            spans: std::mem::take(&mut spans),
                         });
                     }
                 }
