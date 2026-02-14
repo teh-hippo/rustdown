@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Preview { path } => {
+            use std::io::Write as _;
+
             let source = if path.as_os_str() == "-" {
                 use std::io::Read as _;
 
@@ -48,8 +50,10 @@ fn main() -> anyhow::Result<()> {
                     .with_context(|| format!("failed to read markdown from {}", path.display()))?
             };
 
-            let rendered = rustdown_core::markdown::plain_text(&source);
-            print!("{rendered}");
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            rustdown_core::markdown::plain_text_to_writer(&source, &mut out)
+                .context("failed to render preview")?;
+            out.flush().context("failed to flush stdout")?;
         }
     }
 

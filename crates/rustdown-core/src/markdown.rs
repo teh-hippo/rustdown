@@ -1,3 +1,5 @@
+use std::io;
+
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 fn options() -> Options {
@@ -13,45 +15,43 @@ pub fn parser(source: &str) -> Parser<'_> {
     Parser::new_ext(source, options())
 }
 
-/// Render markdown to a simple plain-text representation.
-///
-/// This is used for tests and as a fallback for CLI preview output.
-pub fn plain_text(source: &str) -> String {
-    let mut out = String::new();
+/// Render markdown to a simple plain-text representation, writing directly to `out`.
+pub fn plain_text_to_writer<W: io::Write>(source: &str, out: &mut W) -> io::Result<()> {
     let mut last_was_newline = true;
     let mut list_depth: usize = 0;
 
-    let push_newline = |out: &mut String, last_was_newline: &mut bool| {
+    fn push_newline<W: io::Write>(out: &mut W, last_was_newline: &mut bool) -> io::Result<()> {
         if !*last_was_newline {
-            out.push('\n');
+            out.write_all(b"\n")?;
             *last_was_newline = true;
         }
-    };
+        Ok(())
+    }
 
     for event in parser(source) {
         match event {
             Event::Start(tag) => match tag {
                 Tag::List(_) => list_depth = list_depth.saturating_add(1),
                 Tag::Item => {
-                    push_newline(&mut out, &mut last_was_newline);
+                    push_newline(out, &mut last_was_newline)?;
                     for _ in 0..list_depth.saturating_sub(1) {
-                        out.push_str("  ");
+                        out.write_all(b"  ")?;
                     }
-                    out.push_str("- ");
+                    out.write_all(b"- ")?;
                     last_was_newline = false;
                 }
                 _ => {}
             },
             Event::Text(text) | Event::Code(text) => {
-                out.push_str(text.as_ref());
+                out.write_all(text.as_ref().as_bytes())?;
                 last_was_newline = false;
             }
-            Event::SoftBreak | Event::HardBreak => push_newline(&mut out, &mut last_was_newline),
+            Event::SoftBreak | Event::HardBreak => push_newline(out, &mut last_was_newline)?,
             Event::Rule => {
-                push_newline(&mut out, &mut last_was_newline);
-                out.push_str("---");
+                push_newline(out, &mut last_was_newline)?;
+                out.write_all(b"---")?;
                 last_was_newline = false;
-                push_newline(&mut out, &mut last_was_newline);
+                push_newline(out, &mut last_was_newline)?;
             }
             Event::End(end) => match end {
                 TagEnd::Paragraph
@@ -61,14 +61,14 @@ pub fn plain_text(source: &str) -> String {
                 | TagEnd::Item
                 | TagEnd::Table
                 | TagEnd::TableHead
-                | TagEnd::TableRow => push_newline(&mut out, &mut last_was_newline),
+                | TagEnd::TableRow => push_newline(out, &mut last_was_newline)?,
                 TagEnd::List(_) => {
                     list_depth = list_depth.saturating_sub(1);
-                    push_newline(&mut out, &mut last_was_newline);
+                    push_newline(out, &mut last_was_newline)?;
                 }
                 TagEnd::TableCell => {
                     if !last_was_newline {
-                        out.push('\t');
+                        out.write_all(b"\t")?;
                     }
                 }
                 _ => {}
@@ -77,5 +77,15 @@ pub fn plain_text(source: &str) -> String {
         }
     }
 
-    out
+    Ok(())
+}
+
+/// Render markdown to a simple plain-text representation.
+///
+/// This is used for tests and as a fallback for CLI preview output.
+pub fn plain_text(source: &str) -> String {
+    let mut buf = Vec::<u8>::new();
+    plain_text_to_writer(source, &mut buf)
+        .expect("plain_text_to_writer should not fail for Vec<u8>");
+    String::from_utf8(buf).expect("plain_text_to_writer must write valid UTF-8")
 }

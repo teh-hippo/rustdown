@@ -432,6 +432,10 @@ impl RustdownApp {
                     .to_owned();
                 doc.path = Some(path);
                 doc.dirty = false;
+                let len = doc.text.len();
+                if doc.text.capacity() > len.saturating_mul(2) {
+                    doc.text.shrink_to_fit();
+                }
                 self.error = None;
                 SaveResult::Saved
             }
