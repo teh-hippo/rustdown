@@ -4,6 +4,9 @@
 
 pub mod markdown;
 
+/// Hard cap on file sizes we will load into memory.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     #[test]

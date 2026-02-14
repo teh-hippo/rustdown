@@ -5,8 +5,6 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
 #[derive(Parser)]
 #[command(name = "rustdown", about = "Preview markdown from the CLI", version)]
 struct Cli {
@@ -39,7 +37,7 @@ fn main() -> anyhow::Result<()> {
             } else {
                 let meta = fs::metadata(&path)
                     .with_context(|| format!("failed to stat {}", path.display()))?;
-                if meta.len() > MAX_FILE_BYTES {
+                if meta.len() > rustdown_core::MAX_FILE_BYTES {
                     bail!(
                         "refusing to read {} ({} MiB) — too large",
                         path.display(),

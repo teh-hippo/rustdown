@@ -7,8 +7,6 @@ use eframe::egui;
 mod highlight;
 mod preview;
 
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
 fn main() -> eframe::Result {
     let paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let app = RustdownApp::from_paths(paths);
@@ -374,7 +372,7 @@ impl RustdownApp {
         }
 
         if let Ok(meta) = fs::metadata(&path)
-            && meta.len() > MAX_FILE_BYTES
+            && meta.len() > rustdown_core::MAX_FILE_BYTES
         {
             self.error = Some(format!(
                 "Refusing to open {} ({} MiB) — too large",
