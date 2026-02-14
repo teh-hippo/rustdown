@@ -14,6 +14,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
 ```
 
+## Quickstart
+```bash
+cargo run -p rustdown-gui
+cargo run -p rustdown-cli -- preview README.md
+```
+
 ## Conventions
 - Prefer simple, explicit code.
 - No `unsafe` (enforced).
