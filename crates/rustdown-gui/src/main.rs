@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(target_arch = "wasm32")]
+compile_error!("rustdown-gui is a native desktop app; web/wasm builds are not supported.");
+
 use std::{fs, path::PathBuf};
 
 use eframe::egui;

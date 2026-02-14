@@ -1,6 +1,6 @@
 # AGENTS
 
-This repo is a native (non-webview) Markdown editor in Rust.
+This repo is a native (non-webview) Markdown editor in Rust (no wasm/web build).
 
 ## Project structure
 - `crates/rustdown-core`: shared types + markdown parsing/rendering logic
