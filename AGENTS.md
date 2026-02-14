@@ -24,3 +24,4 @@ cargo run -p rustdown-cli -- preview README.md
 - Prefer simple, explicit code.
 - No `unsafe` (enforced).
 - Keep allocations/cloning minimal; favor borrowing.
+- Avoid `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` in non-test code (enforced via workspace clippy lints).

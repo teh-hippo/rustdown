@@ -29,4 +29,14 @@ mod tests {
         let got = super::markdown::plain_text(md);
         assert_eq!(got.trim_end(), "a\n---\nb");
     }
+
+    #[test]
+    fn plain_text_writer_matches_string_renderer() {
+        let md = "# Title\n\nHello **world**.\n\n- a\n- b\n";
+        let expected = super::markdown::plain_text(md);
+
+        let mut out = Vec::new();
+        assert!(super::markdown::plain_text_to_writer(md, &mut out).is_ok());
+        assert_eq!(out.as_slice(), expected.as_bytes());
+    }
 }

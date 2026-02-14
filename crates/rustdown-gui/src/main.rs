@@ -139,17 +139,14 @@ impl eframe::App for RustdownApp {
                 let mut tab_action = None;
                 for idx in 0..self.docs.len() {
                     let selected = idx == self.active;
-                    let doc_title = self.docs[idx].title.clone();
-                    let doc_path = self.docs[idx].path.clone();
                     let doc_dirty = self.docs[idx].dirty;
 
-                    let mut label = doc_title;
-                    if doc_dirty {
-                        label.push('*');
-                    }
-
-                    let mut response = ui.selectable_label(selected, label);
-                    if let Some(path) = doc_path.as_deref() {
+                    let mut response = if doc_dirty {
+                        ui.selectable_label(selected, format!("{}*", self.docs[idx].title))
+                    } else {
+                        ui.selectable_label(selected, self.docs[idx].title.as_str())
+                    };
+                    if let Some(path) = self.docs[idx].path.as_deref() {
                         response = response.on_hover_text(path.display().to_string());
                     }
                     if response.clicked() {
@@ -230,7 +227,6 @@ impl eframe::App for RustdownApp {
                                 .layouter(&mut layouter),
                         );
                         if response.changed() {
-                            doc.md_cache = CommonMarkCache::default();
                             doc.dirty = true;
                         }
                     });
