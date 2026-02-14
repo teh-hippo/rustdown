@@ -8,12 +8,11 @@ mod highlight;
 mod preview;
 
 fn main() -> eframe::Result {
+    let paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let app = RustdownApp::from_paths(paths);
+
     let options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "rustdown",
-        options,
-        Box::new(|_cc| Ok(Box::new(RustdownApp::default()))),
-    )
+    eframe::run_native("rustdown", options, Box::new(move |_cc| Ok(Box::new(app))))
 }
 
 #[derive(Default)]
@@ -170,6 +169,41 @@ impl eframe::App for RustdownApp {
 }
 
 impl RustdownApp {
+    fn from_paths(paths: Vec<PathBuf>) -> Self {
+        let mut app = Self::default();
+
+        for path in paths {
+            match fs::read_to_string(&path) {
+                Ok(text) => {
+                    let title = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Untitled")
+                        .to_owned();
+
+                    app.docs.push(Document {
+                        title,
+                        path: Some(path),
+                        text,
+                        dirty: false,
+                        preview: None,
+                    });
+                }
+                Err(err) => {
+                    app.error.get_or_insert(format!("Open failed: {err}"));
+                }
+            }
+        }
+
+        if app.docs.is_empty() {
+            app.new_blank_doc("Untitled".to_owned());
+        } else {
+            app.active = 0;
+        }
+
+        app
+    }
+
     fn new_blank_doc(&mut self, title: String) {
         self.docs.push(Document {
             title,
