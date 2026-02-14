@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, Options, Parser, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 fn options() -> Options {
     let mut options = Options::empty();
@@ -19,6 +19,7 @@ pub fn parser(source: &str) -> Parser<'_> {
 pub fn plain_text(source: &str) -> String {
     let mut out = String::new();
     let mut last_was_newline = true;
+    let mut list_depth: usize = 0;
 
     let push_newline = |out: &mut String, last_was_newline: &mut bool| {
         if !*last_was_newline {
@@ -29,6 +30,18 @@ pub fn plain_text(source: &str) -> String {
 
     for event in parser(source) {
         match event {
+            Event::Start(tag) => match tag {
+                Tag::List(_) => list_depth = list_depth.saturating_add(1),
+                Tag::Item => {
+                    push_newline(&mut out, &mut last_was_newline);
+                    for _ in 0..list_depth.saturating_sub(1) {
+                        out.push_str("  ");
+                    }
+                    out.push_str("- ");
+                    last_was_newline = false;
+                }
+                _ => {}
+            },
             Event::Text(text) | Event::Code(text) => {
                 out.push_str(text.as_ref());
                 last_was_newline = false;
@@ -46,10 +59,13 @@ pub fn plain_text(source: &str) -> String {
                 | TagEnd::BlockQuote(_)
                 | TagEnd::CodeBlock
                 | TagEnd::Item
-                | TagEnd::List(_)
                 | TagEnd::Table
                 | TagEnd::TableHead
                 | TagEnd::TableRow => push_newline(&mut out, &mut last_was_newline),
+                TagEnd::List(_) => {
+                    list_depth = list_depth.saturating_sub(1);
+                    push_newline(&mut out, &mut last_was_newline);
+                }
                 TagEnd::TableCell => {
                     if !last_was_newline {
                         out.push('\t');
