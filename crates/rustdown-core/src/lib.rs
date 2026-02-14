@@ -1,14 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#![forbid(unsafe_code)]
+
+//! Shared logic for `rustdown` (GUI + CLI).
+
+pub mod markdown;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn plain_text_basic() {
+        let md = "# Title\n\nHello **world**.\n\n- a\n- b\n";
+        let got = super::markdown::plain_text(md);
+        assert_eq!(got.trim_end(), "Title\nHello world.\na\nb");
     }
 }
