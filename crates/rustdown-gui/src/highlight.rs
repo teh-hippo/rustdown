@@ -126,3 +126,42 @@ fn append_inline_code(
 
     job.append(rest, 0.0, base.clone());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn joined_text(job: &egui::text::LayoutJob) -> String {
+        let mut out = String::new();
+        for section in &job.sections {
+            if let Some(text) = job.text.get(section.byte_range.clone()) {
+                out.push_str(text);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn heading_level_requires_space() {
+        assert_eq!(heading_level("# Title"), Some(1));
+        assert_eq!(heading_level("## Title"), Some(2));
+        assert_eq!(heading_level("###Title"), None);
+        assert_eq!(heading_level("####### Too many"), None);
+    }
+
+    #[test]
+    fn inline_code_round_trip() {
+        let mut job = egui::text::LayoutJob::default();
+        let fmt = egui::text::TextFormat::default();
+        append_inline_code(&mut job, "a `b` c\n", &fmt, &fmt, &fmt);
+        assert_eq!(joined_text(&job), "a `b` c\n");
+    }
+
+    #[test]
+    fn inline_code_unmatched_tick() {
+        let mut job = egui::text::LayoutJob::default();
+        let fmt = egui::text::TextFormat::default();
+        append_inline_code(&mut job, "a `b c\n", &fmt, &fmt, &fmt);
+        assert_eq!(joined_text(&job), "a `b c\n");
+    }
+}

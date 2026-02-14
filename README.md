@@ -4,7 +4,7 @@ A highly performant, minimalist Markdown editor written in Rust with a **native 
 
 ## Status
 Early, but functional:
-- Native GUI editor with tabs, editor/preview toggle, basic markdown rendering, lightweight syntax highlighting, and basic Open/Save.
+- Native GUI editor with tabs, edit/preview toggle, native markdown preview (lists/quotes/tables/code), lightweight syntax highlighting, and Open/Save/Save As + confirm-close.
 - CLI `preview` mode (plain-text rendering).
 
 ## Quickstart
@@ -22,9 +22,12 @@ cargo run -p rustdown-gui -- README.md
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+O: Open…
 - Cmd/Ctrl+S: Save
+- Cmd/Ctrl+Shift+S: Save As…
 - Cmd/Ctrl+N: New tab
 - Cmd/Ctrl+W: Close tab
 - Cmd/Ctrl+Enter: Toggle Edit/Preview
+
+Tip: right-click a tab for Save/Close options.
 
 CLI preview:
 ```bash
