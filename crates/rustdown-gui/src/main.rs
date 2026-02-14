@@ -47,7 +47,7 @@ impl eframe::App for RustdownApp {
             self.active = self.active.min(self.docs.len().saturating_sub(1));
         }
 
-        let (open, save, new_tab, close_tab, toggle_mode) = ctx.input(|i| {
+        let (open, save, new_tab, close_tab, toggle_mode, next_tab, prev_tab) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
                 cmd && i.key_pressed(egui::Key::O),
@@ -55,6 +55,8 @@ impl eframe::App for RustdownApp {
                 cmd && i.key_pressed(egui::Key::N),
                 cmd && i.key_pressed(egui::Key::W),
                 cmd && i.key_pressed(egui::Key::Enter),
+                cmd && i.key_pressed(egui::Key::Tab) && !i.modifiers.shift,
+                cmd && i.key_pressed(egui::Key::Tab) && i.modifiers.shift,
             )
         });
 
@@ -73,6 +75,12 @@ impl eframe::App for RustdownApp {
         }
         if toggle_mode {
             self.toggle_mode();
+        }
+        if next_tab && !self.docs.is_empty() {
+            self.active = (self.active + 1) % self.docs.len();
+        }
+        if prev_tab && !self.docs.is_empty() {
+            self.active = (self.active + self.docs.len() - 1) % self.docs.len();
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -152,15 +160,34 @@ impl eframe::App for RustdownApp {
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            let doc = &self.docs[self.active];
+            let mode = match self.mode {
+                Mode::Edit => "Edit",
+                Mode::Preview => "Preview",
+            };
+
             let mut clear_error = false;
-            if let Some(error) = self.error.as_deref() {
-                ui.horizontal(|ui| {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                    if ui.button("x").clicked() {
-                        clear_error = true;
+
+            ui.horizontal(|ui| {
+                ui.label(mode);
+                ui.separator();
+
+                if let Some(path) = doc.path.as_deref() {
+                    ui.label(path.display().to_string());
+                } else {
+                    ui.label("Unsaved");
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(error) = self.error.as_deref() {
+                        if ui.button("x").clicked() {
+                            clear_error = true;
+                        }
+                        ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                 });
-            }
+            });
+
             if clear_error {
                 self.error = None;
             }
