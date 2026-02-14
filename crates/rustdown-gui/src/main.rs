@@ -3,9 +3,9 @@
 use std::{fs, path::PathBuf};
 
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 mod highlight;
-mod preview;
 
 fn main() -> eframe::Result {
     let paths = std::env::args_os().skip(1).map(PathBuf::from).collect();
@@ -30,7 +30,7 @@ struct Document {
     path: Option<PathBuf>,
     text: String,
     dirty: bool,
-    preview: Option<preview::PreviewDoc>,
+    md_cache: CommonMarkCache,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -230,15 +230,14 @@ impl eframe::App for RustdownApp {
                                 .layouter(&mut layouter),
                         );
                         if response.changed() {
-                            doc.preview = None;
+                            doc.md_cache = CommonMarkCache::default();
                             doc.dirty = true;
                         }
                     });
                 }
                 Mode::Preview => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let preview = doc.preview.get_or_insert_with(|| preview::parse(&doc.text));
-                        preview::show(ui, preview);
+                        CommonMarkViewer::new().show(ui, &mut doc.md_cache, &doc.text);
                     });
                 }
             }
@@ -310,7 +309,7 @@ impl RustdownApp {
             path: None,
             text: String::new(),
             dirty: false,
-            preview: None,
+            md_cache: CommonMarkCache::default(),
         });
         self.active = self.docs.len() - 1;
     }
@@ -395,7 +394,7 @@ impl RustdownApp {
                     path: Some(path),
                     text,
                     dirty: false,
-                    preview: None,
+                    md_cache: CommonMarkCache::default(),
                 });
                 self.active = self.docs.len() - 1;
                 self.error = None;
