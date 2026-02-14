@@ -12,4 +12,18 @@ mod tests {
         let got = super::markdown::plain_text(md);
         assert_eq!(got.trim_end(), "Title\nHello world.\na\nb");
     }
+
+    #[test]
+    fn plain_text_code_block() {
+        let md = "```rs\nlet x = 1;\n```\n";
+        let got = super::markdown::plain_text(md);
+        assert_eq!(got.trim_end(), "let x = 1;");
+    }
+
+    #[test]
+    fn plain_text_rule() {
+        let md = "a\n\n---\n\nb\n";
+        let got = super::markdown::plain_text(md);
+        assert_eq!(got.trim_end(), "a\n---\nb");
+    }
 }
