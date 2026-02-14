@@ -62,6 +62,19 @@ impl eframe::App for RustdownApp {
             self.active = self.active.min(self.docs.len().saturating_sub(1));
         }
 
+        let window_title = {
+            let doc = &self.docs[self.active];
+            let mut title = format!("rustdown — {}", doc.title);
+            if doc.dirty {
+                title.push('*');
+            }
+            if self.mode == Mode::Preview {
+                title.push_str(" (Preview)");
+            }
+            title
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(window_title));
+
         let dialog_open = self.dialog.is_some();
         let (open, save, save_as, new_tab, close_tab, toggle_mode, next_tab, prev_tab) =
             ctx.input(|i| {
@@ -119,6 +132,10 @@ impl eframe::App for RustdownApp {
                     self.save_as_active();
                 }
 
+                if ui.button("Save All").clicked() {
+                    self.save_all();
+                }
+
                 ui.separator();
 
                 let mut tab_action = None;
@@ -148,6 +165,10 @@ impl eframe::App for RustdownApp {
                         }
                         if ui.button("Save As…").clicked() {
                             tab_action = Some(TabAction::SaveAs(idx));
+                            ui.close_menu();
+                        }
+                        if ui.button("Save all").clicked() {
+                            tab_action = Some(TabAction::SaveAll);
                             ui.close_menu();
                         }
 
@@ -322,6 +343,24 @@ impl RustdownApp {
         let _ = self.save_doc(self.active, true);
     }
 
+    fn save_all(&mut self) {
+        for idx in 0..self.docs.len() {
+            if !self.docs[idx].dirty {
+                continue;
+            }
+
+            let save_as = self.docs[idx].path.is_none();
+            match self.save_doc(idx, save_as) {
+                SaveResult::Saved => {}
+                SaveResult::Cancelled => {
+                    self.error = Some("Save all cancelled".to_owned());
+                    break;
+                }
+                SaveResult::Failed => break,
+            }
+        }
+    }
+
     fn open_path(&mut self, path: PathBuf) {
         let path = fs::canonicalize(&path).unwrap_or(path);
         if let Some(idx) = self
@@ -466,6 +505,7 @@ impl RustdownApp {
             TabAction::SaveAs(idx) => {
                 let _ = self.save_doc(idx, true);
             }
+            TabAction::SaveAll => self.save_all(),
             TabAction::Close(idx) => self.request_close_doc(idx),
             TabAction::CloseOthers(idx) => self.close_others(idx),
             TabAction::CloseAll => self.close_all(),
@@ -522,6 +562,7 @@ impl RustdownApp {
 enum TabAction {
     Save(usize),
     SaveAs(usize),
+    SaveAll,
     Close(usize),
     CloseOthers(usize),
     CloseAll,
