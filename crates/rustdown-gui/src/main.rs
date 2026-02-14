@@ -43,16 +43,37 @@ enum Mode {
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.docs.is_empty() {
-            self.docs.push(Document {
-                title: "Untitled".to_owned(),
-                path: None,
-                text: String::new(),
-                dirty: false,
-                preview: None,
-            });
-            self.active = 0;
+            self.new_blank_doc("Untitled".to_owned());
         } else {
             self.active = self.active.min(self.docs.len().saturating_sub(1));
+        }
+
+        let (open, save, new_tab, close_tab, toggle_mode) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            (
+                cmd && i.key_pressed(egui::Key::O),
+                cmd && i.key_pressed(egui::Key::S),
+                cmd && i.key_pressed(egui::Key::N),
+                cmd && i.key_pressed(egui::Key::W),
+                cmd && i.key_pressed(egui::Key::Enter),
+            )
+        });
+
+        if open {
+            self.open_file();
+        }
+        if save {
+            self.save_active();
+        }
+        if new_tab {
+            let next = self.docs.len() + 1;
+            self.new_blank_doc(format!("Untitled {next}"));
+        }
+        if close_tab {
+            self.close_active();
+        }
+        if toggle_mode {
+            self.toggle_mode();
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -79,14 +100,12 @@ impl eframe::App for RustdownApp {
                 }
 
                 if ui.button("+").clicked() {
-                    self.docs.push(Document {
-                        title: format!("Untitled {}", self.docs.len() + 1),
-                        path: None,
-                        text: String::new(),
-                        dirty: false,
-                        preview: None,
-                    });
-                    self.active = self.docs.len() - 1;
+                    let next = self.docs.len() + 1;
+                    self.new_blank_doc(format!("Untitled {next}"));
+                }
+
+                if ui.button("Close").clicked() {
+                    self.close_active();
                 }
 
                 ui.separator();
@@ -96,10 +115,7 @@ impl eframe::App for RustdownApp {
                     Mode::Preview => "Edit",
                 };
                 if ui.button(label).clicked() {
-                    self.mode = match self.mode {
-                        Mode::Edit => Mode::Preview,
-                        Mode::Preview => Mode::Edit,
-                    };
+                    self.toggle_mode();
                 }
             });
         });
@@ -154,6 +170,42 @@ impl eframe::App for RustdownApp {
 }
 
 impl RustdownApp {
+    fn new_blank_doc(&mut self, title: String) {
+        self.docs.push(Document {
+            title,
+            path: None,
+            text: String::new(),
+            dirty: false,
+            preview: None,
+        });
+        self.active = self.docs.len() - 1;
+    }
+
+    fn close_active(&mut self) {
+        if self.docs.is_empty() {
+            return;
+        }
+
+        if self.docs[self.active].dirty {
+            self.error = Some("Unsaved changes — save first".to_owned());
+            return;
+        }
+
+        self.docs.remove(self.active);
+        if self.docs.is_empty() {
+            self.new_blank_doc("Untitled".to_owned());
+        } else {
+            self.active = self.active.min(self.docs.len().saturating_sub(1));
+        }
+    }
+
+    fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            Mode::Edit => Mode::Preview,
+            Mode::Preview => Mode::Edit,
+        };
+    }
+
     fn open_file(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Markdown", &["md", "markdown"])
