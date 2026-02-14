@@ -2,8 +2,10 @@
 
 use std::{fs, path::PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
+
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "rustdown", about = "Preview markdown from the CLI", version)]
@@ -35,6 +37,15 @@ fn main() -> anyhow::Result<()> {
                     .context("failed to read markdown from stdin")?;
                 buf
             } else {
+                let meta = fs::metadata(&path)
+                    .with_context(|| format!("failed to stat {}", path.display()))?;
+                if meta.len() > MAX_FILE_BYTES {
+                    bail!(
+                        "refusing to read {} ({} MiB) — too large",
+                        path.display(),
+                        meta.len() / (1024 * 1024)
+                    );
+                }
                 fs::read_to_string(&path)
                     .with_context(|| format!("failed to read markdown from {}", path.display()))?
             };
