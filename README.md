@@ -25,7 +25,9 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+N: New document
 - Cmd/Ctrl+Shift+F: Format document
 - Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
- 
+- Cmd/Ctrl++: Increase font size
+- Cmd/Ctrl+-: Decrease font size
+  
 Tip: the mode indicator in the bottom bar is clickable.
 
 Formatting is intentionally simple; if a `.editorconfig` file is present, rustdown will use a small subset:

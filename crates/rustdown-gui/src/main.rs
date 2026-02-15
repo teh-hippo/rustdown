@@ -20,6 +20,9 @@ mod format;
 mod highlight;
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
+const ZOOM_STEP: f32 = 0.1;
+const MIN_ZOOM_FACTOR: f32 = 0.5;
+const MAX_ZOOM_FACTOR: f32 = 3.0;
 
 fn main() -> eframe::Result {
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
@@ -134,17 +137,20 @@ enum PendingAction {
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dialog_open = self.unsaved_dialog;
-        let (open, save, save_as, new_doc, cycle_mode, format_doc) = ctx.input(|i| {
-            let cmd = i.modifiers.command;
-            (
-                cmd && i.key_pressed(egui::Key::O),
-                cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
-                cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
-                cmd && i.key_pressed(egui::Key::N),
-                cmd && i.key_pressed(egui::Key::Enter),
-                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
-            )
-        });
+        let (open, save, save_as, new_doc, cycle_mode, format_doc, zoom_in, zoom_out) =
+            ctx.input(|i| {
+                let cmd = i.modifiers.command;
+                (
+                    cmd && i.key_pressed(egui::Key::O),
+                    cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
+                    cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
+                    cmd && i.key_pressed(egui::Key::N),
+                    cmd && i.key_pressed(egui::Key::Enter),
+                    cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
+                    cmd && i.key_pressed(egui::Key::Equals),
+                    cmd && i.key_pressed(egui::Key::Minus),
+                )
+            });
 
         if !dialog_open {
             if open {
@@ -161,6 +167,12 @@ impl eframe::App for RustdownApp {
             }
             if format_doc {
                 self.format_document();
+            }
+            if zoom_in {
+                self.adjust_zoom(ctx, ZOOM_STEP);
+            }
+            if zoom_out {
+                self.adjust_zoom(ctx, -ZOOM_STEP);
             }
         }
 
@@ -245,6 +257,11 @@ impl RustdownApp {
             self.doc.md_cache.clear_scrollable();
             self.doc.last_edit_at = None;
         }
+    }
+
+    fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
+        let zoom = (ctx.zoom_factor() + delta).clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+        ctx.set_zoom_factor(zoom);
     }
 
     fn update_viewport_title(&self, ctx: &egui::Context) {
