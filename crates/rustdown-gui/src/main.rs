@@ -28,6 +28,10 @@ const EDITOR_HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(150);
 /// Side-by-side preview is throttled for responsiveness while typing.
 const SIDEBAR_LIVE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Shrink the document text buffer after the user has been idle for a bit.
+/// This helps reduce memory after large deletes without causing frequent reallocations while typing.
+const TEXT_SHRINK_IDLE: Duration = Duration::from_secs(2);
+
 fn main() -> eframe::Result {
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let app = RustdownApp::from_paths(paths);
@@ -158,6 +162,21 @@ impl Document {
             Some(debounce - since)
         } else {
             None
+        }
+    }
+
+    fn maybe_shrink_text_after_idle(&mut self, idle: Duration) {
+        let Some(last_edit_at) = self.last_edit_at else {
+            return;
+        };
+        if last_edit_at.elapsed() < idle {
+            return;
+        }
+
+        let len = self.text.len();
+        let cap = self.text.capacity();
+        if cap > 1024 * 1024 && cap > len.saturating_mul(4) {
+            self.text.shrink_to_fit();
         }
     }
 }
@@ -337,11 +356,15 @@ impl RustdownApp {
         self.mode = mode;
         self.needs_title_update = true;
 
-        // Free preview cache when preview isn't visible.
+        // Free large caches when the corresponding view isn't visible.
         if mode == Mode::Edit {
-            self.doc.md_cache = CommonMarkCache::default();
+            // Preview isn't visible.
+            self.doc.md_cache.clear_scrollable();
             self.doc.md_cache_revision = self.doc.edit_revision;
             self.doc.last_edit_at = None;
+        } else if mode == Mode::Preview {
+            // Editor isn't visible.
+            self.doc.highlight_cache = None;
         }
     }
 
@@ -385,7 +408,7 @@ impl RustdownApp {
 
         self.doc.text = formatted;
         self.note_text_changed();
-        self.doc.md_cache = CommonMarkCache::default();
+        self.doc.md_cache.clear_scrollable();
         self.doc.md_cache_revision = self.doc.edit_revision;
     }
 
@@ -394,6 +417,8 @@ impl RustdownApp {
         if let Some(remaining) = self.doc.debounce_remaining(EDITOR_HIGHLIGHT_DEBOUNCE) {
             highlight = false;
             ui.ctx().request_repaint_after(remaining);
+        } else {
+            self.doc.maybe_shrink_text_after_idle(TEXT_SHRINK_IDLE);
         }
 
         let revision = self.doc.edit_revision;
@@ -458,7 +483,9 @@ impl RustdownApp {
         }
 
         if self.doc.md_cache_revision != self.doc.edit_revision {
-            self.doc.md_cache = CommonMarkCache::default();
+            // Keep `CommonMarkCache` (it also caches non-text state like loader install),
+            // but clear scroll-related caches when the markdown changes.
+            self.doc.md_cache.clear_scrollable();
             self.doc.md_cache_revision = self.doc.edit_revision;
         }
 
