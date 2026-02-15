@@ -28,6 +28,12 @@ Start in Side-by-side mode:
 cargo run -p rustdown -- -s
 ```
 
+rustdown loads a single system UI font at startup. Override with `RUSTDOWN_FONT_PATH=/path/to/font.ttf`.
+On Linux it checks:
+`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`,
+`/usr/share/fonts/TTF/DejaVuSans.ttf`, or
+`/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf`.
+
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+O: Open…
 - Cmd/Ctrl+S: Save

@@ -12,6 +12,7 @@ use std::{
     ffi::OsString,
     fs,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -25,6 +26,25 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
+const UI_FONT_NAME: &str = "rustdown-ui-font";
+#[cfg(target_os = "linux")]
+const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+];
+#[cfg(target_os = "macos")]
+const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+];
+#[cfg(target_os = "windows")]
+const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
+    r"C:\Windows\Fonts\segoeui.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+];
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const UI_FONT_CANDIDATE_PATHS: &[&str] = &[];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LaunchOptions {
@@ -70,7 +90,62 @@ fn main() -> eframe::Result {
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
-    eframe::run_native("rustdown", options, Box::new(move |_cc| Ok(Box::new(app))))
+    eframe::run_native(
+        "rustdown",
+        options,
+        Box::new(move |cc| {
+            configure_single_font(&cc.egui_ctx).map_err(std::io::Error::other)?;
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+fn configure_single_font(ctx: &egui::Context) -> Result<(), String> {
+    let font_data = load_single_font()?;
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.clear();
+    fonts.families.clear();
+    fonts.font_data.insert(
+        UI_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_owned(font_data)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Proportional,
+        vec![UI_FONT_NAME.to_owned()],
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Monospace, vec![UI_FONT_NAME.to_owned()]);
+    ctx.set_fonts(fonts);
+    Ok(())
+}
+
+fn load_single_font() -> Result<Vec<u8>, String> {
+    if let Ok(path) = std::env::var("RUSTDOWN_FONT_PATH") {
+        if path.trim().is_empty() {
+            return Err("RUSTDOWN_FONT_PATH is set but empty".to_owned());
+        }
+        return fs::read(&path).map_err(|err| {
+            format!("Failed to read UI font from RUSTDOWN_FONT_PATH '{path}': {err}")
+        });
+    }
+
+    for path in UI_FONT_CANDIDATE_PATHS {
+        match fs::read(path) {
+            Ok(data) => return Ok(data),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(format!("Failed to read UI font at '{path}': {err}")),
+        }
+    }
+
+    if UI_FONT_CANDIDATE_PATHS.is_empty() {
+        return Err("No UI font candidates are configured for this platform".to_owned());
+    }
+
+    Err(format!(
+        "No UI font files found. Tried: {}",
+        UI_FONT_CANDIDATE_PATHS.join(", ")
+    ))
 }
 
 struct RustdownApp {
