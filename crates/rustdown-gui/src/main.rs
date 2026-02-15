@@ -8,6 +8,7 @@
 compile_error!("rustdown is a native desktop app; web/wasm builds are not supported.");
 
 use std::{
+    ffi::OsString,
     fs,
     path::PathBuf,
     time::{Duration, Instant},
@@ -24,11 +25,50 @@ const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
 
-fn main() -> eframe::Result {
-    let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let app = RustdownApp::from_paths(paths);
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LaunchOptions {
+    mode: Mode,
+    path: Option<PathBuf>,
+}
 
-    let options = eframe::NativeOptions::default();
+fn parse_launch_options<I, S>(args: I) -> LaunchOptions
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut mode = Mode::Edit;
+    let mut path = None;
+
+    for arg in args {
+        let arg = arg.into();
+        if arg == "-p" {
+            mode = Mode::Preview;
+            continue;
+        }
+        if arg == "-s" {
+            mode = Mode::SideBySide;
+            continue;
+        }
+
+        if path.is_none() {
+            path = Some(PathBuf::from(arg));
+        }
+    }
+
+    LaunchOptions { mode, path }
+}
+
+fn main() -> eframe::Result {
+    let launch_options = parse_launch_options(std::env::args_os().skip(1));
+    let app = RustdownApp::from_launch_options(launch_options);
+
+    // Viewport sizes are in points, so they scale with the OS DPI factor.
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 768.0])
+            .with_min_inner_size([480.0, 320.0]),
+        ..Default::default()
+    };
     eframe::run_native("rustdown", options, Box::new(move |_cc| Ok(Box::new(app))))
 }
 
@@ -238,9 +278,10 @@ impl eframe::App for RustdownApp {
 }
 
 impl RustdownApp {
-    fn from_paths(paths: Vec<PathBuf>) -> Self {
+    fn from_launch_options(options: LaunchOptions) -> Self {
         let mut app = Self::default();
-        if let Some(path) = paths.into_iter().next() {
+        app.set_mode(options.mode);
+        if let Some(path) = options.path {
             app.open_path(path);
         }
         app
@@ -447,5 +488,49 @@ impl RustdownApp {
                     }
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> LaunchOptions {
+        parse_launch_options(args.iter().copied().map(OsString::from))
+    }
+
+    #[test]
+    fn parse_launch_options_defaults_to_edit_mode() {
+        let options = parse(&[]);
+        assert_eq!(options.mode, Mode::Edit);
+        assert_eq!(options.path, None);
+    }
+
+    #[test]
+    fn parse_launch_options_preview_flag_sets_preview_mode() {
+        let options = parse(&["-p"]);
+        assert_eq!(options.mode, Mode::Preview);
+        assert_eq!(options.path, None);
+    }
+
+    #[test]
+    fn parse_launch_options_side_by_side_flag_sets_side_by_side_mode() {
+        let options = parse(&["-s"]);
+        assert_eq!(options.mode, Mode::SideBySide);
+        assert_eq!(options.path, None);
+    }
+
+    #[test]
+    fn parse_launch_options_keeps_first_positional_file() {
+        let options = parse(&["README.md", "OTHER.md"]);
+        assert_eq!(options.mode, Mode::Edit);
+        assert_eq!(options.path, Some(PathBuf::from("README.md")));
+    }
+
+    #[test]
+    fn parse_launch_options_combines_mode_flag_and_file() {
+        let options = parse(&["-p", "README.md"]);
+        assert_eq!(options.mode, Mode::Preview);
+        assert_eq!(options.path, Some(PathBuf::from("README.md")));
     }
 }

@@ -18,6 +18,16 @@ Open a file directly:
 cargo run -p rustdown -- README.md
 ```
 
+Start in Preview mode:
+```bash
+cargo run -p rustdown -- -p
+```
+
+Start in Side-by-side mode:
+```bash
+cargo run -p rustdown -- -s
+```
+
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+O: Open…
 - Cmd/Ctrl+S: Save
