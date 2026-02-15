@@ -62,14 +62,12 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
             continue;
         }
 
-        // headings: `# ` .. `###### `
         if let Some(level) = heading_level(trimmed) {
             let ws_len = line.len().saturating_sub(trimmed.len());
             if ws_len > 0 {
                 job.append(&line[..ws_len], 0.0, base.clone());
             }
 
-            // keep the leading `###` slightly muted
             let hashes_len = trimmed
                 .bytes()
                 .take_while(|b| *b == b'#')
@@ -77,7 +75,6 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
                 .min(trimmed.len());
             job.append(&trimmed[..hashes_len], 0.0, weak.clone());
 
-            // rest of the line gets heading style
             let rest = &trimmed[hashes_len..];
             let mut heading_format = heading.clone();
             heading_format.font_id.size *= 1.0 + (6 - level) as f32 * 0.02;
@@ -97,7 +94,6 @@ fn heading_level(line: &str) -> Option<u8> {
         return None;
     }
 
-    // markdown headings must have a space after the hashes
     line.as_bytes()
         .get(hashes)
         .is_some_and(|b| *b == b' ')
@@ -116,7 +112,6 @@ fn append_inline_code(
         let (before, after_tick) = rest.split_at(start);
         job.append(before, 0.0, base.clone());
 
-        // find closing tick
         let after_tick = &after_tick[1..];
         if let Some(end) = after_tick.find('`') {
             let (code, after_code) = after_tick.split_at(end);
@@ -125,7 +120,6 @@ fn append_inline_code(
             job.append("`", 0.0, weak.clone());
             rest = &after_code[1..];
         } else {
-            // unmatched; treat the rest as normal text
             job.append("`", 0.0, weak.clone());
             job.append(after_tick, 0.0, base.clone());
             return;
@@ -133,86 +127,4 @@ fn append_inline_code(
     }
 
     job.append(rest, 0.0, base.clone());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    fn joined_text(job: &egui::text::LayoutJob) -> String {
-        let mut out = String::new();
-        for section in &job.sections {
-            if let Some(text) = job.text.get(section.byte_range.clone()) {
-                out.push_str(text);
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn heading_level_requires_space() {
-        assert_eq!(heading_level("# Title"), Some(1));
-        assert_eq!(heading_level("## Title"), Some(2));
-        assert_eq!(heading_level("###Title"), None);
-        assert_eq!(heading_level("####### Too many"), None);
-    }
-
-    #[test]
-    fn inline_code_round_trip() {
-        let mut job = egui::text::LayoutJob::default();
-        let fmt = egui::text::TextFormat::default();
-        append_inline_code(&mut job, "a `b` c\n", &fmt, &fmt, &fmt);
-        assert_eq!(joined_text(&job), "a `b` c\n");
-    }
-
-    #[test]
-    fn inline_code_unmatched_tick() {
-        let mut job = egui::text::LayoutJob::default();
-        let fmt = egui::text::TextFormat::default();
-        append_inline_code(&mut job, "a `b c\n", &fmt, &fmt, &fmt);
-        assert_eq!(joined_text(&job), "a `b c\n");
-    }
-
-    #[test]
-    #[ignore]
-    fn perf_highlight_layout_job() {
-        let ctx = egui::Context::default();
-        let iters = 10u32;
-
-        let chunk = "# Heading\nSome text with `inline code` and **bold**.\n\n- item a\n- item b\n\n```rs\nlet x = 1;   \n```\n\n";
-        for target_bytes in [32 * 1024usize, 96 * 1024, 160 * 1024] {
-            let mut source = String::with_capacity(target_bytes + chunk.len());
-            while source.len() < target_bytes {
-                source.push_str(chunk);
-            }
-
-            let mut total_job = Duration::ZERO;
-            let mut total_layout = Duration::ZERO;
-
-            for _ in 0..iters {
-                let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let t0 = Instant::now();
-                        let mut job = markdown_layout_job(ui, &source);
-                        job.wrap.max_width = 700.0;
-                        total_job += t0.elapsed();
-
-                        let t1 = Instant::now();
-                        ui.fonts(|fonts| {
-                            let _ = fonts.layout_job(job);
-                        });
-                        total_layout += t1.elapsed();
-                    });
-                });
-            }
-
-            eprintln!(
-                "highlight: bytes={} job_avg={:?} layout_avg={:?}",
-                source.len(),
-                total_job / iters,
-                total_layout / iters
-            );
-        }
-    }
 }

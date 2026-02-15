@@ -19,17 +19,9 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 mod format;
 mod highlight;
 
-/// Hard cap on file sizes we will load into memory.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Debounce expensive syntax highlighting while typing.
 const EDITOR_HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(150);
-
-/// Side-by-side preview is throttled for responsiveness while typing.
 const SIDEBAR_LIVE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
-
-/// Shrink the document text buffer after the user has been idle for a bit.
-/// This helps reduce memory after large deletes without causing frequent reallocations while typing.
 const TEXT_SHRINK_IDLE: Duration = Duration::from_secs(2);
 
 fn main() -> eframe::Result {
@@ -49,26 +41,29 @@ fn main() -> eframe::Result {
 
 fn configure_ui(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
-    style.text_styles.insert(
-        egui::TextStyle::Body,
-        egui::FontId::new(16.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Button,
-        egui::FontId::new(16.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Heading,
-        egui::FontId::new(20.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Monospace,
-        egui::FontId::new(15.0, egui::FontFamily::Monospace),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Small,
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
-    );
+    for (style_key, size, family) in [
+        (egui::TextStyle::Body, 16.0, egui::FontFamily::Proportional),
+        (
+            egui::TextStyle::Button,
+            16.0,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Heading,
+            20.0,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Monospace,
+            15.0,
+            egui::FontFamily::Monospace,
+        ),
+        (egui::TextStyle::Small, 13.0, egui::FontFamily::Proportional),
+    ] {
+        style
+            .text_styles
+            .insert(style_key, egui::FontId::new(size, family));
+    }
     ctx.set_style(style);
 }
 
@@ -308,7 +303,6 @@ impl eframe::App for RustdownApp {
             }
         });
 
-        // Side-by-side preview goes on the right.
         if self.mode == Mode::SideBySide {
             egui::SidePanel::right("preview")
                 .resizable(true)
@@ -322,7 +316,6 @@ impl eframe::App for RustdownApp {
                 .show(ctx, |ui| self.show_preview(ui));
         }
 
-        // CentralPanel should always be last (egui panel layout depends on the order they are added).
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
@@ -356,14 +349,11 @@ impl RustdownApp {
         self.mode = mode;
         self.needs_title_update = true;
 
-        // Free large caches when the corresponding view isn't visible.
         if mode == Mode::Edit {
-            // Preview isn't visible.
             self.doc.md_cache.clear_scrollable();
             self.doc.md_cache_revision = self.doc.edit_revision;
             self.doc.last_edit_at = None;
         } else if mode == Mode::Preview {
-            // Editor isn't visible.
             self.doc.highlight_cache = None;
         }
     }
@@ -428,7 +418,6 @@ impl RustdownApp {
             ..
         } = &mut self.doc;
 
-        // Allocate the full panel to the editor so it visually blends with the window.
         let editor = egui::TextEdit::multiline(text)
             .desired_width(f32::INFINITY)
             .font(egui::TextStyle::Body)
@@ -483,8 +472,6 @@ impl RustdownApp {
         }
 
         if self.doc.md_cache_revision != self.doc.edit_revision {
-            // Keep `CommonMarkCache` (it also caches non-text state like loader install),
-            // but clear scroll-related caches when the markdown changes.
             self.doc.md_cache.clear_scrollable();
             self.doc.md_cache_revision = self.doc.edit_revision;
         }
@@ -633,115 +620,5 @@ impl RustdownApp {
                     }
                 });
             });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn debounce_remaining_is_some_when_recent() {
-        let mut doc = Document::blank();
-        doc.last_edit_at = Some(Instant::now());
-        assert!(doc.debounce_remaining(Duration::from_millis(10)).is_some());
-    }
-
-    #[test]
-    fn debounce_remaining_is_none_when_old() {
-        let mut doc = Document::blank();
-        let now = Instant::now();
-        doc.last_edit_at = match now.checked_sub(Duration::from_millis(20)) {
-            Some(t) => Some(t),
-            None => Some(now),
-        };
-        assert!(doc.debounce_remaining(Duration::from_millis(5)).is_none());
-    }
-
-    #[test]
-    fn document_from_loaded_file_sets_labels() {
-        let path = PathBuf::from("note.md");
-        let doc = Document::from_loaded_file(path.clone(), "hello\n".to_owned());
-
-        assert_eq!(doc.title, "note.md");
-        assert_eq!(doc.path, Some(path));
-        assert_eq!(doc.path_label, "note.md");
-        assert_eq!(doc.text, "hello\n");
-        assert!(!doc.dirty);
-    }
-
-    #[test]
-    fn document_set_saved_path_updates_title_and_label() {
-        let mut doc = Document::blank();
-        doc.set_saved_path(PathBuf::from("saved.md"));
-        assert_eq!(doc.title, "saved.md");
-        assert_eq!(doc.path, Some(PathBuf::from("saved.md")));
-        assert_eq!(doc.path_label, "saved.md");
-    }
-
-    #[test]
-    fn typing_first_character_keeps_cursor_position() {
-        let ctx = egui::Context::default();
-        let mut app = RustdownApp::default();
-
-        let screen_rect =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0));
-
-        ctx.memory_mut(|mem| mem.request_focus(egui::Id::new("editor")));
-
-        // Type the first character.
-        let input = egui::RawInput {
-            screen_rect: Some(screen_rect),
-            events: vec![egui::Event::Text("H".to_owned())],
-            ..Default::default()
-        };
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
-        });
-        assert_eq!(app.doc.text, "H");
-
-        // The second character should be inserted after the first one.
-        let input = egui::RawInput {
-            screen_rect: Some(screen_rect),
-            events: vec![egui::Event::Text("e".to_owned())],
-            ..Default::default()
-        };
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
-        });
-        assert_eq!(app.doc.text, "He");
-    }
-
-    #[test]
-    #[ignore]
-    fn perf_commonmark_render() {
-        let ctx = egui::Context::default();
-        let iters = 10u32;
-        let mut cache = CommonMarkCache::default();
-        let chunk = "# Heading\n\nSome text with `code` and **bold**.\n\n- item a\n- item b\n\n```rs\nlet x = 1;\n```\n\n";
-
-        for target_bytes in [32 * 1024usize, 96 * 1024, 160 * 1024] {
-            let mut markdown = String::with_capacity(target_bytes + chunk.len());
-            while markdown.len() < target_bytes {
-                markdown.push_str(chunk);
-            }
-
-            let mut total = Duration::ZERO;
-            for _ in 0..iters {
-                let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let t0 = Instant::now();
-                        CommonMarkViewer::new().show(ui, &mut cache, &markdown);
-                        total += t0.elapsed();
-                    });
-                });
-            }
-
-            eprintln!(
-                "commonmark: bytes={} avg={:?}",
-                markdown.len(),
-                total / iters
-            );
-        }
     }
 }

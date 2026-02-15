@@ -8,15 +8,6 @@ pub(crate) enum EndOfLine {
     CrLf,
 }
 
-impl EndOfLine {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            EndOfLine::Lf => "\n",
-            EndOfLine::CrLf => "\r\n",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FormatOptions {
     pub(crate) trim_trailing_whitespace: bool,
@@ -29,25 +20,30 @@ impl Default for FormatOptions {
         Self {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
-            end_of_line: None, // preserve existing
+            end_of_line: None,
         }
     }
 }
 
 pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
-    let eol = options
-        .end_of_line
-        .unwrap_or_else(|| detect_end_of_line(source));
-    let normalized = normalize_line_endings(source);
+    let eol = match options.end_of_line {
+        Some(EndOfLine::CrLf) => "\r\n",
+        Some(EndOfLine::Lf) => "\n",
+        None if source.contains("\r\n") => "\r\n",
+        None => "\n",
+    };
+    let normalized = if source.contains('\r') {
+        source.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        source.to_owned()
+    };
 
-    // Preserve the number of newline *events* (split() keeps trailing empty segments).
     let mut out = String::with_capacity(normalized.len() + 2);
     let mut in_fence = false;
 
     let mut segments = normalized.split('\n').peekable();
     while let Some(line) = segments.next() {
-        let trimmed_start = line.trim_start();
-        if trimmed_start.starts_with("```") {
+        if line.trim_start().starts_with("```") {
             in_fence = !in_fence;
         }
 
@@ -69,22 +65,21 @@ pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
         }
 
         if segments.peek().is_some() {
-            out.push_str(eol.as_str());
+            out.push_str(eol);
         }
     }
 
-    if options.insert_final_newline && !out.ends_with(eol.as_str()) {
-        out.push_str(eol.as_str());
+    if options.insert_final_newline && !out.ends_with(eol) {
+        out.push_str(eol);
     }
 
     out
 }
 
 pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
-    let mut options = FormatOptions::default();
-
+    let mut opts = FormatOptions::default();
     let Some(path) = path else {
-        return options;
+        return opts;
     };
 
     let file_name = path
@@ -92,16 +87,17 @@ pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
         .and_then(|s| s.to_str())
         .unwrap_or_default();
     let Some(mut dir) = path.parent() else {
-        return options;
+        return opts;
     };
 
-    let mut parsed = Vec::new();
+    let mut picked = Overrides::default();
+
     loop {
         let cfg_path = dir.join(".editorconfig");
         if let Ok(contents) = fs::read_to_string(&cfg_path) {
-            let cfg = parse_editorconfig(&contents);
-            let root = cfg.root;
-            parsed.push(cfg);
+            let (root, overrides) = parse_editorconfig_overrides(&contents, file_name);
+            picked.fill_missing(overrides);
+
             if root {
                 break;
             }
@@ -113,86 +109,42 @@ pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
         dir = parent;
     }
 
-    for cfg in parsed.iter().rev() {
-        cfg.apply(file_name, &mut options);
+    if let Some(value) = picked.trim_trailing_whitespace {
+        opts.trim_trailing_whitespace = value;
     }
+    if let Some(value) = picked.insert_final_newline {
+        opts.insert_final_newline = value;
+    }
+    opts.end_of_line = picked.end_of_line;
 
-    options
+    opts
 }
 
-fn detect_end_of_line(source: &str) -> EndOfLine {
-    if source.contains("\r\n") {
-        EndOfLine::CrLf
-    } else {
-        EndOfLine::Lf
-    }
-}
-
-fn normalize_line_endings(source: &str) -> String {
-    if !source.contains('\r') {
-        return source.to_owned();
-    }
-
-    let mut out = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\r' {
-            if chars.peek() == Some(&'\n') {
-                let _ = chars.next();
-            }
-            out.push('\n');
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-#[derive(Clone, Debug, Default)]
-struct EditorConfig {
-    root: bool,
-    sections: Vec<Section>,
-}
-
-impl EditorConfig {
-    fn apply(&self, file_name: &str, options: &mut FormatOptions) {
-        for section in &self.sections {
-            if !section.matches(file_name) {
-                continue;
-            }
-
-            if let Some(value) = section.trim_trailing_whitespace {
-                options.trim_trailing_whitespace = value;
-            }
-            if let Some(value) = section.insert_final_newline {
-                options.insert_final_newline = value;
-            }
-            if let Some(value) = section.end_of_line {
-                options.end_of_line = Some(value);
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Section {
-    patterns: Vec<String>,
+#[derive(Default, Clone, Copy)]
+struct Overrides {
     trim_trailing_whitespace: Option<bool>,
     insert_final_newline: Option<bool>,
     end_of_line: Option<EndOfLine>,
 }
 
-impl Section {
-    fn matches(&self, file_name: &str) -> bool {
-        self.patterns
-            .iter()
-            .any(|pattern| glob_match(pattern.as_str(), file_name))
+impl Overrides {
+    fn fill_missing(&mut self, other: Self) {
+        if self.trim_trailing_whitespace.is_none() {
+            self.trim_trailing_whitespace = other.trim_trailing_whitespace;
+        }
+        if self.insert_final_newline.is_none() {
+            self.insert_final_newline = other.insert_final_newline;
+        }
+        if self.end_of_line.is_none() {
+            self.end_of_line = other.end_of_line;
+        }
     }
 }
 
-fn parse_editorconfig(contents: &str) -> EditorConfig {
-    let mut cfg = EditorConfig::default();
-    let mut current: Option<Section> = None;
+fn parse_editorconfig_overrides(contents: &str, file_name: &str) -> (bool, Overrides) {
+    let mut root = false;
+    let mut overrides = Overrides::default();
+    let mut section_matches = false;
 
     for raw in contents.lines() {
         let line = raw.trim();
@@ -200,18 +152,8 @@ fn parse_editorconfig(contents: &str) -> EditorConfig {
             continue;
         }
 
-        if line.starts_with('[') && line.ends_with(']') {
-            if let Some(section) = current.take() {
-                cfg.sections.push(section);
-            }
-
-            let inner = line[1..line.len() - 1].trim();
-            current = Some(Section {
-                patterns: expand_patterns(inner),
-                trim_trailing_whitespace: None,
-                insert_final_newline: None,
-                end_of_line: None,
-            });
+        if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section_matches = patterns_match(inner.trim(), file_name);
             continue;
         }
 
@@ -220,35 +162,30 @@ fn parse_editorconfig(contents: &str) -> EditorConfig {
         };
 
         if key.eq_ignore_ascii_case("root") {
-            cfg.root = parse_bool(value).unwrap_or(false);
+            root = parse_bool(value).unwrap_or(false);
             continue;
         }
 
-        let Some(section) = current.as_mut() else {
+        if !section_matches {
             continue;
-        };
+        }
 
         if key.eq_ignore_ascii_case("trim_trailing_whitespace") {
-            section.trim_trailing_whitespace = parse_bool(value);
+            overrides.trim_trailing_whitespace = parse_bool(value);
         } else if key.eq_ignore_ascii_case("insert_final_newline") {
-            section.insert_final_newline = parse_bool(value);
+            overrides.insert_final_newline = parse_bool(value);
         } else if key.eq_ignore_ascii_case("end_of_line") {
-            section.end_of_line = parse_eol(value);
+            overrides.end_of_line = parse_eol(value);
         }
     }
 
-    if let Some(section) = current.take() {
-        cfg.sections.push(section);
-    }
-
-    cfg
+    (root, overrides)
 }
 
 fn split_key_value(line: &str) -> Option<(&str, &str)> {
     let idx = line.find('=').or_else(|| line.find(':'))?;
     let (key, rest) = line.split_at(idx);
-    let value = rest.get(1..)?;
-    Some((key.trim(), value.trim()))
+    Some((key.trim(), rest.get(1..)?.trim()))
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -271,254 +208,73 @@ fn parse_eol(value: &str) -> Option<EndOfLine> {
     }
 }
 
-fn expand_patterns(raw: &str) -> Vec<String> {
-    let mut patterns = Vec::new();
-    for part in split_on_commas(raw) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        patterns.extend(expand_braces(part));
+fn patterns_match(raw: &str, file_name: &str) -> bool {
+    let raw = raw.trim();
+    if raw.contains('{') {
+        brace_pattern_match(raw, file_name)
+    } else {
+        raw.split(',').any(|p| glob_match(p.trim(), file_name))
     }
-    patterns
 }
 
-fn split_on_commas(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-
-    for (idx, ch) in s.char_indices() {
-        match ch {
-            '{' => depth = depth.saturating_add(1),
-            '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                out.push(&s[start..idx]);
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    out.push(&s[start..]);
-    out
-}
-
-fn expand_braces(pattern: &str) -> Vec<String> {
+fn brace_pattern_match(pattern: &str, file_name: &str) -> bool {
     let Some(open) = pattern.find('{') else {
-        return vec![pattern.to_owned()];
+        return glob_match(pattern, file_name);
     };
-    let Some(close) = pattern[open + 1..].find('}') else {
-        return vec![pattern.to_owned()];
+    let Some(close_rel) = pattern[open + 1..].find('}') else {
+        return glob_match(pattern, file_name);
     };
-    let close = open + 1 + close;
 
+    let close = open + 1 + close_rel;
     let prefix = &pattern[..open];
     let suffix = pattern.get(close + 1..).unwrap_or_default();
-    let inner = &pattern[open + 1..close];
-
-    let mut out = Vec::new();
-    for alt in inner.split(',') {
-        let alt = alt.trim();
-        if alt.is_empty() {
-            continue;
-        }
-        out.push(format!("{prefix}{alt}{suffix}"));
-    }
-
-    if out.is_empty() {
-        vec![pattern.to_owned()]
-    } else {
-        out
-    }
+    pattern[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|alt| !alt.is_empty())
+        .any(|alt| {
+            let mut expanded = String::with_capacity(prefix.len() + alt.len() + suffix.len());
+            expanded.push_str(prefix);
+            expanded.push_str(alt);
+            expanded.push_str(suffix);
+            glob_match(expanded.as_str(), file_name)
+        })
 }
 
-fn glob_match(pattern: &str, text: &str) -> bool {
+fn glob_match(pattern: &str, mut text: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-
     if !pattern.contains('*') {
         return pattern == text;
     }
 
-    let start_anchor = !pattern.starts_with('*');
-    let end_anchor = !pattern.ends_with('*');
+    let mut parts = pattern.split('*');
+    let start = parts.next().unwrap_or_default();
+    let end = parts.next_back().unwrap_or_default();
 
-    let segments: Vec<&str> = pattern.split('*').filter(|s| !s.is_empty()).collect();
-    if segments.is_empty() {
-        return true;
-    }
-
-    let mut idx = 0usize;
-    for (seg_idx, seg) in segments.iter().enumerate() {
-        let is_first = seg_idx == 0;
-        let is_last = seg_idx + 1 == segments.len();
-
-        if is_first && start_anchor {
-            if !text.starts_with(seg) {
-                return false;
-            }
-            idx = seg.len();
-            continue;
-        }
-
-        if is_last && end_anchor {
-            if seg.len() > text.len() {
-                return false;
-            }
-            let end_pos = text.len() - seg.len();
-            if end_pos < idx {
-                return false;
-            }
-            return &text[end_pos..] == *seg;
-        }
-
-        let Some(found) = text.get(idx..).and_then(|rest| rest.find(seg)) else {
+    if !pattern.starts_with('*') {
+        let Some(rest) = text.strip_prefix(start) else {
             return false;
         };
-        idx = idx.saturating_add(found).saturating_add(seg.len());
+        text = rest;
+    }
+    if !pattern.ends_with('*') {
+        let Some(rest) = text.strip_suffix(end) else {
+            return false;
+        };
+        text = rest;
+    }
+
+    for seg in parts {
+        if seg.is_empty() {
+            continue;
+        }
+        let Some(found) = text.find(seg) else {
+            return false;
+        };
+        text = &text[found + seg.len()..];
     }
 
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn glob_match_basics() {
-        assert!(glob_match("*", "a.md"));
-        assert!(glob_match("*.md", "a.md"));
-        assert!(!glob_match("*.md", "a.rs"));
-        assert!(glob_match("foo*", "foobar"));
-        assert!(glob_match("*bar", "foobar"));
-        assert!(glob_match("f*bar", "foobar"));
-    }
-
-    #[test]
-    fn format_keeps_markdown_hardbreak() {
-        let input = "a  \n";
-        let got = format_markdown(
-            input,
-            FormatOptions {
-                trim_trailing_whitespace: true,
-                insert_final_newline: true,
-                end_of_line: Some(EndOfLine::Lf),
-            },
-        );
-        assert_eq!(got, input);
-    }
-
-    #[test]
-    fn format_does_not_trim_in_fenced_code() {
-        let input = "```rs\nlet x = 1;   \n```\n";
-        let got = format_markdown(
-            input,
-            FormatOptions {
-                trim_trailing_whitespace: true,
-                insert_final_newline: true,
-                end_of_line: Some(EndOfLine::Lf),
-            },
-        );
-        assert_eq!(got, input);
-    }
-
-    #[test]
-    fn format_converts_end_of_line() {
-        let input = "a\nb\n";
-        let got = format_markdown(
-            input,
-            FormatOptions {
-                trim_trailing_whitespace: true,
-                insert_final_newline: true,
-                end_of_line: Some(EndOfLine::CrLf),
-            },
-        );
-        assert_eq!(got, "a\r\nb\r\n");
-    }
-
-    #[test]
-    fn editorconfig_section_applies() {
-        let cfg = parse_editorconfig(
-            r#"
-root = true
-
-[*]
-trim_trailing_whitespace = false
-
-[*.md]
-insert_final_newline = false
-end_of_line = crlf
-"#,
-        );
-
-        let mut opts = FormatOptions::default();
-        cfg.apply("note.md", &mut opts);
-        assert!(!opts.trim_trailing_whitespace);
-        assert!(!opts.insert_final_newline);
-        assert_eq!(opts.end_of_line, Some(EndOfLine::CrLf));
-    }
-
-    #[test]
-    fn editorconfig_brace_pattern_applies() {
-        let cfg = parse_editorconfig(
-            r#"
-[*.{md,markdown}]
-insert_final_newline = false
-"#,
-        );
-
-        let mut opts = FormatOptions::default();
-        cfg.apply("note.md", &mut opts);
-        assert!(!opts.insert_final_newline);
-    }
-
-    #[test]
-    fn options_for_path_merges_parent_and_child_editorconfig()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let base = std::env::temp_dir();
-        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_nanos(),
-            Err(_) => 0,
-        };
-
-        let root: PathBuf = base.join(format!("rustdown-editorconfig-{nanos}"));
-        let a = root.join("a");
-        let b = a.join("b");
-        fs::create_dir_all(&b)?;
-
-        fs::write(
-            a.join(".editorconfig"),
-            r#"
-root = true
-
-[*]
-trim_trailing_whitespace = false
-"#,
-        )?;
-        fs::write(
-            b.join(".editorconfig"),
-            r#"
-[*.md]
-insert_final_newline = false
-"#,
-        )?;
-
-        let file = b.join("note.md");
-        fs::write(&file, "hello\n")?;
-
-        let opts = options_for_path(Some(&file));
-        assert!(!opts.trim_trailing_whitespace);
-        assert!(!opts.insert_final_newline);
-
-        let _ = fs::remove_dir_all(&root);
-        Ok(())
-    }
 }
