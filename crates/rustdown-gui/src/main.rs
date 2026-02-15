@@ -104,7 +104,7 @@ impl Document {
     fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
-        (since < debounce).then_some(debounce - since)
+        (since < debounce).then(|| debounce - since)
     }
 }
 
