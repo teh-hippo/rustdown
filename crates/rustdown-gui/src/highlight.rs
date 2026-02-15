@@ -4,49 +4,20 @@ use eframe::egui;
 
 pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    job.text.reserve(source.len());
 
-    let base_font = ui
-        .style()
-        .text_styles
-        .get(&egui::TextStyle::Body)
-        .cloned()
-        .unwrap_or_else(|| egui::FontId::proportional(16.0));
+    let base_font = egui::TextStyle::Body.resolve(ui.style());
+    let code_font = egui::TextStyle::Monospace.resolve(ui.style());
 
-    let code_font = ui
-        .style()
-        .text_styles
-        .get(&egui::TextStyle::Monospace)
-        .cloned()
-        .unwrap_or_else(|| egui::FontId::monospace(base_font.size));
+    let base = egui::TextFormat::simple(base_font.clone(), ui.visuals().text_color());
+    let weak = egui::TextFormat::simple(base_font, ui.visuals().weak_text_color());
 
-    let base = egui::text::TextFormat {
-        font_id: base_font.clone(),
-        color: ui.visuals().text_color(),
-        ..Default::default()
-    };
+    let mut inline_code = base.clone();
+    inline_code.font_id = code_font;
+    inline_code.background = ui.visuals().faint_bg_color;
 
-    let weak = egui::text::TextFormat {
-        font_id: base_font.clone(),
-        color: ui.visuals().weak_text_color(),
-        ..Default::default()
-    };
-
-    let inline_code = egui::text::TextFormat {
-        font_id: code_font.clone(),
-        color: ui.visuals().text_color(),
-        background: ui.visuals().faint_bg_color,
-        ..Default::default()
-    };
-
-    let heading = egui::text::TextFormat {
-        font_id: egui::FontId {
-            size: base_font.size * 1.05,
-            family: base_font.family.clone(),
-        },
-        color: ui.visuals().hyperlink_color,
-        ..Default::default()
-    };
+    let mut heading = base.clone();
+    heading.font_id.size *= 1.05;
+    heading.color = ui.visuals().hyperlink_color;
 
     let mut in_fence = false;
     for line in source.split_inclusive('\n') {
@@ -56,29 +27,16 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
             job.append(line, 0.0, weak.clone());
             continue;
         }
-
         if in_fence {
             job.append(line, 0.0, inline_code.clone());
             continue;
         }
 
-        if let Some(level) = heading_level(trimmed) {
-            let ws_len = line.len().saturating_sub(trimmed.len());
-            if ws_len > 0 {
-                job.append(&line[..ws_len], 0.0, base.clone());
-            }
-
-            let hashes_len = trimmed
-                .bytes()
-                .take_while(|b| *b == b'#')
-                .count()
-                .min(trimmed.len());
-            job.append(&trimmed[..hashes_len], 0.0, weak.clone());
-
-            let rest = &trimmed[hashes_len..];
+        let level = trimmed.bytes().take_while(|b| *b == b'#').count();
+        if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
             let mut heading_format = heading.clone();
             heading_format.font_id.size *= 1.0 + (6 - level) as f32 * 0.02;
-            job.append(rest, 0.0, heading_format);
+            job.append(line, 0.0, heading_format);
             continue;
         }
 
@@ -88,24 +46,12 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
     job
 }
 
-fn heading_level(line: &str) -> Option<u8> {
-    let hashes = line.bytes().take_while(|b| *b == b'#').count();
-    if hashes == 0 || hashes > 6 {
-        return None;
-    }
-
-    line.as_bytes()
-        .get(hashes)
-        .is_some_and(|b| *b == b' ')
-        .then_some(hashes as u8)
-}
-
 fn append_inline_code(
     job: &mut egui::text::LayoutJob,
     line: &str,
-    base: &egui::text::TextFormat,
-    weak: &egui::text::TextFormat,
-    inline_code: &egui::text::TextFormat,
+    base: &egui::TextFormat,
+    weak: &egui::TextFormat,
+    inline_code: &egui::TextFormat,
 ) {
     let mut rest = line;
     while let Some(start) = rest.find('`') {

@@ -19,61 +19,22 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 mod format;
 mod highlight;
 
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const EDITOR_HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(150);
-const SIDEBAR_LIVE_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
-const TEXT_SHRINK_IDLE: Duration = Duration::from_secs(2);
+const DEBOUNCE: Duration = Duration::from_millis(150);
 
 fn main() -> eframe::Result {
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let app = RustdownApp::from_paths(paths);
 
     let options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "rustdown",
-        options,
-        Box::new(move |cc| {
-            configure_ui(&cc.egui_ctx);
-            Ok(Box::new(app))
-        }),
-    )
-}
-
-fn configure_ui(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    for (style_key, size, family) in [
-        (egui::TextStyle::Body, 16.0, egui::FontFamily::Proportional),
-        (
-            egui::TextStyle::Button,
-            16.0,
-            egui::FontFamily::Proportional,
-        ),
-        (
-            egui::TextStyle::Heading,
-            20.0,
-            egui::FontFamily::Proportional,
-        ),
-        (
-            egui::TextStyle::Monospace,
-            15.0,
-            egui::FontFamily::Monospace,
-        ),
-        (egui::TextStyle::Small, 13.0, egui::FontFamily::Proportional),
-    ] {
-        style
-            .text_styles
-            .insert(style_key, egui::FontId::new(size, family));
-    }
-    ctx.set_style(style);
+    eframe::run_native("rustdown", options, Box::new(move |_cc| Ok(Box::new(app))))
 }
 
 struct RustdownApp {
     doc: Document,
     mode: Mode,
     error: Option<String>,
-    dialog: Option<Dialog>,
+    unsaved_dialog: bool,
     pending_action: Option<PendingAction>,
-    needs_title_update: bool,
 }
 
 impl Default for RustdownApp {
@@ -82,9 +43,8 @@ impl Default for RustdownApp {
             doc: Document::blank(),
             mode: Mode::Edit,
             error: None,
-            dialog: None,
+            unsaved_dialog: false,
             pending_action: None,
-            needs_title_update: true,
         }
     }
 }
@@ -96,10 +56,7 @@ struct Document {
     text: String,
     dirty: bool,
     md_cache: CommonMarkCache,
-    edit_revision: u64,
-    md_cache_revision: u64,
     last_edit_at: Option<Instant>,
-    highlight_cache: Option<HighlightCache>,
 }
 
 impl Document {
@@ -111,10 +68,7 @@ impl Document {
             text: String::new(),
             dirty: false,
             md_cache: CommonMarkCache::default(),
-            edit_revision: 0,
-            md_cache_revision: 0,
             last_edit_at: None,
-            highlight_cache: None,
         }
     }
 
@@ -133,10 +87,7 @@ impl Document {
             text,
             dirty: false,
             md_cache: CommonMarkCache::default(),
-            edit_revision: 0,
-            md_cache_revision: 0,
             last_edit_at: None,
-            highlight_cache: None,
         }
     }
 
@@ -153,34 +104,8 @@ impl Document {
     fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
-        if since < debounce {
-            Some(debounce - since)
-        } else {
-            None
-        }
+        (since < debounce).then_some(debounce - since)
     }
-
-    fn maybe_shrink_text_after_idle(&mut self, idle: Duration) {
-        let Some(last_edit_at) = self.last_edit_at else {
-            return;
-        };
-        if last_edit_at.elapsed() < idle {
-            return;
-        }
-
-        let len = self.text.len();
-        let cap = self.text.capacity();
-        if cap > 1024 * 1024 && cap > len.saturating_mul(4) {
-            self.text.shrink_to_fit();
-        }
-    }
-}
-
-struct HighlightCache {
-    revision: u64,
-    wrap_width_bits: u32,
-    text_len: usize,
-    galley: std::sync::Arc<egui::Galley>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,25 +117,12 @@ enum Mode {
 
 impl Mode {
     fn cycle(self) -> Self {
-        match self {
-            Mode::Edit => Mode::Preview,
-            Mode::Preview => Mode::SideBySide,
-            Mode::SideBySide => Mode::Edit,
-        }
+        [Mode::Preview, Mode::SideBySide, Mode::Edit][self as usize]
     }
 
     fn label(self) -> &'static str {
-        match self {
-            Mode::Edit => "Edit",
-            Mode::Preview => "Preview",
-            Mode::SideBySide => "Side-by-side",
-        }
+        ["Edit", "Preview", "Side-by-side"][self as usize]
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Dialog {
-    UnsavedChanges,
 }
 
 #[derive(Clone, Debug)]
@@ -219,16 +131,9 @@ enum PendingAction {
     Open(PathBuf),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SaveResult {
-    Saved,
-    Cancelled,
-    Failed,
-}
-
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dialog_open = self.dialog.is_some();
+        let dialog_open = self.unsaved_dialog;
         let (open, save, save_as, new_doc, cycle_mode, format_doc) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
@@ -245,17 +150,14 @@ impl eframe::App for RustdownApp {
             if open {
                 self.open_file();
             }
-            if save_as {
-                let _ = self.save_doc(true);
-            } else if save {
-                let _ = self.save_doc(false);
+            if save_as || save {
+                let _ = self.save_doc(save_as);
             }
             if new_doc {
                 self.request_action(PendingAction::NewBlank);
             }
             if cycle_mode {
-                let next = self.mode.cycle();
-                self.set_mode(next);
+                self.set_mode(self.mode.cycle());
             }
             if format_doc {
                 self.format_document();
@@ -266,17 +168,13 @@ impl eframe::App for RustdownApp {
             let mut clear_error = false;
 
             ui.horizontal(|ui| {
-                let mut mode_selected = None;
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
                     if ui
                         .selectable_label(self.mode == mode, mode.label())
                         .clicked()
                     {
-                        mode_selected = Some(mode);
+                        self.set_mode(mode);
                     }
-                }
-                if let Some(mode) = mode_selected {
-                    self.set_mode(mode);
                 }
 
                 ui.separator();
@@ -303,25 +201,20 @@ impl eframe::App for RustdownApp {
             }
         });
 
+        let panel_frame = egui::Frame::none()
+            .fill(ctx.style().visuals.panel_fill)
+            .inner_margin(egui::Margin::same(0.0));
         if self.mode == Mode::SideBySide {
             egui::SidePanel::right("preview")
                 .resizable(true)
                 .min_width(240.0)
                 .default_width(420.0)
-                .frame(
-                    egui::Frame::none()
-                        .fill(ctx.style().visuals.panel_fill)
-                        .inner_margin(egui::Margin::same(0.0)),
-                )
+                .frame(panel_frame)
                 .show(ctx, |ui| self.show_preview(ui));
         }
 
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::none()
-                    .fill(ctx.style().visuals.panel_fill)
-                    .inner_margin(egui::Margin::same(0.0)),
-            )
+            .frame(panel_frame)
             .show(ctx, |ui| match self.mode {
                 Mode::Edit | Mode::SideBySide => self.show_editor(ui),
                 Mode::Preview => self.show_preview(ui),
@@ -347,46 +240,31 @@ impl RustdownApp {
         }
 
         self.mode = mode;
-        self.needs_title_update = true;
 
         if mode == Mode::Edit {
             self.doc.md_cache.clear_scrollable();
-            self.doc.md_cache_revision = self.doc.edit_revision;
             self.doc.last_edit_at = None;
-        } else if mode == Mode::Preview {
-            self.doc.highlight_cache = None;
         }
     }
 
-    fn update_viewport_title(&mut self, ctx: &egui::Context) {
-        if !self.needs_title_update {
-            return;
-        }
-
-        let mut title = String::with_capacity("rustdown — ".len() + self.doc.title.len() + 32);
-        title.push_str("rustdown — ");
-        title.push_str(&self.doc.title);
-        if self.doc.dirty {
-            title.push('*');
-        }
-        match self.mode {
-            Mode::Edit => {}
-            Mode::Preview => title.push_str(" (Preview)"),
-            Mode::SideBySide => title.push_str(" (Side-by-side)"),
-        }
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-        self.needs_title_update = false;
+    fn update_viewport_title(&self, ctx: &egui::Context) {
+        let mode = match self.mode {
+            Mode::Preview => " (Preview)",
+            Mode::SideBySide => " (Side-by-side)",
+            Mode::Edit => "",
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+            "rustdown — {}{}{}",
+            self.doc.title,
+            if self.doc.dirty { "*" } else { "" },
+            mode
+        )));
     }
 
     fn note_text_changed(&mut self) {
-        if !self.doc.dirty {
-            self.needs_title_update = true;
-        }
         self.doc.dirty = true;
-        self.doc.edit_revision = self.doc.edit_revision.wrapping_add(1);
         self.doc.last_edit_at = Some(Instant::now());
-        self.doc.highlight_cache = None;
+        self.doc.md_cache.clear_scrollable();
     }
 
     fn format_document(&mut self) {
@@ -398,25 +276,16 @@ impl RustdownApp {
 
         self.doc.text = formatted;
         self.note_text_changed();
-        self.doc.md_cache.clear_scrollable();
-        self.doc.md_cache_revision = self.doc.edit_revision;
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
         let mut highlight = true;
-        if let Some(remaining) = self.doc.debounce_remaining(EDITOR_HIGHLIGHT_DEBOUNCE) {
+        if let Some(remaining) = self.doc.debounce_remaining(DEBOUNCE) {
             highlight = false;
             ui.ctx().request_repaint_after(remaining);
-        } else {
-            self.doc.maybe_shrink_text_after_idle(TEXT_SHRINK_IDLE);
         }
 
-        let revision = self.doc.edit_revision;
-        let Document {
-            text,
-            highlight_cache,
-            ..
-        } = &mut self.doc;
+        let Document { text, .. } = &mut self.doc;
 
         let editor = egui::TextEdit::multiline(text)
             .desired_width(f32::INFINITY)
@@ -426,26 +295,9 @@ impl RustdownApp {
 
         let response = if highlight {
             let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-                let wrap_width_bits = wrap_width.to_bits();
-                let text_len = string.len();
-                if let Some(cache) = highlight_cache.as_ref()
-                    && cache.revision == revision
-                    && cache.wrap_width_bits == wrap_width_bits
-                    && cache.text_len == text_len
-                {
-                    return cache.galley.clone();
-                }
-
                 let mut job = highlight::markdown_layout_job(ui, string);
                 job.wrap.max_width = wrap_width;
-                let galley = ui.fonts(|fonts| fonts.layout_job(job));
-                *highlight_cache = Some(HighlightCache {
-                    revision,
-                    wrap_width_bits,
-                    text_len,
-                    galley: galley.clone(),
-                });
-                galley
+                ui.fonts(|fonts| fonts.layout_job(job))
             };
 
             ui.add_sized(ui.available_size(), editor.layouter(&mut layouter))
@@ -459,21 +311,11 @@ impl RustdownApp {
     }
 
     fn show_preview(&mut self, ui: &mut egui::Ui) {
-        let side_by_side = self.mode == Mode::SideBySide;
-
-        if side_by_side
-            && let Some(remaining) = self.doc.debounce_remaining(SIDEBAR_LIVE_PREVIEW_DEBOUNCE)
+        if self.mode == Mode::SideBySide
+            && let Some(remaining) = self.doc.debounce_remaining(DEBOUNCE)
         {
             ui.ctx().request_repaint_after(remaining);
-            ui.centered_and_justified(|ui| {
-                ui.label("Preview paused while typing…");
-            });
             return;
-        }
-
-        if self.doc.md_cache_revision != self.doc.edit_revision {
-            self.doc.md_cache.clear_scrollable();
-            self.doc.md_cache_revision = self.doc.edit_revision;
         }
 
         egui::ScrollArea::vertical()
@@ -486,7 +328,7 @@ impl RustdownApp {
     fn request_action(&mut self, action: PendingAction) {
         if self.doc.dirty {
             self.pending_action = Some(action);
-            self.dialog = Some(Dialog::UnsavedChanges);
+            self.unsaved_dialog = true;
         } else {
             self.apply_action(action);
         }
@@ -497,7 +339,6 @@ impl RustdownApp {
             PendingAction::NewBlank => {
                 self.doc = Document::blank();
                 self.error = None;
-                self.needs_title_update = true;
             }
             PendingAction::Open(path) => self.open_path(path),
         }
@@ -515,24 +356,10 @@ impl RustdownApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
-        let path = fs::canonicalize(&path).unwrap_or(path);
-
-        if let Ok(meta) = fs::metadata(&path)
-            && meta.len() > MAX_FILE_BYTES
-        {
-            self.error = Some(format!(
-                "Refusing to open {} ({} MiB) — too large",
-                path.display(),
-                meta.len() / (1024 * 1024)
-            ));
-            return;
-        }
-
         match fs::read_to_string(&path) {
             Ok(text) => {
                 self.doc = Document::from_loaded_file(path, text);
                 self.error = None;
-                self.needs_title_update = true;
             }
             Err(err) => {
                 self.error.get_or_insert(format!("Open failed: {err}"));
@@ -540,7 +367,7 @@ impl RustdownApp {
         }
     }
 
-    fn save_doc(&mut self, save_as: bool) -> SaveResult {
+    fn save_doc(&mut self, save_as: bool) -> bool {
         let chosen = if save_as { None } else { self.doc.path.clone() };
         let path = match chosen {
             Some(path) => path,
@@ -549,7 +376,7 @@ impl RustdownApp {
                     .add_filter("Markdown", &["md", "markdown"])
                     .save_file()
                 else {
-                    return SaveResult::Cancelled;
+                    return false;
                 };
                 path
             }
@@ -557,34 +384,27 @@ impl RustdownApp {
 
         match fs::write(&path, &self.doc.text) {
             Ok(()) => {
-                let path = fs::canonicalize(&path).unwrap_or(path);
                 self.doc.set_saved_path(path);
                 self.doc.dirty = false;
-                self.needs_title_update = true;
-
-                let len = self.doc.text.len();
-                if self.doc.text.capacity() > len.saturating_mul(2) {
-                    self.doc.text.shrink_to_fit();
-                }
 
                 self.error = None;
-                SaveResult::Saved
+                true
             }
             Err(err) => {
                 self.error = Some(format!("Save failed: {err}"));
-                SaveResult::Failed
+                false
             }
         }
     }
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
-        let Some(Dialog::UnsavedChanges) = self.dialog else {
+        if !self.unsaved_dialog {
             return;
-        };
+        }
 
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if escape {
-            self.dialog = None;
+            self.unsaved_dialog = false;
             self.pending_action = None;
             return;
         }
@@ -600,22 +420,22 @@ impl RustdownApp {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() && self.save_doc(false) == SaveResult::Saved {
+                    if ui.button("Save").clicked() && self.save_doc(false) {
                         if let Some(action) = self.pending_action.take() {
                             self.apply_action(action);
                         }
-                        self.dialog = None;
+                        self.unsaved_dialog = false;
                     }
 
                     if ui.button("Discard").clicked() {
                         if let Some(action) = self.pending_action.take() {
                             self.apply_action(action);
                         }
-                        self.dialog = None;
+                        self.unsaved_dialog = false;
                     }
 
                     if ui.button("Cancel").clicked() {
-                        self.dialog = None;
+                        self.unsaved_dialog = false;
                         self.pending_action = None;
                     }
                 });
