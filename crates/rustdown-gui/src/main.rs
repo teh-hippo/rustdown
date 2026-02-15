@@ -8,6 +8,7 @@
 compile_error!("rustdown is a native desktop app; web/wasm builds are not supported.");
 
 use std::{
+    borrow::Cow,
     ffi::OsString,
     fs,
     path::PathBuf,
@@ -76,26 +77,23 @@ struct RustdownApp {
     doc: Document,
     mode: Mode,
     error: Option<String>,
-    unsaved_dialog: bool,
     pending_action: Option<PendingAction>,
 }
 
 impl Default for RustdownApp {
     fn default() -> Self {
         Self {
-            doc: Document::blank(),
+            doc: Document::default(),
             mode: Mode::Edit,
             error: None,
-            unsaved_dialog: false,
             pending_action: None,
         }
     }
 }
 
+#[derive(Default)]
 struct Document {
-    title: String,
     path: Option<PathBuf>,
-    path_label: String,
     text: String,
     dirty: bool,
     md_cache: CommonMarkCache,
@@ -103,51 +101,23 @@ struct Document {
 }
 
 impl Document {
-    fn blank() -> Self {
-        Self {
-            title: "Untitled".to_owned(),
-            path: None,
-            path_label: "Unsaved".to_owned(),
-            text: String::new(),
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-        }
-    }
-
-    fn from_loaded_file(path: PathBuf, text: String) -> Self {
-        let title = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_owned();
-        let path_label = path.display().to_string();
-
-        Self {
-            title,
-            path: Some(path),
-            path_label,
-            text,
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-        }
-    }
-
-    fn set_saved_path(&mut self, path: PathBuf) {
-        self.title = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_owned();
-        self.path_label = path.display().to_string();
-        self.path = Some(path);
-    }
-
     fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
         (since < debounce).then(|| debounce - since)
+    }
+
+    fn title(&self) -> Cow<'_, str> {
+        self.path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map_or_else(|| Cow::Borrowed("Untitled"), |name| name.to_string_lossy())
+    }
+
+    fn path_label(&self) -> Cow<'_, str> {
+        self.path
+            .as_ref()
+            .map_or_else(|| Cow::Borrowed("Unsaved"), |path| path.to_string_lossy())
     }
 }
 
@@ -176,7 +146,7 @@ enum PendingAction {
 
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dialog_open = self.unsaved_dialog;
+        let dialog_open = self.pending_action.is_some();
         let (open, save, save_as, new_doc, cycle_mode, format_doc, zoom_in, zoom_out) =
             ctx.input(|i| {
                 let cmd = i.modifiers.command;
@@ -231,7 +201,7 @@ impl eframe::App for RustdownApp {
 
                 ui.separator();
 
-                ui.label(self.doc.path_label.as_str());
+                ui.label(self.doc.path_label());
 
                 if self.doc.dirty {
                     ui.separator();
@@ -313,7 +283,7 @@ impl RustdownApp {
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
             "rustdown — {}{}{}",
-            self.doc.title,
+            self.doc.title(),
             if self.doc.dirty { "*" } else { "" },
             mode
         )));
@@ -376,7 +346,6 @@ impl RustdownApp {
     fn request_action(&mut self, action: PendingAction) {
         if self.doc.dirty {
             self.pending_action = Some(action);
-            self.unsaved_dialog = true;
         } else {
             self.apply_action(action);
         }
@@ -385,10 +354,16 @@ impl RustdownApp {
     fn apply_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewBlank => {
-                self.doc = Document::blank();
+                self.doc = Document::default();
                 self.error = None;
             }
             PendingAction::Open(path) => self.open_path(path),
+        }
+    }
+
+    fn apply_pending_action_and_close_dialog(&mut self) {
+        if let Some(action) = self.pending_action.take() {
+            self.apply_action(action);
         }
     }
 
@@ -406,7 +381,13 @@ impl RustdownApp {
     fn open_path(&mut self, path: PathBuf) {
         match fs::read_to_string(&path) {
             Ok(text) => {
-                self.doc = Document::from_loaded_file(path, text);
+                self.doc = Document {
+                    path: Some(path),
+                    text,
+                    dirty: false,
+                    md_cache: CommonMarkCache::default(),
+                    last_edit_at: None,
+                };
                 self.error = None;
             }
             Err(err) => {
@@ -432,7 +413,7 @@ impl RustdownApp {
 
         match fs::write(&path, &self.doc.text) {
             Ok(()) => {
-                self.doc.set_saved_path(path);
+                self.doc.path = Some(path);
                 self.doc.dirty = false;
 
                 self.error = None;
@@ -446,44 +427,34 @@ impl RustdownApp {
     }
 
     fn show_dialogs(&mut self, ctx: &egui::Context) {
-        if !self.unsaved_dialog {
+        if self.pending_action.is_none() {
             return;
         }
 
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if escape {
-            self.unsaved_dialog = false;
             self.pending_action = None;
             return;
         }
-
-        let title = self.doc.title.clone();
 
         egui::Window::new("Unsaved changes")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!("\"{title}\" has unsaved changes."));
+                ui.label(format!("\"{}\" has unsaved changes.", self.doc.title()));
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() && self.save_doc(false) {
-                        if let Some(action) = self.pending_action.take() {
-                            self.apply_action(action);
-                        }
-                        self.unsaved_dialog = false;
+                        self.apply_pending_action_and_close_dialog();
                     }
 
                     if ui.button("Discard").clicked() {
-                        if let Some(action) = self.pending_action.take() {
-                            self.apply_action(action);
-                        }
-                        self.unsaved_dialog = false;
+                        self.apply_pending_action_and_close_dialog();
                     }
 
                     if ui.button("Cancel").clicked() {
-                        self.unsaved_dialog = false;
                         self.pending_action = None;
                     }
                 });
@@ -500,37 +471,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_launch_options_defaults_to_edit_mode() {
-        let options = parse(&[]);
-        assert_eq!(options.mode, Mode::Edit);
-        assert_eq!(options.path, None);
-    }
+    fn parse_launch_options_parses_modes_and_paths() {
+        let cases = [
+            (&[][..], Mode::Edit, None),
+            (&["-p"][..], Mode::Preview, None),
+            (&["-s"][..], Mode::SideBySide, None),
+            (
+                &["README.md", "OTHER.md"][..],
+                Mode::Edit,
+                Some("README.md"),
+            ),
+            (&["-p", "README.md"][..], Mode::Preview, Some("README.md")),
+        ];
 
-    #[test]
-    fn parse_launch_options_preview_flag_sets_preview_mode() {
-        let options = parse(&["-p"]);
-        assert_eq!(options.mode, Mode::Preview);
-        assert_eq!(options.path, None);
-    }
-
-    #[test]
-    fn parse_launch_options_side_by_side_flag_sets_side_by_side_mode() {
-        let options = parse(&["-s"]);
-        assert_eq!(options.mode, Mode::SideBySide);
-        assert_eq!(options.path, None);
-    }
-
-    #[test]
-    fn parse_launch_options_keeps_first_positional_file() {
-        let options = parse(&["README.md", "OTHER.md"]);
-        assert_eq!(options.mode, Mode::Edit);
-        assert_eq!(options.path, Some(PathBuf::from("README.md")));
-    }
-
-    #[test]
-    fn parse_launch_options_combines_mode_flag_and_file() {
-        let options = parse(&["-p", "README.md"]);
-        assert_eq!(options.mode, Mode::Preview);
-        assert_eq!(options.path, Some(PathBuf::from("README.md")));
+        for (args, mode, path) in cases {
+            let options = parse(args);
+            assert_eq!(options.mode, mode);
+            assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
+        }
     }
 }

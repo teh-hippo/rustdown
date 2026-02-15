@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::{fs, path::Path};
+use std::{borrow::Cow, fs, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EndOfLine {
@@ -14,8 +14,6 @@ pub(crate) struct FormatOptions {
     pub(crate) insert_final_newline: bool,
     pub(crate) end_of_line: Option<EndOfLine>,
 }
-
-type Overrides = (bool, Option<bool>, Option<bool>, Option<EndOfLine>);
 
 const DEFAULT_OPTIONS: FormatOptions = FormatOptions {
     trim_trailing_whitespace: true,
@@ -31,9 +29,9 @@ pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
         None => "\n",
     };
     let normalized = if source.contains('\r') {
-        source.replace("\r\n", "\n").replace('\r', "\n")
+        Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
-        source.to_owned()
+        Cow::Borrowed(source)
     };
     let mut out = String::with_capacity(normalized.len() + 2);
     let mut in_fence = false;
@@ -78,11 +76,11 @@ pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
     let (mut trim, mut insert, mut eol) = (None, None, None);
     loop {
         if let Ok(contents) = fs::read_to_string(dir.join(".editorconfig")) {
-            let (root, t, i, l) = editorconfig_overrides(contents.as_str(), file);
-            trim = trim.or(t);
-            insert = insert.or(i);
-            eol = eol.or(l);
-            if root {
+            let overrides = editorconfig_overrides(contents.as_str(), file);
+            trim = trim.or(overrides.trim);
+            insert = insert.or(overrides.insert);
+            eol = eol.or(overrides.eol);
+            if overrides.root {
                 break;
             }
         }
@@ -102,11 +100,17 @@ pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
     opts
 }
 
-fn editorconfig_overrides(contents: &str, file: &str) -> Overrides {
-    let mut root = false;
-    let mut section_matches = false;
-    let (mut trim, mut insert, mut eol) = (None, None, None);
+#[derive(Default)]
+struct Overrides {
+    root: bool,
+    trim: Option<bool>,
+    insert: Option<bool>,
+    eol: Option<EndOfLine>,
+}
 
+fn editorconfig_overrides(contents: &str, file: &str) -> Overrides {
+    let mut overrides = Overrides::default();
+    let mut section_matches = false;
     for line in contents.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
@@ -115,65 +119,66 @@ fn editorconfig_overrides(contents: &str, file: &str) -> Overrides {
             section_matches = section_match(pat, file);
             continue;
         }
-
         let Some((key, value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
-
         if key.eq_ignore_ascii_case("root") {
-            root = value.eq_ignore_ascii_case("true");
+            overrides.root = value.eq_ignore_ascii_case("true");
             continue;
         }
         if !section_matches {
             continue;
         }
-
-        let b = value
-            .eq_ignore_ascii_case("true")
-            .then_some(true)
-            .or_else(|| value.eq_ignore_ascii_case("false").then_some(false));
-
-        if key.eq_ignore_ascii_case("trim_trailing_whitespace") {
-            trim = b;
-        } else if key.eq_ignore_ascii_case("insert_final_newline") {
-            insert = b;
-        } else if key.eq_ignore_ascii_case("end_of_line") {
-            eol = value
-                .eq_ignore_ascii_case("lf")
-                .then_some(EndOfLine::Lf)
-                .or_else(|| {
-                    value
-                        .eq_ignore_ascii_case("crlf")
-                        .then_some(EndOfLine::CrLf)
-                });
-        }
+        match key {
+            key if key.eq_ignore_ascii_case("trim_trailing_whitespace") => {
+                overrides.trim = parse_bool(value)
+            }
+            key if key.eq_ignore_ascii_case("insert_final_newline") => {
+                overrides.insert = parse_bool(value)
+            }
+            key if key.eq_ignore_ascii_case("end_of_line") => overrides.eol = parse_eol(value),
+            _ => {}
+        };
     }
+    overrides
+}
 
-    (root, trim, insert, eol)
+fn parse_bool(value: &str) -> Option<bool> {
+    value
+        .eq_ignore_ascii_case("true")
+        .then_some(true)
+        .or_else(|| value.eq_ignore_ascii_case("false").then_some(false))
+}
+
+fn parse_eol(value: &str) -> Option<EndOfLine> {
+    value
+        .eq_ignore_ascii_case("lf")
+        .then_some(EndOfLine::Lf)
+        .or_else(|| {
+            value
+                .eq_ignore_ascii_case("crlf")
+                .then_some(EndOfLine::CrLf)
+        })
 }
 
 fn section_match(pattern: &str, file: &str) -> bool {
     let pattern = pattern.trim();
-    if pattern == "*.{md,markdown}" {
-        file.ends_with(".md") || file.ends_with(".markdown")
-    } else {
-        glob_match(pattern, file)
-    }
+    pattern == "*.{md,markdown}" && (file.ends_with(".md") || file.ends_with(".markdown"))
+        || glob_match(pattern, file)
 }
 
-fn glob_match(pattern: &str, mut text: &str) -> bool {
-    if pattern == "*" {
+fn glob_match(pattern: &str, text: &str) -> bool {
+    if pattern == "*" || pattern == text {
         return true;
     }
     if !pattern.contains('*') {
-        return pattern == text;
+        return false;
     }
-
+    let mut text = text;
     let mut parts = pattern.split('*');
     let start = parts.next().unwrap_or_default();
     let end = parts.next_back().unwrap_or_default();
-
     if !pattern.starts_with('*') {
         let Some(rest) = text.strip_prefix(start) else {
             return false;
@@ -186,16 +191,9 @@ fn glob_match(pattern: &str, mut text: &str) -> bool {
         };
         text = rest;
     }
-
-    for seg in parts {
-        if seg.is_empty() {
-            continue;
-        }
-        let Some(found) = text.find(seg) else {
-            return false;
-        };
-        text = &text[found + seg.len()..];
-    }
-
-    true
+    parts.filter(|part| !part.is_empty()).all(|part| {
+        text.find(part)
+            .map(|i| text = &text[i + part.len()..])
+            .is_some()
+    })
 }
