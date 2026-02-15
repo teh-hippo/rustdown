@@ -148,22 +148,16 @@ fn load_single_font() -> Result<Vec<u8>, String> {
     ))
 }
 
+fn markdown_file_dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"])
+}
+
+#[derive(Default)]
 struct RustdownApp {
     doc: Document,
     mode: Mode,
     error: Option<String>,
     pending_action: Option<PendingAction>,
-}
-
-impl Default for RustdownApp {
-    fn default() -> Self {
-        Self {
-            doc: Document::default(),
-            mode: Mode::Edit,
-            error: None,
-            pending_action: None,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -196,8 +190,9 @@ impl Document {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
+    #[default]
     Edit,
     Preview,
     SideBySide,
@@ -443,13 +438,9 @@ impl RustdownApp {
     }
 
     fn open_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Markdown", &["md", "markdown"])
-            .pick_file()
-        else {
+        let Some(path) = markdown_file_dialog().pick_file() else {
             return;
         };
-
         self.request_action(PendingAction::Open(path));
     }
 
@@ -472,20 +463,11 @@ impl RustdownApp {
     }
 
     fn save_doc(&mut self, save_as: bool) -> bool {
-        let chosen = if save_as { None } else { self.doc.path.clone() };
-        let path = match chosen {
-            Some(path) => path,
-            None => {
-                let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Markdown", &["md", "markdown"])
-                    .save_file()
-                else {
-                    return false;
-                };
-                path
-            }
+        let Some(path) = (if save_as { None } else { self.doc.path.clone() })
+            .or_else(|| markdown_file_dialog().save_file())
+        else {
+            return false;
         };
-
         match fs::write(&path, &self.doc.text) {
             Ok(()) => {
                 self.doc.path = Some(path);
