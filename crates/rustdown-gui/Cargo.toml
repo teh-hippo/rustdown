@@ -1,5 +1,5 @@
 [package]
-name = "rustdown-gui"
+name = "rustdown"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,4 +19,3 @@ eframe = { version = "0.30", default-features = false, features = [
 ] }
 egui_commonmark = { version = "0.19.0", default-features = false, features = ["pulldown_cmark"] }
 rfd = "0.15"
-rustdown-core = { path = "../rustdown-core" }

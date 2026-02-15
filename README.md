@@ -4,33 +4,29 @@ A highly performant, minimalist Markdown editor written in Rust with a **native 
 
 ## Status
 Early, but functional:
-- Native GUI editor with tabs, edit/preview toggle, native markdown preview (lists/task lists/quotes/tables/code/strike), lightweight syntax highlighting, and Open/Save/Save As/Save All + confirm-close.
-- CLI `preview` mode (plain-text rendering).
+- Native GUI editor with Edit/Preview/Side-by-side modes, native markdown preview (lists/task lists/quotes/tables/code/strike), lightweight syntax highlighting, and Open/Save/Save As + unsaved-changes confirmation.
 
 ## Quickstart
 
 GUI:
 ```bash
-cargo run -p rustdown-gui
+cargo run -p rustdown
 ```
 
 Open a file directly:
 ```bash
-cargo run -p rustdown-gui -- README.md
+cargo run -p rustdown -- README.md
 ```
 
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+O: Open…
 - Cmd/Ctrl+S: Save
 - Cmd/Ctrl+Shift+S: Save As…
-- Cmd/Ctrl+N: New tab
-- Cmd/Ctrl+W: Close tab
-- Cmd/Ctrl+Enter: Toggle Edit/Preview
+- Cmd/Ctrl+N: New document
+- Cmd/Ctrl+Shift+F: Format document
+- Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
+ 
+Tip: the mode indicator in the bottom bar is clickable.
 
-Tip: right-click a tab for Save/Close options.
-Tip: use the "Save All" button before closing lots of tabs.
-
-CLI preview:
-```bash
-cargo run -p rustdown-cli -- preview README.md
-```
+Formatting is intentionally simple; if a `.editorconfig` file is present, rustdown will use a small subset:
+`trim_trailing_whitespace`, `insert_final_newline`, and `end_of_line` (lf/crlf).

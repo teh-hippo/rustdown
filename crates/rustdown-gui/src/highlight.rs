@@ -4,13 +4,21 @@ use eframe::egui;
 
 pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
+    job.text.reserve(source.len());
 
     let base_font = ui
         .style()
         .text_styles
+        .get(&egui::TextStyle::Body)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(16.0));
+
+    let code_font = ui
+        .style()
+        .text_styles
         .get(&egui::TextStyle::Monospace)
         .cloned()
-        .unwrap_or_else(|| egui::FontId::monospace(14.0));
+        .unwrap_or_else(|| egui::FontId::monospace(base_font.size));
 
     let base = egui::text::TextFormat {
         font_id: base_font.clone(),
@@ -25,7 +33,7 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
     };
 
     let inline_code = egui::text::TextFormat {
-        font_id: base_font.clone(),
+        font_id: code_font.clone(),
         color: ui.visuals().text_color(),
         background: ui.visuals().faint_bg_color,
         ..Default::default()
@@ -130,6 +138,7 @@ fn append_inline_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn joined_text(job: &egui::text::LayoutJob) -> String {
         let mut out = String::new();
@@ -163,5 +172,47 @@ mod tests {
         let fmt = egui::text::TextFormat::default();
         append_inline_code(&mut job, "a `b c\n", &fmt, &fmt, &fmt);
         assert_eq!(joined_text(&job), "a `b c\n");
+    }
+
+    #[test]
+    #[ignore]
+    fn perf_highlight_layout_job() {
+        let ctx = egui::Context::default();
+        let iters = 10u32;
+
+        let chunk = "# Heading\nSome text with `inline code` and **bold**.\n\n- item a\n- item b\n\n```rs\nlet x = 1;   \n```\n\n";
+        for target_bytes in [32 * 1024usize, 96 * 1024, 160 * 1024] {
+            let mut source = String::with_capacity(target_bytes + chunk.len());
+            while source.len() < target_bytes {
+                source.push_str(chunk);
+            }
+
+            let mut total_job = Duration::ZERO;
+            let mut total_layout = Duration::ZERO;
+
+            for _ in 0..iters {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let t0 = Instant::now();
+                        let mut job = markdown_layout_job(ui, &source);
+                        job.wrap.max_width = 700.0;
+                        total_job += t0.elapsed();
+
+                        let t1 = Instant::now();
+                        ui.fonts(|fonts| {
+                            let _ = fonts.layout_job(job);
+                        });
+                        total_layout += t1.elapsed();
+                    });
+                });
+            }
+
+            eprintln!(
+                "highlight: bytes={} job_avg={:?} layout_avg={:?}",
+                source.len(),
+                total_job / iters,
+                total_layout / iters
+            );
+        }
     }
 }

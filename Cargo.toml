@@ -1,8 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/rustdown-core",
-  "crates/rustdown-cli",
   "crates/rustdown-gui",
 ]
 
@@ -25,3 +23,10 @@ todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
 panic = "deny"
+
+[profile.release]
+# Standard size optimizations for distribution binaries.
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
