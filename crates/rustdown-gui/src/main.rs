@@ -296,12 +296,6 @@ impl RustdownApp {
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
-        let mut highlight = true;
-        if let Some(remaining) = self.doc.debounce_remaining(DEBOUNCE) {
-            highlight = false;
-            ui.ctx().request_repaint_after(remaining);
-        }
-
         let Document { text, .. } = &mut self.doc;
 
         let editor = egui::TextEdit::multiline(text)
@@ -310,17 +304,13 @@ impl RustdownApp {
             .frame(false)
             .id(egui::Id::new("editor"));
 
-        let response = if highlight {
-            let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-                let mut job = highlight::markdown_layout_job(ui, string);
-                job.wrap.max_width = wrap_width;
-                ui.fonts(|fonts| fonts.layout_job(job))
-            };
-
-            ui.add_sized(ui.available_size(), editor.layouter(&mut layouter))
-        } else {
-            ui.add_sized(ui.available_size(), editor)
+        let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+            let mut job = highlight::markdown_layout_job(ui, string);
+            job.wrap.max_width = wrap_width;
+            ui.fonts(|fonts| fonts.layout_job(job))
         };
+
+        let response = ui.add_sized(ui.available_size(), editor.layouter(&mut layouter));
 
         if response.changed() {
             self.note_text_changed();
