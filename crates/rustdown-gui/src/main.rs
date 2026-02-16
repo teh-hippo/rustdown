@@ -27,6 +27,9 @@ const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
 const READING_SPEED_WPM: usize = 200;
+const FONT_SIZE_DELTA: f32 = 2.0;
+const SMALL_FONT_SIZE_DELTA: f32 = 1.0;
+const PANEL_EDGE_PADDING: f32 = 8.0;
 const UI_FONT_NAME: &str = "rustdown-ui-font";
 #[cfg(target_os = "linux")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -97,6 +100,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             configure_single_font(&cc.egui_ctx).map_err(std::io::Error::other)?;
+            configure_ui_style(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
@@ -120,6 +124,23 @@ fn configure_single_font(ctx: &egui::Context) -> Result<(), String> {
         .insert(egui::FontFamily::Monospace, vec![font_name]);
     ctx.set_fonts(fonts);
     Ok(())
+}
+
+fn configure_ui_style(ctx: &egui::Context) {
+    ctx.style_mut(|style| {
+        for text_style in [
+            egui::TextStyle::Body,
+            egui::TextStyle::Button,
+            egui::TextStyle::Monospace,
+        ] {
+            if let Some(font_id) = style.text_styles.get_mut(&text_style) {
+                font_id.size += FONT_SIZE_DELTA;
+            }
+        }
+        if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
+            font_id.size += SMALL_FONT_SIZE_DELTA;
+        }
+    });
 }
 
 fn load_single_font() -> Result<Vec<u8>, String> {
@@ -201,9 +222,11 @@ fn markdown_to_html_document(source: &str) -> String {
 struct RustdownApp {
     doc: Document,
     mode: Mode,
+    search: SearchState,
     error: Option<String>,
     pending_action: Option<PendingAction>,
     last_viewport_title: String,
+    focus_search: bool,
 }
 
 #[derive(Default)]
@@ -297,6 +320,41 @@ impl Default for DocumentStats {
     }
 }
 
+#[derive(Default)]
+struct SearchState {
+    visible: bool,
+    replace_mode: bool,
+    query: String,
+    replacement: String,
+    last_replace_count: Option<usize>,
+}
+
+#[must_use]
+fn find_match_count(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    haystack.match_indices(needle).count()
+}
+
+#[must_use]
+fn replace_all_occurrences<'a>(
+    haystack: &'a str,
+    needle: &str,
+    replacement: &str,
+) -> (Cow<'a, str>, usize) {
+    if needle.is_empty() || needle == replacement {
+        return (Cow::Borrowed(haystack), 0);
+    }
+
+    let matches = find_match_count(haystack, needle);
+    if matches == 0 {
+        return (Cow::Borrowed(haystack), 0);
+    }
+
+    (Cow::Owned(haystack.replace(needle, replacement)), matches)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
     #[default]
@@ -341,10 +399,13 @@ impl eframe::App for RustdownApp {
             save_as,
             new_doc,
             cycle_mode,
+            search,
+            replace_all_mode,
             format_doc,
             export_html,
             zoom_in,
             zoom_out,
+            escape,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
@@ -359,10 +420,13 @@ impl eframe::App for RustdownApp {
                 cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
                 cmd && i.key_pressed(egui::Key::N),
                 cmd && i.key_pressed(egui::Key::Enter),
-                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
+                cmd && !i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::F),
+                cmd && i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::F),
+                cmd && i.modifiers.alt && !i.modifiers.shift && i.key_pressed(egui::Key::F),
                 cmd && i.key_pressed(egui::Key::E),
                 cmd && i.key_pressed(egui::Key::Equals),
                 cmd && i.key_pressed(egui::Key::Minus),
+                i.key_pressed(egui::Key::Escape),
             )
         });
 
@@ -382,6 +446,12 @@ impl eframe::App for RustdownApp {
             if cycle_mode {
                 self.set_mode(self.mode.cycle());
             }
+            if search {
+                self.open_search(false);
+            }
+            if replace_all_mode {
+                self.open_search(true);
+            }
             if format_doc {
                 self.format_document();
             }
@@ -394,8 +464,12 @@ impl eframe::App for RustdownApp {
             if zoom_out {
                 self.adjust_zoom(ctx, -ZOOM_STEP);
             }
+            if escape && self.search.visible {
+                self.close_search();
+            }
         }
 
+        let mut run_replace_all = false;
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let mut clear_error = false;
 
@@ -412,6 +486,9 @@ impl eframe::App for RustdownApp {
                 ui.separator();
                 if ui.button("Export HTML").clicked() {
                     let _ = self.export_html();
+                }
+                if ui.button("Format").clicked() {
+                    self.format_document();
                 }
 
                 ui.separator();
@@ -446,11 +523,69 @@ impl eframe::App for RustdownApp {
             if clear_error {
                 self.error = None;
             }
+
+            if self.search.visible {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Find:");
+                    let query_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.search.query)
+                            .hint_text("Search")
+                            .desired_width(180.0)
+                            .id(egui::Id::new("search-query")),
+                    );
+                    if self.focus_search {
+                        query_response.request_focus();
+                        self.focus_search = false;
+                    }
+                    if query_response.changed() {
+                        self.search.last_replace_count = None;
+                    }
+
+                    let matches =
+                        find_match_count(self.doc.text.as_str(), self.search.query.as_str());
+                    let label = if matches == 1 { "match" } else { "matches" };
+                    ui.label(format!("{matches} {label}"));
+
+                    if self.search.replace_mode {
+                        ui.separator();
+                        ui.label("Replace:");
+                        let replace_response = ui.add(
+                            egui::TextEdit::singleline(&mut self.search.replacement)
+                                .hint_text("Replace with")
+                                .desired_width(180.0),
+                        );
+                        if replace_response.changed() {
+                            self.search.last_replace_count = None;
+                        }
+
+                        let replace_button = ui.add_enabled(
+                            !self.search.query.is_empty(),
+                            egui::Button::new("Replace all"),
+                        );
+                        if replace_button.clicked() {
+                            run_replace_all = true;
+                        }
+
+                        if let Some(count) = self.search.last_replace_count {
+                            ui.label(format!("replaced {count}"));
+                        }
+                    }
+
+                    if ui.button("Close").clicked() {
+                        self.close_search();
+                    }
+                });
+            }
         });
+        if run_replace_all {
+            let replaced = self.replace_all_matches();
+            self.search.last_replace_count = Some(replaced);
+        }
 
         let panel_frame = egui::Frame::none()
             .fill(ctx.style().visuals.panel_fill)
-            .inner_margin(egui::Margin::same(0.0));
+            .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
         if self.mode == Mode::SideBySide {
             egui::SidePanel::right("preview")
                 .resizable(true)
@@ -524,6 +659,33 @@ impl RustdownApp {
         self.doc.last_edit_at = Some(Instant::now());
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.md_cache.clear_scrollable();
+    }
+
+    fn open_search(&mut self, replace_mode: bool) {
+        self.search.visible = true;
+        self.search.replace_mode = replace_mode;
+        self.search.last_replace_count = None;
+        self.focus_search = true;
+    }
+
+    fn close_search(&mut self) {
+        self.search.visible = false;
+        self.search.replace_mode = false;
+        self.search.last_replace_count = None;
+        self.focus_search = false;
+    }
+
+    fn replace_all_matches(&mut self) -> usize {
+        let (text, replaced) = replace_all_occurrences(
+            self.doc.text.as_str(),
+            self.search.query.as_str(),
+            self.search.replacement.as_str(),
+        );
+        if let Cow::Owned(text) = text {
+            self.doc.text = text;
+            self.note_text_changed();
+        }
+        replaced
     }
 
     fn format_document(&mut self) {
@@ -803,5 +965,39 @@ mod tests {
         let html = markdown_to_html_document("# Heading\n\n- item");
         assert!(html.contains("<h1>Heading</h1>"));
         assert!(html.contains("<li>item</li>"));
+    }
+
+    #[test]
+    fn find_match_count_returns_zero_for_empty_query() {
+        assert_eq!(find_match_count("abc abc", ""), 0);
+    }
+
+    #[test]
+    fn replace_all_occurrences_replaces_and_counts_matches() {
+        let (text, replaced) = replace_all_occurrences("alpha beta alpha", "alpha", "zeta");
+        assert_eq!(text.as_ref(), "zeta beta zeta");
+        assert_eq!(replaced, 2);
+    }
+
+    #[test]
+    fn replace_all_occurrences_ignores_identical_replacement() {
+        let (text, replaced) = replace_all_occurrences("alpha beta", "alpha", "alpha");
+        assert_eq!(text.as_ref(), "alpha beta");
+        assert_eq!(replaced, 0);
+    }
+
+    #[test]
+    fn replace_all_matches_updates_document_and_stats() {
+        let mut app = RustdownApp::default();
+        app.doc.text = "alpha beta alpha".to_owned();
+        app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
+        app.search.query = "alpha".to_owned();
+        app.search.replacement = "zeta".to_owned();
+
+        let replaced = app.replace_all_matches();
+        assert_eq!(replaced, 2);
+        assert_eq!(app.doc.text, "zeta beta zeta");
+        assert!(app.doc.dirty);
+        assert_eq!(app.doc.stats, DocumentStats::from_text("zeta beta zeta"));
     }
 }

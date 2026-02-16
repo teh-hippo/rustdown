@@ -39,7 +39,9 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+S: Save
 - Cmd/Ctrl+Shift+S: Save As…
 - Cmd/Ctrl+N: New document
-- Cmd/Ctrl+Shift+F: Format document
+- Cmd/Ctrl+F: Find
+- Cmd/Ctrl+Shift+F: Find + Replace all
+- Cmd/Ctrl+Alt+F: Format document
 - Cmd/Ctrl+E: Export HTML…
 - Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
 - Cmd/Ctrl++: Increase font size
