@@ -13,10 +13,6 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
     let mut inline_code = base.clone();
     inline_code.font_id = code_font;
     inline_code.background = ui.visuals().faint_bg_color;
-    let mut heading = base.clone();
-    heading.font_id.size *= 1.05;
-    heading.color = ui.visuals().hyperlink_color;
-
     let mut in_fence = false;
     for line in source.split_inclusive('\n') {
         let trimmed = line.trim_start();
@@ -32,8 +28,18 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
 
         let level = trimmed.bytes().take_while(|b| *b == b'#').count();
         if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
-            let mut heading_format = heading.clone();
-            heading_format.font_id.size *= 1.0 + (6 - level) as f32 * 0.02;
+            let heading_scale = match level {
+                1 => 2.0,
+                2 => 1.5,
+                3 => 1.25,
+                4 => 1.1,
+                5 => 1.0,
+                6 => 0.95,
+                _ => 1.0,
+            };
+            let mut heading_format = base.clone();
+            heading_format.font_id.size *= heading_scale;
+            heading_format.color = ui.visuals().hyperlink_color;
             job.append(line, 0.0, heading_format);
             continue;
         }
