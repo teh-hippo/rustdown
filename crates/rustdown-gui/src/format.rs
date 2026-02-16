@@ -203,3 +203,89 @@ fn glob_match(pattern: &str, text: &str) -> bool {
             .is_some()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        path::{Path, PathBuf},
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_dir_path(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        std::env::temp_dir().join(format!("rustdown-{label}-{}-{stamp}", process::id()))
+    }
+
+    fn write_text(path: &Path, contents: &str) {
+        assert!(fs::write(path, contents).is_ok());
+    }
+
+    #[test]
+    fn format_markdown_trims_outside_fences_and_keeps_hard_breaks() {
+        let source = "plain \nhard break  \n```\ncode   \n```\n";
+        let formatted = format_markdown(source, DEFAULT_OPTIONS);
+        assert_eq!(formatted, "plain\nhard break  \n```\ncode   \n```\n");
+    }
+
+    #[test]
+    fn format_markdown_normalizes_cr_and_respects_explicit_lf() {
+        let options = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let formatted = format_markdown("a\r\nb\rc", options);
+        assert_eq!(formatted, "a\nb\nc");
+    }
+
+    #[test]
+    fn format_markdown_preserves_crlf_when_detected() {
+        let formatted = format_markdown("a\r\nb", DEFAULT_OPTIONS);
+        assert_eq!(formatted, "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn options_for_path_prefers_nearest_editorconfig_and_stops_at_root() {
+        let root = temp_dir_path("editorconfig-root");
+        let nested = root.join("nested");
+        assert!(fs::create_dir_all(&nested).is_ok());
+        write_text(
+            &root.join(".editorconfig"),
+            "[*.md]\ntrim_trailing_whitespace = true\ninsert_final_newline = false\nend_of_line = lf\n",
+        );
+        write_text(
+            &nested.join(".editorconfig"),
+            "root = true\n[*.md]\ntrim_trailing_whitespace = false\nend_of_line = crlf\n",
+        );
+        let file = nested.join("note.md");
+        write_text(&file, "# note");
+
+        let options = options_for_path(Some(&file));
+
+        assert!(!options.trim_trailing_whitespace);
+        assert!(options.insert_final_newline);
+        assert_eq!(options.end_of_line, Some(EndOfLine::CrLf));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn options_for_path_supports_braced_markdown_pattern() {
+        let root = temp_dir_path("editorconfig-pattern");
+        assert!(fs::create_dir_all(&root).is_ok());
+        write_text(
+            &root.join(".editorconfig"),
+            "[*.{md,markdown}]\ninsert_final_newline = false\n",
+        );
+        let file = root.join("readme.markdown");
+        write_text(&file, "content");
+
+        let options = options_for_path(Some(&file));
+
+        assert!(!options.insert_final_newline);
+        let _ = fs::remove_dir_all(root);
+    }
+}
