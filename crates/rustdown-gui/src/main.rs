@@ -26,6 +26,7 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
+const READING_SPEED_WPM: usize = 200;
 const UI_FONT_NAME: &str = "rustdown-ui-font";
 #[cfg(target_os = "linux")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -194,6 +195,37 @@ impl Document {
             .as_ref()
             .map_or_else(|| Cow::Borrowed("Unsaved"), |path| path.to_string_lossy())
     }
+
+    #[must_use]
+    fn stats(&self) -> DocumentStats {
+        DocumentStats::from_text(self.text.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DocumentStats {
+    words: usize,
+    chars: usize,
+    lines: usize,
+}
+
+impl DocumentStats {
+    #[must_use]
+    fn from_text(text: &str) -> Self {
+        Self {
+            words: text.split_whitespace().count(),
+            chars: text.chars().count(),
+            lines: text.bytes().filter(|b| *b == b'\n').count() + 1,
+        }
+    }
+
+    #[must_use]
+    fn reading_minutes(self) -> usize {
+        if self.words == 0 {
+            return 0;
+        }
+        self.words.div_ceil(READING_SPEED_WPM)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -288,6 +320,16 @@ impl eframe::App for RustdownApp {
                 ui.separator();
 
                 ui.label(self.doc.path_label());
+                let stats = self.doc.stats();
+
+                ui.separator();
+                ui.label(format!(
+                    "{} words · {} chars · {} lines · {} min read",
+                    stats.words,
+                    stats.chars,
+                    stats.lines,
+                    stats.reading_minutes()
+                ));
 
                 if self.doc.dirty {
                     ui.separator();
@@ -577,5 +619,28 @@ mod tests {
             assert_eq!(options.mode, mode);
             assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
         }
+    }
+
+    #[test]
+    fn document_stats_counts_words_chars_lines_and_read_time() {
+        let stats = DocumentStats::from_text("one two\nthree");
+        assert_eq!(
+            stats,
+            DocumentStats {
+                words: 3,
+                chars: 13,
+                lines: 2
+            }
+        );
+        assert_eq!(stats.reading_minutes(), 1);
+    }
+
+    #[test]
+    fn document_stats_empty_document_is_zero_words_and_one_line() {
+        let stats = DocumentStats::from_text("");
+        assert_eq!(stats.words, 0);
+        assert_eq!(stats.chars, 0);
+        assert_eq!(stats.lines, 1);
+        assert_eq!(stats.reading_minutes(), 0);
     }
 }
