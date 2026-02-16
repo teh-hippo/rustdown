@@ -11,7 +11,7 @@ use std::{
     borrow::Cow,
     ffi::OsString,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -155,6 +155,21 @@ fn markdown_file_dialog() -> rfd::FileDialog {
     rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"])
 }
 
+#[must_use]
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+}
+
+#[must_use]
+fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
+    paths
+        .into_iter()
+        .find(|path| is_markdown_path(path))
+        .map(Path::to_path_buf)
+}
+
 #[derive(Default)]
 struct RustdownApp {
     doc: Document,
@@ -265,6 +280,9 @@ enum PendingAction {
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dialog_open = self.pending_action.is_some();
+        if !dialog_open && let Some(path) = Self::dropped_markdown_path(ctx) {
+            self.request_action(PendingAction::Open(path));
+        }
         let (open, save, save_as, new_doc, cycle_mode, format_doc, zoom_in, zoom_out) =
             ctx.input(|i| {
                 let cmd = i.modifiers.command;
@@ -401,6 +419,17 @@ impl RustdownApp {
     fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
         let zoom = (ctx.zoom_factor() + delta).clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
         ctx.set_zoom_factor(zoom);
+    }
+
+    fn dropped_markdown_path(ctx: &egui::Context) -> Option<PathBuf> {
+        ctx.input(|i| {
+            first_markdown_path(
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|file| file.path.as_deref()),
+            )
+        })
     }
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
@@ -642,5 +671,26 @@ mod tests {
         assert_eq!(stats.chars, 0);
         assert_eq!(stats.lines, 1);
         assert_eq!(stats.reading_minutes(), 0);
+    }
+
+    #[test]
+    fn is_markdown_path_matches_supported_extensions_case_insensitive() {
+        assert!(is_markdown_path(Path::new("note.md")));
+        assert!(is_markdown_path(Path::new("README.Markdown")));
+        assert!(!is_markdown_path(Path::new("notes.txt")));
+        assert!(!is_markdown_path(Path::new("README")));
+    }
+
+    #[test]
+    fn first_markdown_path_returns_first_supported_file() {
+        let files = [
+            Path::new("notes.txt"),
+            Path::new("chapter.markdown"),
+            Path::new("later.md"),
+        ];
+        assert_eq!(
+            first_markdown_path(files),
+            Some(PathBuf::from("chapter.markdown"))
+        );
     }
 }
