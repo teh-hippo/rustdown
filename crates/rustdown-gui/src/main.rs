@@ -156,6 +156,13 @@ fn markdown_file_dialog() -> rfd::FileDialog {
 }
 
 #[must_use]
+fn html_file_dialog(suggested_name: &str) -> rfd::FileDialog {
+    rfd::FileDialog::new()
+        .add_filter("HTML", &["html"])
+        .set_file_name(suggested_name)
+}
+
+#[must_use]
 fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -168,6 +175,26 @@ fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
         .into_iter()
         .find(|path| is_markdown_path(path))
         .map(Path::to_path_buf)
+}
+
+#[must_use]
+fn suggested_html_file_name(path: Option<&Path>) -> String {
+    path.and_then(|path| path.file_stem())
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map_or_else(|| "document.html".to_owned(), |stem| format!("{stem}.html"))
+}
+
+#[must_use]
+fn markdown_to_html_document(source: &str) -> String {
+    let mut options = pulldown_cmark::Options::empty();
+    options.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
+    let parser = pulldown_cmark::Parser::new_ext(source, options);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, parser);
+    html
 }
 
 #[derive(Default)]
@@ -283,7 +310,7 @@ impl eframe::App for RustdownApp {
         if !dialog_open && let Some(path) = Self::dropped_markdown_path(ctx) {
             self.request_action(PendingAction::Open(path));
         }
-        let (open, save, save_as, new_doc, cycle_mode, format_doc, zoom_in, zoom_out) =
+        let (open, save, save_as, new_doc, cycle_mode, format_doc, export_html, zoom_in, zoom_out) =
             ctx.input(|i| {
                 let cmd = i.modifiers.command;
                 (
@@ -293,6 +320,7 @@ impl eframe::App for RustdownApp {
                     cmd && i.key_pressed(egui::Key::N),
                     cmd && i.key_pressed(egui::Key::Enter),
                     cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
+                    cmd && i.key_pressed(egui::Key::E),
                     cmd && i.key_pressed(egui::Key::Equals),
                     cmd && i.key_pressed(egui::Key::Minus),
                 )
@@ -314,6 +342,9 @@ impl eframe::App for RustdownApp {
             if format_doc {
                 self.format_document();
             }
+            if export_html {
+                let _ = self.export_html();
+            }
             if zoom_in {
                 self.adjust_zoom(ctx, ZOOM_STEP);
             }
@@ -333,6 +364,11 @@ impl eframe::App for RustdownApp {
                     {
                         self.set_mode(mode);
                     }
+                }
+
+                ui.separator();
+                if ui.button("Export HTML").clicked() {
+                    let _ = self.export_html();
                 }
 
                 ui.separator();
@@ -554,6 +590,24 @@ impl RustdownApp {
         }
     }
 
+    fn export_html(&mut self) -> bool {
+        let suggested_name = suggested_html_file_name(self.doc.path.as_deref());
+        let Some(path) = html_file_dialog(suggested_name.as_str()).save_file() else {
+            return false;
+        };
+        let html = markdown_to_html_document(self.doc.text.as_str());
+        match fs::write(path, html) {
+            Ok(()) => {
+                self.error = None;
+                true
+            }
+            Err(err) => {
+                self.error = Some(format!("Export failed: {err}"));
+                false
+            }
+        }
+    }
+
     fn save_doc(&mut self, save_as: bool) -> bool {
         let mut selected_path = None;
         let path = if save_as {
@@ -692,5 +746,21 @@ mod tests {
             first_markdown_path(files),
             Some(PathBuf::from("chapter.markdown"))
         );
+    }
+
+    #[test]
+    fn suggested_html_file_name_uses_document_stem_or_default() {
+        assert_eq!(
+            suggested_html_file_name(Some(Path::new("/tmp/readme.md"))),
+            "readme.html"
+        );
+        assert_eq!(suggested_html_file_name(None), "document.html");
+    }
+
+    #[test]
+    fn markdown_to_html_document_renders_common_markdown() {
+        let html = markdown_to_html_document("# Heading\n\n- item");
+        assert!(html.contains("<h1>Heading</h1>"));
+        assert!(html.contains("<li>item</li>"));
     }
 }

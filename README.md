@@ -4,7 +4,7 @@ A highly performant, minimalist Markdown editor written in Rust with a **native 
 
 ## Status
 Early, but functional:
-- Native GUI editor with Edit/Preview/Side-by-side modes, native markdown preview (lists/task lists/quotes/tables/code/strike), lightweight syntax highlighting, and Open/Save/Save As + unsaved-changes confirmation.
+- Native GUI editor with Edit/Preview/Side-by-side modes, native markdown preview (lists/task lists/quotes/tables/code/strike), lightweight syntax highlighting, drag-and-drop markdown open, live writing stats, HTML export, and Open/Save/Save As + unsaved-changes confirmation.
 
 ## Quickstart
 
@@ -40,11 +40,13 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+Shift+S: Save As…
 - Cmd/Ctrl+N: New document
 - Cmd/Ctrl+Shift+F: Format document
+- Cmd/Ctrl+E: Export HTML…
 - Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
 - Cmd/Ctrl++: Increase font size
 - Cmd/Ctrl+-: Decrease font size
   
 Tip: the mode indicator in the bottom bar is clickable.
+Tip: you can also drag and drop `.md`/`.markdown` files into the window to open them.
 
 Formatting is intentionally simple; if a `.editorconfig` file is present, rustdown will use a small subset:
 `trim_trailing_whitespace`, `insert_final_newline`, and `end_of_line` (lf/crlf).
