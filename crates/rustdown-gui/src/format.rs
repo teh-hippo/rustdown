@@ -21,6 +21,7 @@ const DEFAULT_OPTIONS: FormatOptions = FormatOptions {
     end_of_line: None,
 };
 
+#[must_use]
 pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
     let eol = match options.end_of_line {
         Some(EndOfLine::CrLf) => "\r\n",
@@ -60,6 +61,7 @@ pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
     out
 }
 
+#[must_use]
 pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
     let mut opts = DEFAULT_OPTIONS;
     let Some(path) = path else {
@@ -177,8 +179,12 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     }
     let mut text = text;
     let mut parts = pattern.split('*');
-    let start = parts.next().unwrap_or_default();
-    let end = parts.next_back().unwrap_or_default();
+    let Some(start) = parts.next() else {
+        return false;
+    };
+    let Some(end) = parts.next_back() else {
+        return false;
+    };
     if !pattern.starts_with('*') {
         let Some(rest) = text.strip_prefix(start) else {
             return false;

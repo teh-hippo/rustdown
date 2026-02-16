@@ -52,6 +52,7 @@ struct LaunchOptions {
     path: Option<PathBuf>,
 }
 
+#[must_use]
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
 where
     I: IntoIterator<Item = S>,
@@ -148,6 +149,7 @@ fn load_single_font() -> Result<Vec<u8>, String> {
     ))
 }
 
+#[must_use]
 fn markdown_file_dialog() -> rfd::FileDialog {
     rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"])
 }
@@ -170,12 +172,14 @@ struct Document {
 }
 
 impl Document {
+    #[must_use]
     fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
         (since < debounce).then(|| debounce - since)
     }
 
+    #[must_use]
     fn title(&self) -> Cow<'_, str> {
         self.path
             .as_ref()
@@ -183,6 +187,7 @@ impl Document {
             .map_or_else(|| Cow::Borrowed("Untitled"), |name| name.to_string_lossy())
     }
 
+    #[must_use]
     fn path_label(&self) -> Cow<'_, str> {
         self.path
             .as_ref()
@@ -199,6 +204,7 @@ enum Mode {
 }
 
 impl Mode {
+    #[must_use]
     fn cycle(self) -> Self {
         match self {
             Mode::Edit => Mode::Preview,
@@ -207,6 +213,7 @@ impl Mode {
         }
     }
 
+    #[must_use]
     fn label(self) -> &'static str {
         match self {
             Mode::Edit => "Edit",

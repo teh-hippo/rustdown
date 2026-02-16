@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+#[must_use]
 pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let base_font = egui::TextStyle::Body.resolve(ui.style());
