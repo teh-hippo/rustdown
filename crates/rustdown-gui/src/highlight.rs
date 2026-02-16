@@ -55,7 +55,9 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
                 break;
             }
         }
-        job.append(rest, 0.0, base.clone());
+        if !rest.is_empty() {
+            job.append(rest, 0.0, base.clone());
+        }
     }
     job
 }
