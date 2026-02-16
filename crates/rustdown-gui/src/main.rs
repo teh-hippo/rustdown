@@ -210,6 +210,7 @@ struct RustdownApp {
 struct Document {
     path: Option<PathBuf>,
     text: String,
+    stats: DocumentStats,
     dirty: bool,
     md_cache: CommonMarkCache,
     last_edit_at: Option<Instant>,
@@ -240,7 +241,7 @@ impl Document {
 
     #[must_use]
     fn stats(&self) -> DocumentStats {
-        DocumentStats::from_text(self.text.as_str())
+        self.stats
     }
 }
 
@@ -254,10 +255,26 @@ struct DocumentStats {
 impl DocumentStats {
     #[must_use]
     fn from_text(text: &str) -> Self {
+        let mut words = 0;
+        let mut chars = 0;
+        let mut lines = 1;
+        let mut in_word = false;
+        for ch in text.chars() {
+            chars += 1;
+            if ch == '\n' {
+                lines += 1;
+            }
+            if ch.is_whitespace() {
+                in_word = false;
+            } else if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        }
         Self {
-            words: text.split_whitespace().count(),
-            chars: text.chars().count(),
-            lines: text.bytes().filter(|b| *b == b'\n').count() + 1,
+            words,
+            chars,
+            lines,
         }
     }
 
@@ -267,6 +284,16 @@ impl DocumentStats {
             return 0;
         }
         self.words.div_ceil(READING_SPEED_WPM)
+    }
+}
+
+impl Default for DocumentStats {
+    fn default() -> Self {
+        Self {
+            words: 0,
+            chars: 0,
+            lines: 1,
+        }
     }
 }
 
@@ -307,26 +334,42 @@ enum PendingAction {
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dialog_open = self.pending_action.is_some();
-        if !dialog_open && let Some(path) = Self::dropped_markdown_path(ctx) {
-            self.request_action(PendingAction::Open(path));
-        }
-        let (open, save, save_as, new_doc, cycle_mode, format_doc, export_html, zoom_in, zoom_out) =
-            ctx.input(|i| {
-                let cmd = i.modifiers.command;
-                (
-                    cmd && i.key_pressed(egui::Key::O),
-                    cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
-                    cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
-                    cmd && i.key_pressed(egui::Key::N),
-                    cmd && i.key_pressed(egui::Key::Enter),
-                    cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
-                    cmd && i.key_pressed(egui::Key::E),
-                    cmd && i.key_pressed(egui::Key::Equals),
-                    cmd && i.key_pressed(egui::Key::Minus),
-                )
-            });
+        let (
+            dropped_path,
+            open,
+            save,
+            save_as,
+            new_doc,
+            cycle_mode,
+            format_doc,
+            export_html,
+            zoom_in,
+            zoom_out,
+        ) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            (
+                first_markdown_path(
+                    i.raw
+                        .dropped_files
+                        .iter()
+                        .filter_map(|file| file.path.as_deref()),
+                ),
+                cmd && i.key_pressed(egui::Key::O),
+                cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
+                cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
+                cmd && i.key_pressed(egui::Key::N),
+                cmd && i.key_pressed(egui::Key::Enter),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F),
+                cmd && i.key_pressed(egui::Key::E),
+                cmd && i.key_pressed(egui::Key::Equals),
+                cmd && i.key_pressed(egui::Key::Minus),
+            )
+        });
 
         if !dialog_open {
+            if let Some(path) = dropped_path {
+                self.request_action(PendingAction::Open(path));
+            }
             if open {
                 self.open_file();
             }
@@ -457,17 +500,6 @@ impl RustdownApp {
         ctx.set_zoom_factor(zoom);
     }
 
-    fn dropped_markdown_path(ctx: &egui::Context) -> Option<PathBuf> {
-        ctx.input(|i| {
-            first_markdown_path(
-                i.raw
-                    .dropped_files
-                    .iter()
-                    .filter_map(|file| file.path.as_deref()),
-            )
-        })
-    }
-
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
         let mode = match self.mode {
             Mode::Preview => " (Preview)",
@@ -490,6 +522,7 @@ impl RustdownApp {
     fn note_text_changed(&mut self) {
         self.doc.dirty = true;
         self.doc.last_edit_at = Some(Instant::now());
+        self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.md_cache.clear_scrollable();
     }
 
@@ -575,9 +608,11 @@ impl RustdownApp {
     fn open_path(&mut self, path: PathBuf) {
         match fs::read_to_string(&path) {
             Ok(text) => {
+                let stats = DocumentStats::from_text(text.as_str());
                 self.doc = Document {
                     path: Some(path),
                     text,
+                    stats,
                     dirty: false,
                     md_cache: CommonMarkCache::default(),
                     last_edit_at: None,
@@ -725,6 +760,12 @@ mod tests {
         assert_eq!(stats.chars, 0);
         assert_eq!(stats.lines, 1);
         assert_eq!(stats.reading_minutes(), 0);
+    }
+
+    #[test]
+    fn document_default_stats_match_empty_text() {
+        let doc = Document::default();
+        assert_eq!(doc.stats(), DocumentStats::from_text(""));
     }
 
     #[test]

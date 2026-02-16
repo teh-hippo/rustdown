@@ -9,6 +9,13 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
     let code_font = egui::TextStyle::Monospace.resolve(ui.style());
     let base = egui::TextFormat::simple(base_font.clone(), ui.visuals().text_color());
     let weak = egui::TextFormat::simple(base_font, ui.visuals().weak_text_color());
+    let heading_scales = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
+    let heading_formats = heading_scales.map(|scale| {
+        let mut format = base.clone();
+        format.font_id.size *= scale;
+        format.color = ui.visuals().hyperlink_color;
+        format
+    });
 
     let mut inline_code = base.clone();
     inline_code.font_id = code_font;
@@ -28,19 +35,7 @@ pub(crate) fn markdown_layout_job(ui: &egui::Ui, source: &str) -> egui::text::La
 
         let level = trimmed.bytes().take_while(|b| *b == b'#').count();
         if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
-            let heading_scale = match level {
-                1 => 2.0,
-                2 => 1.5,
-                3 => 1.25,
-                4 => 1.1,
-                5 => 1.0,
-                6 => 0.95,
-                _ => 1.0,
-            };
-            let mut heading_format = base.clone();
-            heading_format.font_id.size *= heading_scale;
-            heading_format.color = ui.visuals().hyperlink_color;
-            job.append(line, 0.0, heading_format);
+            job.append(line, 0.0, heading_formats[level - 1].clone());
             continue;
         }
 
