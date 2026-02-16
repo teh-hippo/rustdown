@@ -102,20 +102,20 @@ fn main() -> eframe::Result {
 
 fn configure_single_font(ctx: &egui::Context) -> Result<(), String> {
     let font_data = load_single_font()?;
+    let font_name = UI_FONT_NAME.to_owned();
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.clear();
     fonts.families.clear();
     fonts.font_data.insert(
-        UI_FONT_NAME.to_owned(),
+        font_name.clone(),
         Arc::new(egui::FontData::from_owned(font_data)),
-    );
-    fonts.families.insert(
-        egui::FontFamily::Proportional,
-        vec![UI_FONT_NAME.to_owned()],
     );
     fonts
         .families
-        .insert(egui::FontFamily::Monospace, vec![UI_FONT_NAME.to_owned()]);
+        .insert(egui::FontFamily::Proportional, vec![font_name.clone()]);
+    fonts
+        .families
+        .insert(egui::FontFamily::Monospace, vec![font_name]);
     ctx.set_fonts(fonts);
     Ok(())
 }
@@ -200,11 +200,19 @@ enum Mode {
 
 impl Mode {
     fn cycle(self) -> Self {
-        [Mode::Preview, Mode::SideBySide, Mode::Edit][self as usize]
+        match self {
+            Mode::Edit => Mode::Preview,
+            Mode::Preview => Mode::SideBySide,
+            Mode::SideBySide => Mode::Edit,
+        }
     }
 
     fn label(self) -> &'static str {
-        ["Edit", "Preview", "Side-by-side"][self as usize]
+        match self {
+            Mode::Edit => "Edit",
+            Mode::Preview => "Preview",
+            Mode::SideBySide => "Side-by-side",
+        }
     }
 }
 
@@ -463,14 +471,24 @@ impl RustdownApp {
     }
 
     fn save_doc(&mut self, save_as: bool) -> bool {
-        let Some(path) = (if save_as { None } else { self.doc.path.clone() })
-            .or_else(|| markdown_file_dialog().save_file())
-        else {
+        let mut selected_path = None;
+        let path = if save_as {
+            selected_path = markdown_file_dialog().save_file();
+            selected_path.as_deref()
+        } else {
+            self.doc.path.as_deref().or_else(|| {
+                selected_path = markdown_file_dialog().save_file();
+                selected_path.as_deref()
+            })
+        };
+        let Some(path) = path else {
             return false;
         };
-        match fs::write(&path, &self.doc.text) {
+        match fs::write(path, &self.doc.text) {
             Ok(()) => {
-                self.doc.path = Some(path);
+                if let Some(path) = selected_path {
+                    self.doc.path = Some(path);
+                }
                 self.doc.dirty = false;
 
                 self.error = None;
