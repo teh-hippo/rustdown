@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-eframe = { version = "0.30", default-features = false, features = [
+eframe = { version = "0.33", default-features = false, features = [
   "glow",
   "wayland",
   "x11",
