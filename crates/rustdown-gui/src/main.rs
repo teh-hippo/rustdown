@@ -160,6 +160,7 @@ struct RustdownApp {
     mode: Mode,
     error: Option<String>,
     pending_action: Option<PendingAction>,
+    last_viewport_title: String,
 }
 
 #[derive(Default)]
@@ -360,18 +361,23 @@ impl RustdownApp {
         ctx.set_zoom_factor(zoom);
     }
 
-    fn update_viewport_title(&self, ctx: &egui::Context) {
+    fn update_viewport_title(&mut self, ctx: &egui::Context) {
         let mode = match self.mode {
             Mode::Preview => " (Preview)",
             Mode::SideBySide => " (Side-by-side)",
             Mode::Edit => "",
         };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+        let title = format!(
             "rustdown — {}{}{}",
             self.doc.title(),
             if self.doc.dirty { "*" } else { "" },
             mode
-        )));
+        );
+        if self.last_viewport_title == title {
+            return;
+        }
+        self.last_viewport_title = title.clone();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
     fn note_text_changed(&mut self) {
