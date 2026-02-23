@@ -9,6 +9,7 @@ compile_error!("rustdown is a native desktop app; web/wasm builds are not suppor
 
 use std::{
     borrow::Cow,
+    cell::Cell,
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
@@ -64,6 +65,14 @@ const UI_FONT_CANDIDATE_PATHS: &[&str] = &[];
 struct LaunchOptions {
     mode: Mode,
     path: Option<PathBuf>,
+    diagnostics: DiagnosticsMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DiagnosticsMode {
+    #[default]
+    Off,
+    OpenPipeline,
 }
 
 #[must_use]
@@ -74,6 +83,7 @@ where
 {
     let mut mode = Mode::Edit;
     let mut path = None;
+    let mut diagnostics = DiagnosticsMode::Off;
 
     for arg in args {
         let arg = arg.into();
@@ -85,17 +95,31 @@ where
             mode = Mode::SideBySide;
             continue;
         }
+        if arg == "--diagnostics-open" || arg == "--diag-open" {
+            diagnostics = DiagnosticsMode::OpenPipeline;
+            continue;
+        }
 
         if path.is_none() {
             path = Some(PathBuf::from(arg));
         }
     }
 
-    LaunchOptions { mode, path }
+    LaunchOptions {
+        mode,
+        path,
+        diagnostics,
+    }
 }
 
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
+    if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
+        if let Err(err) = run_open_pipeline_diagnostics(launch_options.path.as_deref()) {
+            eprintln!("Diagnostics failed: {err}");
+        }
+        return Ok(());
+    }
     let app = RustdownApp::from_launch_options(launch_options);
 
     // Viewport sizes are in points, so they scale with the OS DPI factor.
@@ -114,6 +138,128 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
+    let Some(path) = path else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing markdown path (usage: rustdown --diagnostics-open <file.md>)",
+        ));
+    };
+
+    let total_start = Instant::now();
+
+    let read_start = Instant::now();
+    let (text, disk_rev) = read_stable_utf8(path)?;
+    let read_ms = read_start.elapsed();
+
+    // Simulate the app's clean-document state (text + base_text) so we can measure
+    // the real open cost and memory footprint.
+    let text = Arc::new(text);
+    let clone_start = Instant::now();
+    let base_text = std::hint::black_box(text.clone());
+    let clone_ms = clone_start.elapsed();
+
+    let stats_start = Instant::now();
+    let stats = DocumentStats::from_text(std::hint::black_box(text.as_str()));
+    let stats_ms = stats_start.elapsed();
+
+    let html_start = Instant::now();
+    let html = std::hint::black_box(markdown_to_html_document(std::hint::black_box(
+        text.as_str(),
+    )));
+    let html_ms = html_start.elapsed();
+
+    let cache_start = Instant::now();
+    let md_cache = std::hint::black_box(CommonMarkCache::default());
+    let cache_ms = cache_start.elapsed();
+
+    let egui_start = Instant::now();
+    let ctx = egui::Context::default();
+    configure_single_font(&ctx).map_err(io::Error::other)?;
+    configure_ui_style(&ctx);
+    // egui only guarantees fonts are available after the first frame has run.
+    let _ = ctx.run(egui::RawInput::default(), |_ctx| {});
+    let egui_ms = egui_start.elapsed();
+
+    let style = ctx.style();
+    let highlight_job_start = Instant::now();
+    let job = std::hint::black_box(highlight::markdown_layout_job(
+        style.as_ref(),
+        &style.visuals,
+        std::hint::black_box(text.as_str()),
+    ));
+    let highlight_job_ms = highlight_job_start.elapsed();
+
+    let highlight_layout_start = Instant::now();
+    let galley = std::hint::black_box(ctx.fonts(|fonts| fonts.layout_job(job)));
+    let highlight_layout_ms = highlight_layout_start.elapsed();
+
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 768.0),
+        )),
+        ..Default::default()
+    };
+
+    let mut app = RustdownApp {
+        mode: Mode::Edit,
+        doc: Document {
+            path: Some(path.to_path_buf()),
+            text,
+            base_text,
+            disk_rev: Some(disk_rev),
+            stats,
+            dirty: false,
+            md_cache,
+            last_edit_at: None,
+            edit_seq: 0,
+            editor_galley_cache: None,
+        },
+        ..Default::default()
+    };
+
+    let editor_frame1_start = Instant::now();
+    let _ = ctx.run(raw.clone(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
+    });
+    let editor_frame1_ms = editor_frame1_start.elapsed();
+
+    let editor_frame2_start = Instant::now();
+    let _ = ctx.run(raw, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
+    });
+    let editor_frame2_ms = editor_frame2_start.elapsed();
+
+    let total_ms = total_start.elapsed();
+
+    println!("rustdown_diagnostics=open_pipeline");
+    println!("path={}", path.display());
+    println!("disk_len={}", disk_rev.len);
+    println!("text_bytes={}", app.doc.text.len());
+    println!("base_text_bytes={}", app.doc.base_text.len());
+    println!(
+        "stats_words={} stats_chars={} stats_lines={}",
+        stats.words, stats.chars, stats.lines
+    );
+    println!("t_read_ms={}", read_ms.as_millis());
+    println!("t_clone_base_ms={}", clone_ms.as_millis());
+    println!("t_stats_ms={}", stats_ms.as_millis());
+    println!("t_html_ms={}", html_ms.as_millis());
+    println!("html_bytes={}", html.len());
+    println!("t_md_cache_ms={}", cache_ms.as_millis());
+    println!("t_egui_setup_ms={}", egui_ms.as_millis());
+    println!("t_highlight_job_ms={}", highlight_job_ms.as_millis());
+    println!("t_highlight_layout_ms={}", highlight_layout_ms.as_millis());
+    println!("galley_rows={}", galley.rows.len());
+    println!("t_editor_frame1_ms={}", editor_frame1_ms.as_millis());
+    println!("t_editor_frame2_ms={}", editor_frame2_ms.as_millis());
+    println!("t_total_ms={}", total_ms.as_millis());
+
+    std::hint::black_box(app);
+    Ok(())
 }
 
 fn configure_single_font(ctx: &egui::Context) -> Result<(), String> {
@@ -254,17 +400,73 @@ struct RustdownApp {
     merge_sidecar_path: Option<PathBuf>,
 }
 
-#[derive(Default)]
 struct Document {
     path: Option<PathBuf>,
-    text: String,
-    base_text: String,
+    text: Arc<String>,
+    base_text: Arc<String>,
     disk_rev: Option<DiskRevision>,
     stats: DocumentStats,
     dirty: bool,
     md_cache: CommonMarkCache,
     last_edit_at: Option<Instant>,
     edit_seq: u64,
+    editor_galley_cache: Option<EditorGalleyCache>,
+}
+
+impl Default for Document {
+    fn default() -> Self {
+        let text = Arc::new(String::new());
+        Self {
+            path: None,
+            text: text.clone(),
+            base_text: text,
+            disk_rev: None,
+            stats: DocumentStats::default(),
+            dirty: false,
+            md_cache: CommonMarkCache::default(),
+            last_edit_at: None,
+            edit_seq: 0,
+            editor_galley_cache: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EditorGalleyCache {
+    seq: u64,
+    wrap_width_bits: u32,
+    zoom_factor_bits: u32,
+    galley: Arc<egui::Galley>,
+}
+
+struct TrackedTextBuffer<'a, 'b> {
+    text: &'a mut Arc<String>,
+    seq: &'b Cell<u64>,
+}
+
+impl<'a, 'b> egui::TextBuffer for TrackedTextBuffer<'a, 'b> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.text.as_str()
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+        let inserted = egui::TextBuffer::insert_text(Arc::make_mut(self.text), text, char_index);
+        if inserted != 0 {
+            self.seq.set(self.seq.get().wrapping_add(1));
+        }
+        inserted
+    }
+
+    fn delete_char_range(&mut self, char_range: std::ops::Range<usize>) {
+        if char_range.start < char_range.end {
+            self.seq.set(self.seq.get().wrapping_add(1));
+        }
+        egui::TextBuffer::delete_char_range(Arc::make_mut(self.text), char_range);
+    }
 }
 
 #[derive(Debug)]
@@ -976,13 +1178,16 @@ impl RustdownApp {
                             disk_text,
                             disk_rev,
                         }) => {
+                            let disk_text = Arc::new(disk_text);
                             self.doc.base_text = disk_text.clone();
                             self.doc.text = disk_text;
                             self.doc.disk_rev = Some(disk_rev);
+                            self.bump_edit_seq();
                             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                             self.doc.md_cache.clear_scrollable();
                             self.doc.last_edit_at = None;
                             self.doc.dirty = false;
+                            self.doc.editor_galley_cache = None;
                             self.error = None;
                         }
                         Ok(DiskReloadOutcome::MergeClean {
@@ -990,12 +1195,14 @@ impl RustdownApp {
                             disk_text,
                             disk_rev,
                         }) => {
-                            self.doc.text = merged_text;
-                            self.doc.base_text = disk_text;
+                            self.doc.text = Arc::new(merged_text);
+                            self.doc.base_text = Arc::new(disk_text);
                             self.doc.disk_rev = Some(disk_rev);
+                            self.bump_edit_seq();
                             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                             self.doc.md_cache.clear_scrollable();
                             self.doc.dirty = true;
+                            self.doc.editor_galley_cache = None;
                             self.error = None;
                         }
                         Ok(DiskReloadOutcome::MergeConflict {
@@ -1030,14 +1237,16 @@ impl RustdownApp {
     }
 
     fn incorporate_disk_text(&mut self, disk_text: String, disk_rev: DiskRevision) {
-        if self.doc.disk_rev == Some(disk_rev) && disk_text == self.doc.base_text {
+        if self.doc.disk_rev == Some(disk_rev) && disk_text == self.doc.base_text.as_str() {
             return;
         }
 
         if !self.doc.dirty {
+            let disk_text = Arc::new(disk_text);
             self.doc.base_text = disk_text.clone();
             self.doc.text = disk_text;
             self.doc.disk_rev = Some(disk_rev);
+            self.bump_edit_seq();
             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
             self.doc.md_cache.clear_scrollable();
             self.doc.last_edit_at = None;
@@ -1051,9 +1260,10 @@ impl RustdownApp {
             disk_text.as_str(),
         ) {
             Merge3Outcome::Clean(merged) => {
-                self.doc.text = merged;
-                self.doc.base_text = disk_text;
+                self.doc.text = Arc::new(merged);
+                self.doc.base_text = Arc::new(disk_text);
                 self.doc.disk_rev = Some(disk_rev);
+                self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                 self.doc.md_cache.clear_scrollable();
                 self.error = None;
@@ -1088,6 +1298,11 @@ impl RustdownApp {
 
         self.mode = mode;
 
+        if mode == Mode::Preview {
+            // Preview doesn't render the editor; drop any cached galley to reduce memory.
+            self.doc.editor_galley_cache = None;
+        }
+
         if mode == Mode::Edit {
             self.doc.md_cache.clear_scrollable();
             self.doc.last_edit_at = None;
@@ -1118,9 +1333,12 @@ impl RustdownApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
+    fn bump_edit_seq(&mut self) {
+        self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
+    }
+
     fn note_text_changed(&mut self) {
         self.doc.dirty = true;
-        self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
         self.doc.last_edit_at = Some(Instant::now());
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.md_cache.clear_scrollable();
@@ -1147,7 +1365,8 @@ impl RustdownApp {
             self.search.replacement.as_str(),
         );
         if let Cow::Owned(text) = text {
-            self.doc.text = text;
+            self.doc.text = Arc::new(text);
+            self.bump_edit_seq();
             self.note_text_changed();
         }
         replaced
@@ -1156,32 +1375,63 @@ impl RustdownApp {
     fn format_document(&mut self) {
         let options = format::options_for_path(self.doc.path.as_deref());
         let formatted = format::format_markdown(self.doc.text.as_str(), options);
-        if formatted == self.doc.text {
+        if formatted == self.doc.text.as_str() {
             return;
         }
 
-        self.doc.text = formatted;
+        self.doc.text = Arc::new(formatted);
+        self.bump_edit_seq();
         self.note_text_changed();
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
-        let Document { text, .. } = &mut self.doc;
+        let (changed, next_seq) = {
+            let seq = Cell::new(self.doc.edit_seq);
+            let Document {
+                text,
+                editor_galley_cache,
+                ..
+            } = &mut self.doc;
 
-        let editor = egui::TextEdit::multiline(text)
-            .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Body)
-            .frame(false)
-            .id(egui::Id::new("editor"));
+            let mut buffer = TrackedTextBuffer { text, seq: &seq };
 
-        let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-            let mut job = highlight::markdown_layout_job(ui, string);
-            job.wrap.max_width = wrap_width;
-            ui.fonts(|fonts| fonts.layout_job(job))
+            let editor = egui::TextEdit::multiline(&mut buffer)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Body)
+                .frame(false)
+                .id(egui::Id::new("editor"));
+
+            let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                let seq = seq.get();
+                let wrap_width_bits = wrap_width.to_bits();
+                let zoom_factor_bits = ui.ctx().zoom_factor().to_bits();
+
+                if let Some(cache) = editor_galley_cache.as_ref()
+                    && cache.seq == seq
+                    && cache.wrap_width_bits == wrap_width_bits
+                    && cache.zoom_factor_bits == zoom_factor_bits
+                {
+                    return cache.galley.clone();
+                }
+
+                let mut job = highlight::markdown_layout_job(ui.style(), ui.visuals(), string);
+                job.wrap.max_width = wrap_width;
+                let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                *editor_galley_cache = Some(EditorGalleyCache {
+                    seq,
+                    wrap_width_bits,
+                    zoom_factor_bits,
+                    galley: galley.clone(),
+                });
+                galley
+            };
+
+            let response = ui.add_sized(ui.available_size(), editor.layouter(&mut layouter));
+            (response.changed(), seq.get())
         };
 
-        let response = ui.add_sized(ui.available_size(), editor.layouter(&mut layouter));
-
-        if response.changed() {
+        self.doc.edit_seq = next_seq;
+        if changed {
             self.note_text_changed();
         }
     }
@@ -1197,7 +1447,7 @@ impl RustdownApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                CommonMarkViewer::new().show(ui, &mut self.doc.md_cache, &self.doc.text);
+                CommonMarkViewer::new().show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
             });
     }
 
@@ -1236,6 +1486,7 @@ impl RustdownApp {
     fn open_path(&mut self, path: PathBuf) {
         match read_stable_utf8(&path) {
             Ok((text, disk_rev)) => {
+                let text = Arc::new(text);
                 let base_text = text.clone();
                 let stats = DocumentStats::from_text(text.as_str());
                 self.doc = Document {
@@ -1248,6 +1499,7 @@ impl RustdownApp {
                     md_cache: CommonMarkCache::default(),
                     last_edit_at: None,
                     edit_seq: 0,
+                    editor_galley_cache: None,
                 };
                 self.error = None;
                 self.reset_disk_sync_state();
@@ -1308,7 +1560,7 @@ impl RustdownApp {
             return false;
         }
 
-        match atomic_write_utf8(&path, &self.doc.text) {
+        match atomic_write_utf8(&path, self.doc.text.as_str()) {
             Ok(()) => {
                 if update_doc_path {
                     self.doc.path = Some(path.clone());
@@ -1415,21 +1667,25 @@ impl RustdownApp {
 
         match choice {
             ConflictChoice::OpenConflictMerge => {
-                self.doc.text = conflict.conflict_marked;
-                self.doc.base_text = conflict.disk_text;
+                self.doc.text = Arc::new(conflict.conflict_marked);
+                self.doc.base_text = Arc::new(conflict.disk_text);
                 self.doc.disk_rev = Some(conflict.disk_rev);
+                self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                 self.doc.md_cache.clear_scrollable();
                 self.doc.dirty = true;
+                self.doc.editor_galley_cache = None;
                 self.error = None;
             }
             ConflictChoice::KeepMineWriteSidecar => {
-                self.doc.text = conflict.ours_wins;
-                self.doc.base_text = conflict.disk_text;
+                self.doc.text = Arc::new(conflict.ours_wins);
+                self.doc.base_text = Arc::new(conflict.disk_text);
                 self.doc.disk_rev = Some(conflict.disk_rev);
+                self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                 self.doc.md_cache.clear_scrollable();
                 self.doc.dirty = true;
+                self.doc.editor_galley_cache = None;
                 self.error = None;
 
                 if let Some(doc_path) = self.doc.path.as_deref() {
@@ -1458,12 +1714,15 @@ impl RustdownApp {
                 }
             }
             ConflictChoice::ReloadDisk => {
-                self.doc.text = conflict.disk_text;
-                self.doc.base_text = self.doc.text.clone();
+                let disk_text = Arc::new(conflict.disk_text);
+                self.doc.base_text = disk_text.clone();
+                self.doc.text = disk_text;
                 self.doc.disk_rev = Some(conflict.disk_rev);
+                self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
                 self.doc.md_cache.clear_scrollable();
                 self.doc.dirty = false;
+                self.doc.editor_galley_cache = None;
                 self.error = None;
             }
             ConflictChoice::OverwriteDisk => {
@@ -1472,7 +1731,7 @@ impl RustdownApp {
                     return;
                 };
 
-                match atomic_write_utf8(path, &self.doc.text) {
+                match atomic_write_utf8(path, self.doc.text.as_str()) {
                     Ok(()) => {}
                     Err(err) => {
                         self.disk_conflict = Some(conflict);
@@ -1550,7 +1809,18 @@ mod tests {
             let options = parse(args);
             assert_eq!(options.mode, mode);
             assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
+            assert_eq!(options.diagnostics, DiagnosticsMode::Off);
         }
+    }
+
+    #[test]
+    fn parse_launch_options_parses_diagnostics_open_pipeline() {
+        let options = parse(&["--diagnostics-open", "README.md"]);
+        assert_eq!(options.diagnostics, DiagnosticsMode::OpenPipeline);
+        assert_eq!(
+            options.path.as_deref(),
+            Some(PathBuf::from("README.md")).as_deref()
+        );
     }
 
     #[test]
@@ -1641,14 +1911,14 @@ mod tests {
     #[test]
     fn replace_all_matches_updates_document_and_stats() {
         let mut app = RustdownApp::default();
-        app.doc.text = "alpha beta alpha".to_owned();
+        app.doc.text = Arc::new("alpha beta alpha".to_owned());
         app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
         app.search.query = "alpha".to_owned();
         app.search.replacement = "zeta".to_owned();
 
         let replaced = app.replace_all_matches();
         assert_eq!(replaced, 2);
-        assert_eq!(app.doc.text, "zeta beta zeta");
+        assert_eq!(app.doc.text.as_str(), "zeta beta zeta");
         assert!(app.doc.dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("zeta beta zeta"));
     }
@@ -1657,15 +1927,16 @@ mod tests {
     fn incorporate_disk_text_when_clean_replaces_buffer_and_advances_base() {
         let mut app = RustdownApp::default();
         app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.text = "old".to_owned();
-        app.doc.base_text = "old".to_owned();
+        let old = Arc::new("old".to_owned());
+        app.doc.text = old.clone();
+        app.doc.base_text = old;
         app.doc.disk_rev = Some(test_rev(1, 3));
         app.doc.dirty = false;
 
         app.incorporate_disk_text("new".to_owned(), test_rev(2, 3));
 
-        assert_eq!(app.doc.text, "new");
-        assert_eq!(app.doc.base_text, "new");
+        assert_eq!(app.doc.text.as_str(), "new");
+        assert_eq!(app.doc.base_text.as_str(), "new");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 3)));
         assert!(!app.doc.dirty);
         assert!(app.disk_conflict.is_none());
@@ -1675,15 +1946,15 @@ mod tests {
     fn incorporate_disk_text_when_dirty_and_merge_is_clean_applies_both_changes() {
         let mut app = RustdownApp::default();
         app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = "a\nb\n".to_owned();
-        app.doc.text = "a\nB\n".to_owned();
+        app.doc.base_text = Arc::new("a\nb\n".to_owned());
+        app.doc.text = Arc::new("a\nB\n".to_owned());
         app.doc.disk_rev = Some(test_rev(1, 4));
         app.doc.dirty = true;
 
         app.incorporate_disk_text("A\nb\n".to_owned(), test_rev(2, 4));
 
-        assert_eq!(app.doc.text, "A\nB\n");
-        assert_eq!(app.doc.base_text, "A\nb\n");
+        assert_eq!(app.doc.text.as_str(), "A\nB\n");
+        assert_eq!(app.doc.base_text.as_str(), "A\nb\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
         assert!(app.doc.dirty);
         assert!(app.disk_conflict.is_none());
@@ -1693,15 +1964,15 @@ mod tests {
     fn incorporate_disk_text_when_dirty_and_conflicts_sets_prompt_without_mutating_buffer() {
         let mut app = RustdownApp::default();
         app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = "a\nb\n".to_owned();
-        app.doc.text = "a\nO\n".to_owned();
+        app.doc.base_text = Arc::new("a\nb\n".to_owned());
+        app.doc.text = Arc::new("a\nO\n".to_owned());
         app.doc.disk_rev = Some(test_rev(1, 4));
         app.doc.dirty = true;
 
         app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
 
-        assert_eq!(app.doc.text, "a\nO\n");
-        assert_eq!(app.doc.base_text, "a\nb\n");
+        assert_eq!(app.doc.text.as_str(), "a\nO\n");
+        assert_eq!(app.doc.base_text.as_str(), "a\nb\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(1, 4)));
         assert!(app.disk_conflict.is_some());
     }
@@ -1710,8 +1981,8 @@ mod tests {
     fn conflict_choice_open_merge_replaces_buffer_with_conflict_markers() {
         let mut app = RustdownApp::default();
         app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = "a\nb\n".to_owned();
-        app.doc.text = "a\nO\n".to_owned();
+        app.doc.base_text = Arc::new("a\nb\n".to_owned());
+        app.doc.text = Arc::new("a\nO\n".to_owned());
         app.doc.disk_rev = Some(test_rev(1, 4));
         app.doc.dirty = true;
 
@@ -1727,8 +1998,8 @@ mod tests {
 
         app.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
 
-        assert_eq!(app.doc.text, expected_merge);
-        assert_eq!(app.doc.base_text, "a\nT\n");
+        assert_eq!(app.doc.text.as_str(), expected_merge.as_str());
+        assert_eq!(app.doc.base_text.as_str(), "a\nT\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
         assert!(app.doc.dirty);
         assert!(app.disk_conflict.is_none());
@@ -1743,8 +2014,8 @@ mod tests {
 
         let mut app = RustdownApp::default();
         app.doc.path = Some(original.clone());
-        app.doc.base_text = "line1\nline2\nline3\n".to_owned();
-        app.doc.text = "line1\nO2\nline3\n".to_owned();
+        app.doc.base_text = Arc::new("line1\nline2\nline3\n".to_owned());
+        app.doc.text = Arc::new("line1\nO2\nline3\n".to_owned());
         app.doc.disk_rev = Some(test_rev(1, 18));
         app.doc.dirty = true;
 
@@ -1763,8 +2034,8 @@ mod tests {
 
         app.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
 
-        assert_eq!(app.doc.text, expected_ours_wins);
-        assert_eq!(app.doc.base_text, "line1\nT2\nT3\n");
+        assert_eq!(app.doc.text.as_str(), expected_ours_wins.as_str());
+        assert_eq!(app.doc.base_text.as_str(), "line1\nT2\nT3\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 15)));
         assert!(app.disk_conflict.is_none());
 
