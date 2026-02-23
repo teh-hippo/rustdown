@@ -10,19 +10,29 @@ compile_error!("rustdown is a native desktop app; web/wasm builds are not suppor
 use std::{
     borrow::Cow,
     ffi::OsString,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+mod disk_io;
 mod format;
 mod highlight;
+mod live_merge;
+
+use disk_io::{
+    DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
+};
+use live_merge::{Merge3Outcome, merge_three_way};
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
+const DISK_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const DISK_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
@@ -227,16 +237,69 @@ struct RustdownApp {
     pending_action: Option<PendingAction>,
     last_viewport_title: String,
     focus_search: bool,
+
+    disk_reload_nonce: u64,
+
+    disk_watcher: Option<RecommendedWatcher>,
+    disk_watch_root: Option<PathBuf>,
+    disk_watch_target_name: Option<OsString>,
+    disk_watch_rx: Option<mpsc::Receiver<notify::Result<Event>>>,
+
+    disk_poll_at: Option<Instant>,
+    pending_disk_reload_at: Option<Instant>,
+    disk_reload_in_flight: bool,
+    disk_read_tx: Option<mpsc::Sender<DiskReadMessage>>,
+    disk_read_rx: Option<mpsc::Receiver<DiskReadMessage>>,
+    disk_conflict: Option<DiskConflict>,
+    merge_sidecar_path: Option<PathBuf>,
 }
 
 #[derive(Default)]
 struct Document {
     path: Option<PathBuf>,
     text: String,
+    base_text: String,
+    disk_rev: Option<DiskRevision>,
     stats: DocumentStats,
     dirty: bool,
     md_cache: CommonMarkCache,
     last_edit_at: Option<Instant>,
+    edit_seq: u64,
+}
+
+#[derive(Debug)]
+enum DiskReloadOutcome {
+    Replace {
+        disk_text: String,
+        disk_rev: DiskRevision,
+    },
+    MergeClean {
+        merged_text: String,
+        disk_text: String,
+        disk_rev: DiskRevision,
+    },
+    MergeConflict {
+        disk_text: String,
+        disk_rev: DiskRevision,
+        conflict_marked: String,
+        ours_wins: String,
+    },
+}
+
+#[derive(Debug)]
+struct DiskReadMessage {
+    path: PathBuf,
+    nonce: u64,
+    edit_seq: u64,
+    outcome: io::Result<DiskReloadOutcome>,
+}
+
+#[derive(Clone, Debug)]
+struct DiskConflict {
+    disk_text: String,
+    disk_rev: DiskRevision,
+    conflict_marked: String,
+    ours_wins: String,
 }
 
 impl Document {
@@ -391,7 +454,9 @@ enum PendingAction {
 
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dialog_open = self.pending_action.is_some();
+        self.tick_disk_sync(ctx);
+
+        let dialog_open = self.pending_action.is_some() || self.disk_conflict.is_some();
         let (
             dropped_path,
             open,
@@ -511,11 +576,27 @@ impl eframe::App for RustdownApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut clear_merge_sidecar = false;
+                    if let Some(path) = self.merge_sidecar_path.clone() {
+                        if ui.button("x").clicked() {
+                            clear_merge_sidecar = true;
+                        }
+                        if ui.button("Open merge file").clicked() {
+                            self.request_action(PendingAction::Open(path.clone()));
+                        }
+                        ui.label(path.to_string_lossy());
+                        ui.separator();
+                    }
+
                     if let Some(error) = self.error.as_deref() {
                         if ui.button("x").clicked() {
                             clear_error = true;
                         }
                         ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+
+                    if clear_merge_sidecar {
+                        self.merge_sidecar_path = None;
                     }
                 });
             });
@@ -603,11 +684,394 @@ impl eframe::App for RustdownApp {
             });
 
         self.show_dialogs(ctx);
+        self.show_disk_conflict_dialog(ctx);
         self.update_viewport_title(ctx);
     }
 }
 
 impl RustdownApp {
+    fn reset_disk_sync_state(&mut self) {
+        self.disk_reload_nonce = self.disk_reload_nonce.wrapping_add(1);
+        self.disk_poll_at = None;
+        self.pending_disk_reload_at = None;
+        self.disk_reload_in_flight = false;
+        self.disk_conflict = None;
+
+        self.disk_watcher = None;
+        self.disk_watch_root = None;
+        self.disk_watch_target_name = None;
+        self.disk_watch_rx = None;
+    }
+
+    fn ensure_disk_read_channel(&mut self) {
+        if self.disk_read_tx.is_some() {
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.disk_read_tx = Some(tx);
+        self.disk_read_rx = Some(rx);
+    }
+
+    fn ensure_disk_watcher(&mut self, ctx: &egui::Context, path: &Path) {
+        let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
+        let target_name = path.file_name().map(ToOwned::to_owned);
+
+        if self.disk_watcher.is_some() && self.disk_watch_root.as_deref() == Some(watch_root) {
+            self.disk_watch_target_name = target_name;
+            return;
+        }
+
+        self.disk_watcher = None;
+        self.disk_watch_rx = None;
+        self.disk_watch_root = None;
+        self.disk_watch_target_name = None;
+
+        let Some(target_name) = target_name else {
+            return;
+        };
+
+        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+        let ctx = ctx.clone();
+        let handler = move |res| {
+            let _ = tx.send(res);
+            ctx.request_repaint();
+        };
+
+        let mut watcher = match notify::recommended_watcher(handler) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                self.error
+                    .get_or_insert(format!("Watch setup failed: {err}"));
+                return;
+            }
+        };
+
+        if let Err(err) = watcher.watch(watch_root, RecursiveMode::NonRecursive) {
+            self.error
+                .get_or_insert(format!("Watch start failed: {err}"));
+            return;
+        }
+
+        self.disk_watcher = Some(watcher);
+        self.disk_watch_root = Some(watch_root.to_path_buf());
+        self.disk_watch_target_name = Some(target_name);
+        self.disk_watch_rx = Some(rx);
+        self.disk_poll_at = None;
+    }
+
+    fn drain_disk_watch_events(&mut self) -> bool {
+        let Some(rx) = self.disk_watch_rx.take() else {
+            return false;
+        };
+
+        let target_name = self.disk_watch_target_name.clone();
+        let mut saw_change = false;
+
+        loop {
+            match rx.try_recv() {
+                Ok(Ok(event)) => {
+                    if let Some(target) = target_name.as_deref()
+                        && event
+                            .paths
+                            .iter()
+                            .any(|path| path.file_name().is_some_and(|name| name == target))
+                    {
+                        saw_change = true;
+                    }
+                }
+                Ok(Err(err)) => {
+                    self.error.get_or_insert(format!("Watch error: {err}"));
+                    self.disk_watcher = None;
+                    self.disk_watch_rx = None;
+                    self.disk_watch_root = None;
+                    self.disk_watch_target_name = None;
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.disk_watcher = None;
+                    self.disk_watch_rx = None;
+                    self.disk_watch_root = None;
+                    self.disk_watch_target_name = None;
+                    return false;
+                }
+            }
+        }
+
+        self.disk_watch_rx = Some(rx);
+        saw_change
+    }
+
+    fn tick_disk_sync(&mut self, ctx: &egui::Context) {
+        self.drain_disk_read_results();
+
+        if self.disk_conflict.is_some() {
+            return;
+        }
+
+        let Some(path) = self.doc.path.clone() else {
+            self.reset_disk_sync_state();
+            return;
+        };
+
+        self.ensure_disk_watcher(ctx, path.as_path());
+
+        let now = Instant::now();
+        if self.drain_disk_watch_events() {
+            let due_at = now + DISK_RELOAD_DEBOUNCE;
+            match self.pending_disk_reload_at {
+                Some(existing) if existing <= due_at => {}
+                _ => self.pending_disk_reload_at = Some(due_at),
+            }
+        }
+
+        if self.disk_watcher.is_none() && !self.disk_reload_in_flight {
+            match self.disk_poll_at {
+                Some(next) if now < next => {}
+                _ => {
+                    self.disk_poll_at = Some(now + DISK_POLL_INTERVAL);
+
+                    match disk_revision(path.as_path()) {
+                        Ok(rev) if Some(rev) != self.doc.disk_rev => {
+                            let due_at = now + DISK_RELOAD_DEBOUNCE;
+                            match self.pending_disk_reload_at {
+                                Some(existing) if existing <= due_at => {}
+                                _ => self.pending_disk_reload_at = Some(due_at),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            self.error
+                                .get_or_insert(format!("Disk check failed: {err}"));
+                        }
+                    }
+                }
+            }
+        } else {
+            self.disk_poll_at = None;
+        }
+
+        if self.disk_reload_in_flight {
+            return;
+        }
+
+        if let Some(due_at) = self.pending_disk_reload_at
+            && now >= due_at
+        {
+            self.pending_disk_reload_at = None;
+            self.start_disk_reload(ctx, path.clone());
+        }
+
+        let mut next_wake = self.pending_disk_reload_at;
+        if self.disk_watcher.is_none() {
+            next_wake = match (next_wake, self.disk_poll_at) {
+                (Some(existing), Some(poll)) => Some(existing.min(poll)),
+                (Some(existing), None) => Some(existing),
+                (None, Some(poll)) => Some(poll),
+                (None, None) => None,
+            };
+        }
+
+        if let Some(next) = next_wake
+            && now < next
+        {
+            ctx.request_repaint_after(next - now);
+        }
+    }
+
+    fn start_disk_reload(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.ensure_disk_read_channel();
+        let Some(tx) = self.disk_read_tx.clone() else {
+            return;
+        };
+
+        let edit_seq = self.doc.edit_seq;
+        let dirty = self.doc.dirty;
+        let base_text = dirty.then(|| self.doc.base_text.clone());
+        let ours_text = dirty.then(|| self.doc.text.clone());
+
+        self.disk_reload_nonce = self.disk_reload_nonce.wrapping_add(1);
+        let nonce = self.disk_reload_nonce;
+
+        self.disk_reload_in_flight = true;
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let outcome = match read_stable_utf8(&path) {
+                Ok((disk_text, disk_rev)) => {
+                    if dirty {
+                        match (base_text, ours_text) {
+                            (Some(base_text), Some(ours_text)) => match merge_three_way(
+                                base_text.as_str(),
+                                ours_text.as_str(),
+                                disk_text.as_str(),
+                            ) {
+                                Merge3Outcome::Clean(merged_text) => {
+                                    Ok(DiskReloadOutcome::MergeClean {
+                                        merged_text,
+                                        disk_text,
+                                        disk_rev,
+                                    })
+                                }
+                                Merge3Outcome::Conflicted {
+                                    conflict_marked,
+                                    ours_wins,
+                                } => Ok(DiskReloadOutcome::MergeConflict {
+                                    disk_text,
+                                    disk_rev,
+                                    conflict_marked,
+                                    ours_wins,
+                                }),
+                            },
+                            _ => Err(io::Error::other("missing merge inputs")),
+                        }
+                    } else {
+                        Ok(DiskReloadOutcome::Replace {
+                            disk_text,
+                            disk_rev,
+                        })
+                    }
+                }
+                Err(err) => Err(err),
+            };
+
+            let _ = tx.send(DiskReadMessage {
+                path,
+                nonce,
+                edit_seq,
+                outcome,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn drain_disk_read_results(&mut self) {
+        let Some(rx) = self.disk_read_rx.take() else {
+            return;
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    if msg.nonce != self.disk_reload_nonce {
+                        continue;
+                    }
+                    if self.doc.path.as_deref() != Some(msg.path.as_path()) {
+                        continue;
+                    }
+                    self.disk_reload_in_flight = false;
+
+                    if self.doc.edit_seq != msg.edit_seq {
+                        let now = Instant::now();
+                        let due_at = now + DISK_RELOAD_DEBOUNCE;
+                        match self.pending_disk_reload_at {
+                            Some(existing) if existing <= due_at => {}
+                            _ => self.pending_disk_reload_at = Some(due_at),
+                        }
+                        continue;
+                    }
+
+                    match msg.outcome {
+                        Ok(DiskReloadOutcome::Replace {
+                            disk_text,
+                            disk_rev,
+                        }) => {
+                            self.doc.base_text = disk_text.clone();
+                            self.doc.text = disk_text;
+                            self.doc.disk_rev = Some(disk_rev);
+                            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                            self.doc.md_cache.clear_scrollable();
+                            self.doc.last_edit_at = None;
+                            self.doc.dirty = false;
+                            self.error = None;
+                        }
+                        Ok(DiskReloadOutcome::MergeClean {
+                            merged_text,
+                            disk_text,
+                            disk_rev,
+                        }) => {
+                            self.doc.text = merged_text;
+                            self.doc.base_text = disk_text;
+                            self.doc.disk_rev = Some(disk_rev);
+                            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                            self.doc.md_cache.clear_scrollable();
+                            self.doc.dirty = true;
+                            self.error = None;
+                        }
+                        Ok(DiskReloadOutcome::MergeConflict {
+                            disk_text,
+                            disk_rev,
+                            conflict_marked,
+                            ours_wins,
+                        }) => {
+                            self.disk_conflict = Some(DiskConflict {
+                                disk_text,
+                                disk_rev,
+                                conflict_marked,
+                                ours_wins,
+                            });
+                        }
+                        Err(err) => {
+                            self.error = Some(format!("Reload failed: {err}"));
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.disk_reload_in_flight = false;
+                    self.disk_read_rx = None;
+                    self.disk_read_tx = None;
+                    return;
+                }
+            }
+        }
+
+        self.disk_read_rx = Some(rx);
+    }
+
+    fn incorporate_disk_text(&mut self, disk_text: String, disk_rev: DiskRevision) {
+        if self.doc.disk_rev == Some(disk_rev) && disk_text == self.doc.base_text {
+            return;
+        }
+
+        if !self.doc.dirty {
+            self.doc.base_text = disk_text.clone();
+            self.doc.text = disk_text;
+            self.doc.disk_rev = Some(disk_rev);
+            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+            self.doc.md_cache.clear_scrollable();
+            self.doc.last_edit_at = None;
+            self.error = None;
+            return;
+        }
+
+        match merge_three_way(
+            self.doc.base_text.as_str(),
+            self.doc.text.as_str(),
+            disk_text.as_str(),
+        ) {
+            Merge3Outcome::Clean(merged) => {
+                self.doc.text = merged;
+                self.doc.base_text = disk_text;
+                self.doc.disk_rev = Some(disk_rev);
+                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.md_cache.clear_scrollable();
+                self.error = None;
+            }
+            Merge3Outcome::Conflicted {
+                conflict_marked,
+                ours_wins,
+            } => {
+                self.disk_conflict = Some(DiskConflict {
+                    disk_text,
+                    disk_rev,
+                    conflict_marked,
+                    ours_wins,
+                });
+            }
+        }
+    }
+
     fn from_launch_options(options: LaunchOptions) -> Self {
         let mut app = Self::default();
         app.set_mode(options.mode);
@@ -656,6 +1120,7 @@ impl RustdownApp {
 
     fn note_text_changed(&mut self) {
         self.doc.dirty = true;
+        self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
         self.doc.last_edit_at = Some(Instant::now());
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.md_cache.clear_scrollable();
@@ -749,6 +1214,7 @@ impl RustdownApp {
             PendingAction::NewBlank => {
                 self.doc = Document::default();
                 self.error = None;
+                self.reset_disk_sync_state();
             }
             PendingAction::Open(path) => self.open_path(path),
         }
@@ -768,18 +1234,23 @@ impl RustdownApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
-        match fs::read_to_string(&path) {
-            Ok(text) => {
+        match read_stable_utf8(&path) {
+            Ok((text, disk_rev)) => {
+                let base_text = text.clone();
                 let stats = DocumentStats::from_text(text.as_str());
                 self.doc = Document {
                     path: Some(path),
                     text,
+                    base_text,
+                    disk_rev: Some(disk_rev),
                     stats,
                     dirty: false,
                     md_cache: CommonMarkCache::default(),
                     last_edit_at: None,
+                    edit_seq: 0,
                 };
                 self.error = None;
+                self.reset_disk_sync_state();
             }
             Err(err) => {
                 self.error.get_or_insert(format!("Open failed: {err}"));
@@ -806,27 +1277,48 @@ impl RustdownApp {
     }
 
     fn save_doc(&mut self, save_as: bool) -> bool {
-        let mut selected_path = None;
-        let path = if save_as {
-            selected_path = markdown_file_dialog().save_file();
-            selected_path.as_deref()
+        let (path, update_doc_path) = if save_as {
+            let Some(path) = markdown_file_dialog().save_file() else {
+                return false;
+            };
+            (path, true)
+        } else if let Some(path) = self.doc.path.clone() {
+            (path, false)
         } else {
-            self.doc.path.as_deref().or_else(|| {
-                selected_path = markdown_file_dialog().save_file();
-                selected_path.as_deref()
-            })
+            let Some(path) = markdown_file_dialog().save_file() else {
+                return false;
+            };
+            (path, true)
         };
-        let Some(path) = path else {
+
+        let saving_to_current_path = self.doc.path.as_deref() == Some(path.as_path());
+
+        if self.disk_conflict.is_none() && saving_to_current_path {
+            match read_stable_utf8(&path) {
+                Ok((disk_text, disk_rev)) => self.incorporate_disk_text(disk_text, disk_rev),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    self.error
+                        .get_or_insert(format!("Pre-save reload failed: {err}"));
+                }
+            }
+        }
+
+        if self.disk_conflict.is_some() {
             return false;
-        };
-        match fs::write(path, &self.doc.text) {
+        }
+
+        match atomic_write_utf8(&path, &self.doc.text) {
             Ok(()) => {
-                if let Some(path) = selected_path {
-                    self.doc.path = Some(path);
+                if update_doc_path {
+                    self.doc.path = Some(path.clone());
                 }
                 self.doc.dirty = false;
+                self.doc.base_text = self.doc.text.clone();
+                self.doc.disk_rev = disk_revision(&path).ok();
 
                 self.error = None;
+                self.reset_disk_sync_state();
                 true
             }
             Err(err) => {
@@ -870,14 +1362,174 @@ impl RustdownApp {
                 });
             });
     }
+
+    fn show_disk_conflict_dialog(&mut self, ctx: &egui::Context) {
+        if self.disk_conflict.is_none() {
+            return;
+        }
+
+        egui::Window::new("File changed on disk")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "\"{}\" changed on disk while you were editing.",
+                    self.doc.title()
+                ));
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Open conflict merge").clicked() {
+                        self.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
+                    }
+                    if ui.button("Keep mine (+ merge file)").clicked() {
+                        self.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save As…").clicked() {
+                        self.apply_conflict_choice(ConflictChoice::SaveAs);
+                    }
+                    if ui.button("Reload disk").clicked() {
+                        self.apply_conflict_choice(ConflictChoice::ReloadDisk);
+                    }
+                    if ui.button("Overwrite disk").clicked() {
+                        self.apply_conflict_choice(ConflictChoice::OverwriteDisk);
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.small(
+                    "Tip: “Keep mine” applies non-conflicting disk edits and writes a merge file so no changes are lost.",
+                );
+            });
+    }
+
+    fn apply_conflict_choice(&mut self, choice: ConflictChoice) {
+        let Some(conflict) = self.disk_conflict.take() else {
+            return;
+        };
+
+        match choice {
+            ConflictChoice::OpenConflictMerge => {
+                self.doc.text = conflict.conflict_marked;
+                self.doc.base_text = conflict.disk_text;
+                self.doc.disk_rev = Some(conflict.disk_rev);
+                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.md_cache.clear_scrollable();
+                self.doc.dirty = true;
+                self.error = None;
+            }
+            ConflictChoice::KeepMineWriteSidecar => {
+                self.doc.text = conflict.ours_wins;
+                self.doc.base_text = conflict.disk_text;
+                self.doc.disk_rev = Some(conflict.disk_rev);
+                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.md_cache.clear_scrollable();
+                self.doc.dirty = true;
+                self.error = None;
+
+                if let Some(doc_path) = self.doc.path.as_deref() {
+                    match next_merge_sidecar_path(doc_path) {
+                        Ok(sidecar_path) => {
+                            match atomic_write_utf8(&sidecar_path, &conflict.conflict_marked) {
+                                Ok(()) => self.merge_sidecar_path = Some(sidecar_path),
+                                Err(err) => {
+                                    self.error
+                                        .get_or_insert(format!("Merge file write failed: {err}"));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.error
+                                .get_or_insert(format!("Merge file path failed: {err}"));
+                        }
+                    }
+                }
+            }
+            ConflictChoice::SaveAs => {
+                // Save-as switches the active path, so the conflict prompt is no longer relevant.
+                if !self.save_doc(true) {
+                    self.disk_conflict = Some(conflict);
+                    return;
+                }
+            }
+            ConflictChoice::ReloadDisk => {
+                self.doc.text = conflict.disk_text;
+                self.doc.base_text = self.doc.text.clone();
+                self.doc.disk_rev = Some(conflict.disk_rev);
+                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.md_cache.clear_scrollable();
+                self.doc.dirty = false;
+                self.error = None;
+            }
+            ConflictChoice::OverwriteDisk => {
+                let Some(path) = self.doc.path.as_deref() else {
+                    self.disk_conflict = Some(conflict);
+                    return;
+                };
+
+                match atomic_write_utf8(path, &self.doc.text) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        self.disk_conflict = Some(conflict);
+                        self.error.get_or_insert(format!("Overwrite failed: {err}"));
+                        return;
+                    }
+                }
+
+                self.doc.base_text = self.doc.text.clone();
+                self.doc.disk_rev = disk_revision(path).ok();
+                self.doc.dirty = false;
+                self.error = None;
+            }
+        }
+
+        self.reset_disk_sync_state();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ConflictChoice {
+    OpenConflictMerge,
+    KeepMineWriteSidecar,
+    SaveAs,
+    ReloadDisk,
+    OverwriteDisk,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     fn parse(args: &[&str]) -> LaunchOptions {
         parse_launch_options(args.iter().copied().map(OsString::from))
+    }
+
+    fn test_rev(seconds: u64, len: u64) -> DiskRevision {
+        DiskRevision {
+            modified: SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+            len,
+            #[cfg(unix)]
+            dev: 0,
+            #[cfg(unix)]
+            inode: 0,
+        }
+    }
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        dir.push(format!("{name}-{nanos}-{}", std::process::id()));
+        let created = fs::create_dir_all(&dir);
+        assert!(created.is_ok(), "Failed to create temp dir: {created:?}");
+        dir
     }
 
     #[test]
@@ -999,5 +1651,171 @@ mod tests {
         assert_eq!(app.doc.text, "zeta beta zeta");
         assert!(app.doc.dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("zeta beta zeta"));
+    }
+
+    #[test]
+    fn incorporate_disk_text_when_clean_replaces_buffer_and_advances_base() {
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("note.md"));
+        app.doc.text = "old".to_owned();
+        app.doc.base_text = "old".to_owned();
+        app.doc.disk_rev = Some(test_rev(1, 3));
+        app.doc.dirty = false;
+
+        app.incorporate_disk_text("new".to_owned(), test_rev(2, 3));
+
+        assert_eq!(app.doc.text, "new");
+        assert_eq!(app.doc.base_text, "new");
+        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 3)));
+        assert!(!app.doc.dirty);
+        assert!(app.disk_conflict.is_none());
+    }
+
+    #[test]
+    fn incorporate_disk_text_when_dirty_and_merge_is_clean_applies_both_changes() {
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("note.md"));
+        app.doc.base_text = "a\nb\n".to_owned();
+        app.doc.text = "a\nB\n".to_owned();
+        app.doc.disk_rev = Some(test_rev(1, 4));
+        app.doc.dirty = true;
+
+        app.incorporate_disk_text("A\nb\n".to_owned(), test_rev(2, 4));
+
+        assert_eq!(app.doc.text, "A\nB\n");
+        assert_eq!(app.doc.base_text, "A\nb\n");
+        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
+        assert!(app.doc.dirty);
+        assert!(app.disk_conflict.is_none());
+    }
+
+    #[test]
+    fn incorporate_disk_text_when_dirty_and_conflicts_sets_prompt_without_mutating_buffer() {
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("note.md"));
+        app.doc.base_text = "a\nb\n".to_owned();
+        app.doc.text = "a\nO\n".to_owned();
+        app.doc.disk_rev = Some(test_rev(1, 4));
+        app.doc.dirty = true;
+
+        app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
+
+        assert_eq!(app.doc.text, "a\nO\n");
+        assert_eq!(app.doc.base_text, "a\nb\n");
+        assert_eq!(app.doc.disk_rev, Some(test_rev(1, 4)));
+        assert!(app.disk_conflict.is_some());
+    }
+
+    #[test]
+    fn conflict_choice_open_merge_replaces_buffer_with_conflict_markers() {
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("note.md"));
+        app.doc.base_text = "a\nb\n".to_owned();
+        app.doc.text = "a\nO\n".to_owned();
+        app.doc.disk_rev = Some(test_rev(1, 4));
+        app.doc.dirty = true;
+
+        app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
+        assert!(
+            app.disk_conflict.is_some(),
+            "Expected conflict prompt to be set"
+        );
+        let expected_merge = match app.disk_conflict.as_ref() {
+            Some(conflict) => conflict.conflict_marked.clone(),
+            None => return,
+        };
+
+        app.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
+
+        assert_eq!(app.doc.text, expected_merge);
+        assert_eq!(app.doc.base_text, "a\nT\n");
+        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
+        assert!(app.doc.dirty);
+        assert!(app.disk_conflict.is_none());
+    }
+
+    #[test]
+    fn conflict_choice_keep_mine_writes_sidecar_and_applies_safe_disk_edits() {
+        let dir = make_temp_dir("rustdown-merge-test");
+        let original = dir.join("note.md");
+
+        let _ = atomic_write_utf8(&original, "line1\nline2\nline3\n");
+
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(original.clone());
+        app.doc.base_text = "line1\nline2\nline3\n".to_owned();
+        app.doc.text = "line1\nO2\nline3\n".to_owned();
+        app.doc.disk_rev = Some(test_rev(1, 18));
+        app.doc.dirty = true;
+
+        app.incorporate_disk_text("line1\nT2\nT3\n".to_owned(), test_rev(2, 15));
+        assert!(
+            app.disk_conflict.is_some(),
+            "Expected conflict prompt to be set"
+        );
+        let (expected_sidecar, expected_ours_wins) = match app.disk_conflict.as_ref() {
+            Some(conflict) => (conflict.conflict_marked.clone(), conflict.ours_wins.clone()),
+            None => {
+                let _ = fs::remove_dir_all(&dir);
+                return;
+            }
+        };
+
+        app.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
+
+        assert_eq!(app.doc.text, expected_ours_wins);
+        assert_eq!(app.doc.base_text, "line1\nT2\nT3\n");
+        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 15)));
+        assert!(app.disk_conflict.is_none());
+
+        assert!(
+            app.merge_sidecar_path.is_some(),
+            "Expected merge sidecar path to be set"
+        );
+        let sidecar_path = match app.merge_sidecar_path.clone() {
+            Some(path) => path,
+            None => {
+                let _ = fs::remove_dir_all(&dir);
+                return;
+            }
+        };
+
+        let sidecar_text_res = fs::read_to_string(&sidecar_path);
+        assert!(
+            sidecar_text_res.is_ok(),
+            "Failed to read sidecar file: {sidecar_text_res:?}"
+        );
+        let sidecar_text = match sidecar_text_res {
+            Ok(text) => text,
+            Err(_) => {
+                let _ = fs::remove_dir_all(&dir);
+                return;
+            }
+        };
+        assert_eq!(sidecar_text, expected_sidecar);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_utf8_replaces_existing_file_contents() {
+        let dir = make_temp_dir("rustdown-atomic-save-test");
+        let path = dir.join("save.md");
+
+        assert!(atomic_write_utf8(&path, "first").is_ok());
+        assert!(atomic_write_utf8(&path, "second").is_ok());
+
+        let text_res = fs::read_to_string(&path);
+        assert!(text_res.is_ok(), "Failed to read saved file: {text_res:?}");
+        let text = match text_res {
+            Ok(text) => text,
+            Err(_) => {
+                let _ = fs::remove_dir_all(&dir);
+                return;
+            }
+        };
+        assert_eq!(text, "second");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
