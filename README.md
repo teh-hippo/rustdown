@@ -52,3 +52,12 @@ Tip: you can also drag and drop `.md`/`.markdown` files into the window to open 
 
 Formatting is intentionally simple; if a `.editorconfig` file is present, rustdown will use a small subset:
 `trim_trailing_whitespace`, `insert_final_newline`, and `end_of_line` (lf/crlf).
+
+## Supported platforms
+
+| Platform | Architecture | Status |
+|----------|-------------|--------|
+| Linux | x86_64 | ✅ Built + tested in CI |
+| Windows | x86_64 | ✅ Built + tested in CI |
+
+Pre-built binaries are available on the [Releases](https://github.com/teh-hippo/rustdown/releases) page.
