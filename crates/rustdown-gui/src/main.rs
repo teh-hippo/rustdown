@@ -1426,7 +1426,13 @@ impl RustdownApp {
                 galley
             };
 
-            let response = ui.add_sized(ui.available_size(), editor.layouter(&mut layouter));
+            let editor_size = ui.available_size();
+            let response = egui::ScrollArea::both()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.add_sized(editor_size, editor.layouter(&mut layouter))
+                })
+                .inner;
             (response.changed(), seq.get())
         };
 
