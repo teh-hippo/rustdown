@@ -84,20 +84,30 @@ where
     let mut mode = Mode::Edit;
     let mut path = None;
     let mut diagnostics = DiagnosticsMode::Off;
+    let mut parse_flags = true;
 
     for arg in args {
         let arg = arg.into();
-        if arg == "-p" {
-            mode = Mode::Preview;
-            continue;
-        }
-        if arg == "-s" {
-            mode = Mode::SideBySide;
-            continue;
-        }
-        if arg == "--diagnostics-open" || arg == "--diag-open" {
-            diagnostics = DiagnosticsMode::OpenPipeline;
-            continue;
+        if parse_flags {
+            if arg == "--" {
+                parse_flags = false;
+                continue;
+            }
+            if arg == "-p" {
+                mode = Mode::Preview;
+                continue;
+            }
+            if arg == "-s" {
+                mode = Mode::SideBySide;
+                continue;
+            }
+            if arg == "--diagnostics-open" || arg == "--diag-open" {
+                diagnostics = DiagnosticsMode::OpenPipeline;
+                continue;
+            }
+            if arg.to_str().is_some_and(|value| value.starts_with('-')) {
+                continue;
+            }
         }
 
         if path.is_none() {
@@ -654,6 +664,24 @@ enum PendingAction {
     Open(PathBuf),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveTrigger {
+    Save,
+    SaveAs,
+}
+
+#[must_use]
+fn save_trigger_from_shortcut(command: bool, shift: bool, key_s: bool) -> Option<SaveTrigger> {
+    if !(command && key_s) {
+        return None;
+    }
+    if shift {
+        Some(SaveTrigger::SaveAs)
+    } else {
+        Some(SaveTrigger::Save)
+    }
+}
+
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
@@ -662,8 +690,7 @@ impl eframe::App for RustdownApp {
         let (
             dropped_path,
             open,
-            save,
-            save_as,
+            save_trigger,
             new_doc,
             cycle_mode,
             search,
@@ -683,8 +710,7 @@ impl eframe::App for RustdownApp {
                         .filter_map(|file| file.path.as_deref()),
                 ),
                 cmd && i.key_pressed(egui::Key::O),
-                cmd && i.key_pressed(egui::Key::S) && !i.modifiers.shift,
-                cmd && i.key_pressed(egui::Key::S) && i.modifiers.shift,
+                save_trigger_from_shortcut(cmd, i.modifiers.shift, i.key_pressed(egui::Key::S)),
                 cmd && i.key_pressed(egui::Key::N),
                 cmd && i.key_pressed(egui::Key::Enter),
                 cmd && !i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::F),
@@ -704,8 +730,8 @@ impl eframe::App for RustdownApp {
             if open {
                 self.open_file();
             }
-            if save_as || save {
-                let _ = self.save_doc(save_as);
+            if let Some(save_trigger) = save_trigger {
+                let _ = self.save_doc(matches!(save_trigger, SaveTrigger::SaveAs));
             }
             if new_doc {
                 self.request_action(PendingAction::NewBlank);
@@ -1510,6 +1536,14 @@ impl RustdownApp {
                 self.error = None;
                 self.reset_disk_sync_state();
             }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                self.doc = Document {
+                    path: Some(path),
+                    ..Document::default()
+                };
+                self.error = None;
+                self.reset_disk_sync_state();
+            }
             Err(err) => {
                 self.error.get_or_insert(format!("Open failed: {err}"));
             }
@@ -1830,6 +1864,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_launch_options_ignores_unknown_switches() {
+        let options = parse(&["--gapplication-service", "README.md"]);
+        assert_eq!(options.mode, Mode::Edit);
+        assert_eq!(
+            options.path.as_deref(),
+            Some(PathBuf::from("README.md")).as_deref()
+        );
+    }
+
+    #[test]
+    fn parse_launch_options_accepts_dash_prefixed_path_after_double_dash() {
+        let options = parse(&["--", "--scratch.md"]);
+        assert_eq!(
+            options.path.as_deref(),
+            Some(PathBuf::from("--scratch.md")).as_deref()
+        );
+    }
+
+    #[test]
     fn document_stats_counts_words_chars_lines_and_read_time() {
         let stats = DocumentStats::from_text("one two\nthree");
         assert_eq!(
@@ -1915,6 +1968,20 @@ mod tests {
     }
 
     #[test]
+    fn save_trigger_from_shortcut_maps_save_and_save_as() {
+        assert_eq!(
+            save_trigger_from_shortcut(true, false, true),
+            Some(SaveTrigger::Save)
+        );
+        assert_eq!(
+            save_trigger_from_shortcut(true, true, true),
+            Some(SaveTrigger::SaveAs)
+        );
+        assert_eq!(save_trigger_from_shortcut(false, false, true), None);
+        assert_eq!(save_trigger_from_shortcut(true, false, false), None);
+    }
+
+    #[test]
     fn replace_all_matches_updates_document_and_stats() {
         let mut app = RustdownApp::default();
         app.doc.text = Arc::new("alpha beta alpha".to_owned());
@@ -1927,6 +1994,33 @@ mod tests {
         assert_eq!(app.doc.text.as_str(), "zeta beta zeta");
         assert!(app.doc.dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("zeta beta zeta"));
+    }
+
+    #[test]
+    fn open_path_missing_file_treats_path_as_new_document() {
+        let dir = make_temp_dir("rustdown-open-new-file-test");
+        let path = dir.join("new.md");
+
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("old.md"));
+        app.doc.text = Arc::new("existing text".to_owned());
+        app.doc.base_text = Arc::new("existing text".to_owned());
+        app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
+        app.doc.dirty = true;
+        app.error = Some("old error".to_owned());
+
+        app.open_path(path.clone());
+
+        assert_eq!(app.doc.path.as_deref(), Some(path.as_path()));
+        assert_eq!(app.doc.text.as_str(), "");
+        assert_eq!(app.doc.base_text.as_str(), "");
+        assert_eq!(app.doc.disk_rev, None);
+        assert_eq!(app.doc.stats, DocumentStats::default());
+        assert!(!app.doc.dirty);
+        assert!(app.error.is_none());
+        assert!(!path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
