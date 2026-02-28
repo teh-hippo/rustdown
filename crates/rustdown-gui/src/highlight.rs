@@ -254,10 +254,10 @@ mod tests {
     }
 
     #[test]
-    fn markdown_layout_job_tilde_fences_mark_code_content_as_code() {
+    fn markdown_layout_job_marks_fence_content_and_delimiters() {
         let style = egui::Style::default();
         let visuals = egui::Visuals::dark();
-        let source = "~~~azurecli\naz aks list\n~~~\n";
+        let source = "~~~azurecli\naz aks list\n~~~\n~~~bash\necho hi\n~~~\n";
         let job = markdown_layout_job(&style, &visuals, source, false);
         let code_section = section_for_snippet(&job, "az aks list");
         assert_eq!(code_section.format.background, visuals.faint_bg_color);
@@ -265,14 +265,6 @@ mod tests {
             code_section.format.font_id,
             egui::TextStyle::Monospace.resolve(&style)
         );
-    }
-
-    #[test]
-    fn markdown_layout_job_marks_fence_delimiters_as_weak_text() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "~~~bash\necho hi\n~~~\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
         let fence_section = section_for_snippet(&job, "~~~bash");
         assert_eq!(fence_section.format.color, visuals.weak_text_color());
     }

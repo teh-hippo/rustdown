@@ -180,28 +180,46 @@ pub(crate) fn next_merge_sidecar_path(original: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    fn make_temp_dir(name: &str) -> PathBuf {
+    struct TestDir(PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl TestDir {
+        fn join(&self, path: &str) -> PathBuf {
+            self.0.join(path)
+        }
+    }
+
+    fn test_dir(name: &str) -> TestDir {
         let mut dir = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         dir.push(format!("{name}-{nanos}-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
-        dir
+        TestDir(dir)
     }
 
     #[test]
-    fn disk_revision_reads_metadata() {
-        let dir = make_temp_dir("rustdown-disk-rev-test");
+    fn disk_revision_and_stable_read_report_expected_metadata() {
+        let dir = test_dir("rustdown-disk-rev-test");
         let path = dir.join("test.md");
-        fs::write(&path, "hello").ok();
+        fs::write(&path, "content").ok();
 
         let rev = disk_revision(&path);
         assert!(rev.is_ok());
         let rev = rev.ok().map(|r| r.len);
-        assert_eq!(rev, Some(5));
+        assert_eq!(rev, Some(7));
 
-        let _ = fs::remove_dir_all(&dir);
+        let result = read_stable_utf8(&path);
+        assert!(result.is_ok(), "read_stable_utf8 failed: {result:?}");
+        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, "content");
+        assert_eq!(rev.len, 7);
     }
 
     #[test]
@@ -211,23 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn read_stable_utf8_reads_content_and_revision() {
-        let dir = make_temp_dir("rustdown-stable-read-test");
-        let path = dir.join("test.md");
-        fs::write(&path, "content").ok();
-
-        let result = read_stable_utf8(&path);
-        assert!(result.is_ok(), "read_stable_utf8 failed: {result:?}");
-        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
-        assert_eq!(text, "content");
-        assert_eq!(rev.len, 7);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn atomic_write_creates_and_overwrites() {
-        let dir = make_temp_dir("rustdown-atomic-test");
+        let dir = test_dir("rustdown-atomic-test");
         let path = dir.join("test.md");
 
         assert!(atomic_write_utf8(&path, "first").is_ok());
@@ -237,8 +240,6 @@ mod tests {
         assert!(atomic_write_utf8(&path, "second").is_ok());
         let content = fs::read_to_string(&path).unwrap_or_default();
         assert_eq!(content, "second");
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -248,8 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn next_merge_sidecar_path_first_candidate() {
-        let dir = make_temp_dir("rustdown-sidecar-test");
+    fn next_merge_sidecar_path_prefers_first_candidate_then_skips_existing() {
+        let dir = test_dir("rustdown-sidecar-test");
         let original = dir.join("notes.md");
 
         let result = next_merge_sidecar_path(&original);
@@ -259,16 +260,6 @@ mod tests {
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge.md"
         );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn next_merge_sidecar_path_skips_existing() {
-        let dir = make_temp_dir("rustdown-sidecar-skip-test");
-        let original = dir.join("notes.md");
-
-        // Create the first sidecar so it skips to -2
         let first = dir.join("notes.rustdown-merge.md");
         fs::write(&first, "").ok();
 
@@ -279,13 +270,11 @@ mod tests {
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge-2.md"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn next_merge_sidecar_path_no_extension() {
-        let dir = make_temp_dir("rustdown-sidecar-noext-test");
+        let dir = test_dir("rustdown-sidecar-noext-test");
         let original = dir.join("README");
 
         let result = next_merge_sidecar_path(&original);
@@ -295,7 +284,5 @@ mod tests {
             sidecar.file_name().unwrap_or_default(),
             "README.rustdown-merge"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 }

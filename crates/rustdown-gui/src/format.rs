@@ -225,34 +225,28 @@ mod tests {
     }
 
     #[test]
-    fn format_markdown_trims_outside_fences_and_keeps_hard_breaks() {
-        let source = "plain \nhard break  \n```\ncode   \n```\n";
-        let formatted = format_markdown(source, DEFAULT_OPTIONS);
-        assert_eq!(formatted, "plain\nhard break  \n```\ncode   \n```\n");
-    }
-
-    #[test]
-    fn format_markdown_preserves_tilde_fence_content_whitespace() {
-        let source = "~~~azurecli\naz aks list   \n~~~\n";
-        let formatted = format_markdown(source, DEFAULT_OPTIONS);
-        assert_eq!(formatted, source);
-    }
-
-    #[test]
-    fn format_markdown_normalizes_cr_and_respects_explicit_lf() {
-        let options = FormatOptions {
+    fn format_markdown_covers_whitespace_fence_and_eol_behaviors() {
+        let explicit_lf = FormatOptions {
             trim_trailing_whitespace: false,
             insert_final_newline: false,
             end_of_line: Some(EndOfLine::Lf),
         };
-        let formatted = format_markdown("a\r\nb\rc", options);
-        assert_eq!(formatted, "a\nb\nc");
-    }
-
-    #[test]
-    fn format_markdown_preserves_crlf_when_detected() {
-        let formatted = format_markdown("a\r\nb", DEFAULT_OPTIONS);
-        assert_eq!(formatted, "a\r\nb\r\n");
+        for (source, options, expected) in [
+            (
+                "plain \nhard break  \n```\ncode   \n```\n",
+                DEFAULT_OPTIONS,
+                "plain\nhard break  \n```\ncode   \n```\n",
+            ),
+            (
+                "~~~azurecli\naz aks list   \n~~~\n",
+                DEFAULT_OPTIONS,
+                "~~~azurecli\naz aks list   \n~~~\n",
+            ),
+            ("a\r\nb\rc", explicit_lf, "a\nb\nc"),
+            ("a\r\nb", DEFAULT_OPTIONS, "a\r\nb\r\n"),
+        ] {
+            assert_eq!(format_markdown(source, options), expected);
+        }
     }
 
     #[test]

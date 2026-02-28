@@ -288,179 +288,93 @@ fn ensure_newline(buf: &mut String) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn identical_ours_and_theirs_returns_clean() {
-        let result = merge_three_way("a\n", "b\n", "b\n");
-        assert_eq!(result, Merge3Outcome::Clean("b\n".to_owned()));
-    }
-
-    #[test]
-    fn only_ours_changed_returns_ours() {
-        let result = merge_three_way("a\n", "b\n", "a\n");
-        assert_eq!(result, Merge3Outcome::Clean("b\n".to_owned()));
-    }
-
-    #[test]
-    fn only_theirs_changed_returns_theirs() {
-        let result = merge_three_way("a\n", "a\n", "c\n");
-        assert_eq!(result, Merge3Outcome::Clean("c\n".to_owned()));
-    }
-
-    #[test]
-    fn non_overlapping_edits_merge_cleanly() {
-        let base = "line1\nline2\nline3\n";
-        let ours = "LINE1\nline2\nline3\n";
-        let theirs = "line1\nline2\nLINE3\n";
-        let result = merge_three_way(base, ours, theirs);
+    fn assert_clean(base: &str, ours: &str, theirs: &str, expected: &str) {
         assert_eq!(
-            result,
-            Merge3Outcome::Clean("LINE1\nline2\nLINE3\n".to_owned())
+            merge_three_way(base, ours, theirs),
+            Merge3Outcome::Clean(expected.to_owned())
         );
     }
 
-    #[test]
-    fn overlapping_edits_produce_conflict() {
-        let base = "a\nb\n";
-        let ours = "a\nO\n";
-        let theirs = "a\nT\n";
-        let result = merge_three_way(base, ours, theirs);
-        match result {
+    fn assert_conflict(base: &str, ours: &str, theirs: &str) -> (String, String) {
+        match merge_three_way(base, ours, theirs) {
             Merge3Outcome::Conflicted {
                 conflict_marked,
                 ours_wins,
-            } => {
-                assert!(conflict_marked.contains("<<<<<<< ours"));
-                assert!(conflict_marked.contains("O\n"));
-                assert!(conflict_marked.contains("T\n"));
-                assert!(conflict_marked.contains(">>>>>>> theirs"));
-                assert_eq!(ours_wins, "a\nO\n");
-            }
+            } => (conflict_marked, ours_wins),
             Merge3Outcome::Clean(_) => panic!("Expected conflict"),
         }
     }
 
-    #[test]
-    fn identical_overlapping_edits_are_not_conflicts() {
-        let base = "a\nb\nc\n";
-        let ours = "a\nX\nc\n";
-        let theirs = "a\nX\nc\n";
-        let result = merge_three_way(base, ours, theirs);
-        assert_eq!(result, Merge3Outcome::Clean("a\nX\nc\n".to_owned()));
-    }
-
-    #[test]
-    fn empty_base_with_different_additions_conflicts() {
-        let result = merge_three_way("", "hello\n", "world\n");
-        match result {
-            Merge3Outcome::Conflicted {
-                conflict_marked, ..
-            } => {
-                assert!(conflict_marked.contains("<<<<<<< ours"));
-            }
-            Merge3Outcome::Clean(_) => panic!("Expected conflict"),
+    fn edit<'a>(base_start: usize, base_end: usize, replacement: &[&'a str]) -> Edit<'a> {
+        Edit {
+            base_start,
+            base_end,
+            replacement: replacement.to_vec(),
         }
     }
 
     #[test]
-    fn all_identical_returns_clean() {
-        let text = "same\n";
-        let result = merge_three_way(text, text, text);
-        assert_eq!(result, Merge3Outcome::Clean(text.to_owned()));
+    fn merge_three_way_clean_cases() {
+        for (base, ours, theirs, expected) in [
+            ("a\n", "b\n", "b\n", "b\n"),
+            ("a\n", "b\n", "a\n", "b\n"),
+            ("a\n", "a\n", "c\n", "c\n"),
+            ("same\n", "same\n", "same\n", "same\n"),
+            (
+                "line1\nline2\nline3\n",
+                "LINE1\nline2\nline3\n",
+                "line1\nline2\nLINE3\n",
+                "LINE1\nline2\nLINE3\n",
+            ),
+            (
+                "a\nb\nc\nd\ne\n",
+                "A\nb\nc\nd\ne\n",
+                "a\nb\nc\nd\nE\n",
+                "A\nb\nc\nd\nE\n",
+            ),
+            ("a\nb\nc\n", "a\nX\nc\n", "a\nX\nc\n", "a\nX\nc\n"),
+        ] {
+            assert_clean(base, ours, theirs, expected);
+        }
     }
 
     #[test]
-    fn multi_line_non_overlapping_merge() {
-        let base = "a\nb\nc\nd\ne\n";
-        let ours = "A\nb\nc\nd\ne\n";
-        let theirs = "a\nb\nc\nd\nE\n";
-        let result = merge_three_way(base, ours, theirs);
-        assert_eq!(result, Merge3Outcome::Clean("A\nb\nc\nd\nE\n".to_owned()));
+    fn merge_three_way_conflict_cases() {
+        let (conflict_marked, ours_wins) = assert_conflict("a\nb\n", "a\nO\n", "a\nT\n");
+        assert!(conflict_marked.contains("<<<<<<< ours"));
+        assert!(conflict_marked.contains("O\n"));
+        assert!(conflict_marked.contains("T\n"));
+        assert!(conflict_marked.contains(">>>>>>> theirs"));
+        assert_eq!(ours_wins, "a\nO\n");
+
+        let (conflict_marked, _) = assert_conflict("", "hello\n", "world\n");
+        assert!(conflict_marked.contains("<<<<<<< ours"));
     }
 
     #[test]
-    fn diff_edits_detects_single_line_change() {
-        let edits = diff_edits("a\nb\nc\n", "a\nX\nc\n");
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].base_start, 1);
-        assert_eq!(edits[0].base_end, 2);
-        assert_eq!(edits[0].replacement, vec!["X\n"]);
+    fn diff_edits_detects_change_kinds() {
+        for (base, current, base_start, base_end, replacement) in [
+            ("a\nb\nc\n", "a\nX\nc\n", 1, 2, &["X\n"][..]),
+            ("a\nc\n", "a\nb\nc\n", 1, 1, &["b\n"][..]),
+            ("a\nb\nc\n", "a\nc\n", 1, 2, &[][..]),
+        ] {
+            let edits = diff_edits(base, current);
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].base_start, base_start);
+            assert_eq!(edits[0].base_end, base_end);
+            assert_eq!(edits[0].replacement, replacement.to_vec());
+        }
     }
 
     #[test]
-    fn diff_edits_detects_insertion() {
-        let edits = diff_edits("a\nc\n", "a\nb\nc\n");
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].base_start, 1);
-        assert_eq!(edits[0].base_end, 1);
-        assert_eq!(edits[0].replacement, vec!["b\n"]);
-    }
-
-    #[test]
-    fn diff_edits_detects_deletion() {
-        let edits = diff_edits("a\nb\nc\n", "a\nc\n");
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].base_start, 1);
-        assert_eq!(edits[0].base_end, 2);
-        assert!(edits[0].replacement.is_empty());
-    }
-
-    #[test]
-    fn edits_overlap_pure_insertions_at_same_point() {
-        let a = Edit {
-            base_start: 2,
-            base_end: 2,
-            replacement: vec!["x\n"],
-        };
-        let b = Edit {
-            base_start: 2,
-            base_end: 2,
-            replacement: vec!["y\n"],
-        };
-        assert!(edits_overlap(&a, &b));
-    }
-
-    #[test]
-    fn edits_overlap_non_overlapping_ranges() {
-        let a = Edit {
-            base_start: 0,
-            base_end: 1,
-            replacement: vec!["x\n"],
-        };
-        let b = Edit {
-            base_start: 2,
-            base_end: 3,
-            replacement: vec!["y\n"],
-        };
-        assert!(!edits_overlap(&a, &b));
-    }
-
-    #[test]
-    fn edits_overlap_adjacent_ranges_do_not_overlap() {
-        let a = Edit {
-            base_start: 0,
-            base_end: 2,
-            replacement: vec!["x\n"],
-        };
-        let b = Edit {
-            base_start: 2,
-            base_end: 4,
-            replacement: vec!["y\n"],
-        };
-        assert!(!edits_overlap(&a, &b));
-    }
-
-    #[test]
-    fn edits_overlap_partial_overlap() {
-        let a = Edit {
-            base_start: 0,
-            base_end: 3,
-            replacement: vec!["x\n"],
-        };
-        let b = Edit {
-            base_start: 2,
-            base_end: 5,
-            replacement: vec!["y\n"],
-        };
-        assert!(edits_overlap(&a, &b));
+    fn edits_overlap_cases() {
+        for (a, b, expected) in [
+            (edit(2, 2, &["x\n"]), edit(2, 2, &["y\n"]), true),
+            (edit(0, 1, &["x\n"]), edit(2, 3, &["y\n"]), false),
+            (edit(0, 2, &["x\n"]), edit(2, 4, &["y\n"]), false),
+            (edit(0, 3, &["x\n"]), edit(2, 5, &["y\n"]), true),
+        ] {
+            assert_eq!(edits_overlap(&a, &b), expected);
+        }
     }
 }

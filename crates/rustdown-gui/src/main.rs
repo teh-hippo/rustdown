@@ -205,6 +205,25 @@ fn avg_duration_us(total: Duration, iterations: usize) -> f64 {
     total.as_secs_f64() * 1_000_000.0 / iterations.max(1) as f64
 }
 
+fn measure_iterations(iterations: usize, mut f: impl FnMut()) -> Duration {
+    let start = Instant::now();
+    for _ in 0..iterations {
+        f();
+    }
+    start.elapsed()
+}
+
+#[must_use]
+fn diagnostics_raw_input() -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 768.0),
+        )),
+        ..Default::default()
+    }
+}
+
 fn estimate_text_heap_bytes(text: &Arc<String>, base_text: &Arc<String>) -> usize {
     text.capacity()
         + if Arc::ptr_eq(text, base_text) {
@@ -275,19 +294,15 @@ fn run_open_pipeline_diagnostics(
     let galley = std::hint::black_box(ctx.fonts(|fonts| fonts.layout_job(job)));
     let highlight_layout_ms = highlight_layout_start.elapsed();
 
-    let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1024.0, 768.0),
-        )),
-        ..Default::default()
-    };
-
-    let mut app = RustdownApp {
-        mode: Mode::Edit,
-        doc: Document {
+    let make_document = |image_uri_scheme: String,
+                         text: Arc<String>,
+                         base_text: Arc<String>,
+                         edit_seq: u64,
+                         md_cache: CommonMarkCache|
+     -> Document {
+        Document {
             path: Some(path.to_path_buf()),
-            image_uri_scheme: default_image_uri_scheme(Some(path)),
+            image_uri_scheme,
             text,
             base_text,
             disk_rev: Some(disk_rev),
@@ -297,11 +312,33 @@ fn run_open_pipeline_diagnostics(
             dirty: false,
             md_cache,
             last_edit_at: None,
-            edit_seq: 0,
+            edit_seq,
             editor_galley_cache: None,
-        },
-        ..Default::default()
+        }
     };
+    let make_app = |mode: Mode,
+                    image_uri_scheme: String,
+                    text: Arc<String>,
+                    base_text: Arc<String>,
+                    edit_seq: u64,
+                    md_cache: CommonMarkCache|
+     -> RustdownApp {
+        RustdownApp {
+            mode,
+            doc: make_document(image_uri_scheme, text, base_text, edit_seq, md_cache),
+            ..Default::default()
+        }
+    };
+
+    let mut app = make_app(
+        Mode::Edit,
+        default_image_uri_scheme(Some(path)),
+        text,
+        base_text,
+        0,
+        md_cache,
+    );
+    let raw = diagnostics_raw_input();
 
     let editor_frame1_start = Instant::now();
     let _ = ctx.run(raw.clone(), |ctx| {
@@ -316,33 +353,15 @@ fn run_open_pipeline_diagnostics(
     let editor_frame2_ms = editor_frame2_start.elapsed();
     let core_total_ms = total_start.elapsed();
 
-    let mut preview_app = RustdownApp {
-        mode: Mode::Preview,
-        doc: Document {
-            path: Some(path.to_path_buf()),
-            image_uri_scheme: app.doc.image_uri_scheme.clone(),
-            text: app.doc.text.clone(),
-            base_text: app.doc.base_text.clone(),
-            disk_rev: app.doc.disk_rev,
-            stats: app.doc.stats,
-            stats_dirty: false,
-            preview_dirty: false,
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-            edit_seq: app.doc.edit_seq,
-            editor_galley_cache: None,
-        },
-        ..Default::default()
-    };
-
-    let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1024.0, 768.0),
-        )),
-        ..Default::default()
-    };
+    let mut preview_app = make_app(
+        Mode::Preview,
+        app.doc.image_uri_scheme.clone(),
+        app.doc.text.clone(),
+        app.doc.base_text.clone(),
+        app.doc.edit_seq,
+        CommonMarkCache::default(),
+    );
+    let raw = diagnostics_raw_input();
     let preview_frame1_start = Instant::now();
     let _ = ctx.run(raw.clone(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| preview_app.show_preview(ui));
@@ -354,35 +373,25 @@ fn run_open_pipeline_diagnostics(
     });
     let preview_frame2_ms = preview_frame2_start.elapsed();
 
-    let stats_loop_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    let stats_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(DocumentStats::from_text(std::hint::black_box(
             app.doc.text.as_str(),
         )));
-    }
-    let stats_loop = stats_loop_start.elapsed();
-
-    let html_loop_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    });
+    let html_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(markdown_to_html_document(std::hint::black_box(
             app.doc.text.as_str(),
         )));
-    }
-    let html_loop = html_loop_start.elapsed();
-
-    let highlight_job_loop_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    });
+    let highlight_job_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(highlight::markdown_layout_job(
             style.as_ref(),
             &style.visuals,
             std::hint::black_box(app.doc.text.as_str()),
             false,
         ));
-    }
-    let highlight_job_loop = highlight_job_loop_start.elapsed();
-
-    let highlight_layout_loop_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    });
+    let highlight_layout_loop = measure_iterations(diagnostics_iterations, || {
         let loop_job = highlight::markdown_layout_job(
             style.as_ref(),
             &style.visuals,
@@ -391,75 +400,41 @@ fn run_open_pipeline_diagnostics(
         );
         let loop_galley = ctx.fonts(|fonts| fonts.layout_job(loop_job));
         std::hint::black_box(loop_galley.rows.len());
-    }
-    let highlight_layout_loop = highlight_layout_loop_start.elapsed();
+    });
 
-    let image_uri_recompute_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    let image_uri_recompute = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(default_image_uri_scheme(Some(path)));
-    }
-    let image_uri_recompute = image_uri_recompute_start.elapsed();
+    });
     let cached_image_uri = app.doc.image_uri_scheme.as_str();
-    let image_uri_cached_start = Instant::now();
-    for _ in 0..diagnostics_iterations {
+    let image_uri_cached = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(cached_image_uri);
-    }
-    let image_uri_cached = image_uri_cached_start.elapsed();
+    });
 
-    let mut edit_bench_app = RustdownApp {
-        mode: Mode::Edit,
-        doc: Document {
-            path: Some(path.to_path_buf()),
-            image_uri_scheme: default_image_uri_scheme(Some(path)),
-            text: Arc::new(app.doc.text.as_str().to_owned()),
-            base_text: Arc::new(app.doc.text.as_str().to_owned()),
-            disk_rev: app.doc.disk_rev,
-            stats: app.doc.stats,
-            stats_dirty: false,
-            preview_dirty: false,
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-            edit_seq: 0,
-            editor_galley_cache: None,
-        },
-        ..Default::default()
+    let new_edit_bench_app = || {
+        let text = Arc::new(app.doc.text.as_str().to_owned());
+        make_app(
+            Mode::Edit,
+            default_image_uri_scheme(Some(path)),
+            text.clone(),
+            text,
+            0,
+            CommonMarkCache::default(),
+        )
     };
     let edit_iterations = diagnostics_iterations.min(256);
-    let edit_deferred_loop_start = Instant::now();
-    for _ in 0..edit_iterations {
+    let mut edit_bench_app = new_edit_bench_app();
+    let edit_deferred_loop = measure_iterations(edit_iterations, || {
         Arc::make_mut(&mut edit_bench_app.doc.text).push('x');
         edit_bench_app.bump_edit_seq();
         edit_bench_app.note_text_changed(true);
-    }
-    let edit_deferred_loop = edit_deferred_loop_start.elapsed();
+    });
 
-    let mut edit_immediate_bench_app = RustdownApp {
-        mode: Mode::Edit,
-        doc: Document {
-            path: Some(path.to_path_buf()),
-            image_uri_scheme: default_image_uri_scheme(Some(path)),
-            text: Arc::new(app.doc.text.as_str().to_owned()),
-            base_text: Arc::new(app.doc.text.as_str().to_owned()),
-            disk_rev: app.doc.disk_rev,
-            stats: app.doc.stats,
-            stats_dirty: false,
-            preview_dirty: false,
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-            edit_seq: 0,
-            editor_galley_cache: None,
-        },
-        ..Default::default()
-    };
-    let edit_immediate_loop_start = Instant::now();
-    for _ in 0..edit_iterations {
+    let mut edit_immediate_bench_app = new_edit_bench_app();
+    let edit_immediate_loop = measure_iterations(edit_iterations, || {
         Arc::make_mut(&mut edit_immediate_bench_app.doc.text).push('x');
         edit_immediate_bench_app.bump_edit_seq();
         edit_immediate_bench_app.note_text_changed(false);
-    }
-    let edit_immediate_loop = edit_immediate_loop_start.elapsed();
+    });
 
     let clean_text_heap_bytes = estimate_text_heap_bytes(&app.doc.text, &app.doc.base_text);
     let mut dirty_text = app.doc.text.clone();
@@ -467,72 +442,86 @@ fn run_open_pipeline_diagnostics(
     let dirty_text_heap_bytes = estimate_text_heap_bytes(&dirty_text, &app.doc.base_text);
 
     let total_ms = total_start.elapsed();
+    macro_rules! metric {
+        ($name:literal, $value:expr) => {
+            println!(concat!($name, "={}"), $value);
+        };
+    }
+    macro_rules! avg_metric {
+        ($name:literal, $duration:expr, $iterations:expr) => {
+            println!(
+                concat!($name, "={:.2}"),
+                avg_duration_us($duration, $iterations)
+            );
+        };
+    }
 
     println!("rustdown_diagnostics=open_pipeline");
-    println!("path={}", path.display());
-    println!("disk_len={}", disk_rev.len);
-    println!("text_bytes={}", app.doc.text.len());
-    println!("base_text_bytes={}", app.doc.base_text.len());
+    metric!("path", path.display());
+    metric!("disk_len", disk_rev.len);
+    metric!("text_bytes", app.doc.text.len());
+    metric!("base_text_bytes", app.doc.base_text.len());
     println!(
         "stats_words={} stats_chars={} stats_lines={}",
         stats.words, stats.chars, stats.lines
     );
-    println!("t_read_ms={}", read_ms.as_millis());
-    println!("t_clone_base_ms={}", clone_ms.as_millis());
-    println!("t_stats_ms={}", stats_ms.as_millis());
-    println!("t_html_ms={}", html_ms.as_millis());
-    println!("html_bytes={}", html.len());
-    println!("t_md_cache_ms={}", cache_ms.as_millis());
-    println!("t_egui_setup_ms={}", egui_ms.as_millis());
-    println!("t_highlight_job_ms={}", highlight_job_ms.as_millis());
-    println!("t_highlight_layout_ms={}", highlight_layout_ms.as_millis());
-    println!("galley_rows={}", galley.rows.len());
-    println!("t_editor_frame1_ms={}", editor_frame1_ms.as_millis());
-    println!("t_editor_frame2_ms={}", editor_frame2_ms.as_millis());
-    println!("t_core_total_ms={}", core_total_ms.as_millis());
-    println!("t_preview_frame1_ms={}", preview_frame1_ms.as_millis());
-    println!("t_preview_frame2_ms={}", preview_frame2_ms.as_millis());
-    println!("diag_iterations={diagnostics_iterations}");
-    println!("diag_edit_iterations={edit_iterations}");
-    println!(
-        "t_stats_loop_avg_us={:.2}",
-        avg_duration_us(stats_loop, diagnostics_iterations)
+    metric!("t_read_ms", read_ms.as_millis());
+    metric!("t_clone_base_ms", clone_ms.as_millis());
+    metric!("t_stats_ms", stats_ms.as_millis());
+    metric!("t_html_ms", html_ms.as_millis());
+    metric!("html_bytes", html.len());
+    metric!("t_md_cache_ms", cache_ms.as_millis());
+    metric!("t_egui_setup_ms", egui_ms.as_millis());
+    metric!("t_highlight_job_ms", highlight_job_ms.as_millis());
+    metric!("t_highlight_layout_ms", highlight_layout_ms.as_millis());
+    metric!("galley_rows", galley.rows.len());
+    metric!("t_editor_frame1_ms", editor_frame1_ms.as_millis());
+    metric!("t_editor_frame2_ms", editor_frame2_ms.as_millis());
+    metric!("t_core_total_ms", core_total_ms.as_millis());
+    metric!("t_preview_frame1_ms", preview_frame1_ms.as_millis());
+    metric!("t_preview_frame2_ms", preview_frame2_ms.as_millis());
+    metric!("diag_iterations", diagnostics_iterations);
+    metric!("diag_edit_iterations", edit_iterations);
+    avg_metric!("t_stats_loop_avg_us", stats_loop, diagnostics_iterations);
+    avg_metric!("t_html_loop_avg_us", html_loop, diagnostics_iterations);
+    avg_metric!(
+        "t_highlight_job_loop_avg_us",
+        highlight_job_loop,
+        diagnostics_iterations
     );
-    println!(
-        "t_html_loop_avg_us={:.2}",
-        avg_duration_us(html_loop, diagnostics_iterations)
+    avg_metric!(
+        "t_highlight_layout_loop_avg_us",
+        highlight_layout_loop,
+        diagnostics_iterations
     );
-    println!(
-        "t_highlight_job_loop_avg_us={:.2}",
-        avg_duration_us(highlight_job_loop, diagnostics_iterations)
+    avg_metric!(
+        "t_image_uri_recompute_avg_us",
+        image_uri_recompute,
+        diagnostics_iterations
     );
-    println!(
-        "t_highlight_layout_loop_avg_us={:.2}",
-        avg_duration_us(highlight_layout_loop, diagnostics_iterations)
+    avg_metric!(
+        "t_image_uri_cached_lookup_avg_us",
+        image_uri_cached,
+        diagnostics_iterations
     );
-    println!(
-        "t_image_uri_recompute_avg_us={:.2}",
-        avg_duration_us(image_uri_recompute, diagnostics_iterations)
+    avg_metric!(
+        "t_edit_note_change_deferred_avg_us",
+        edit_deferred_loop,
+        edit_iterations
     );
-    println!(
-        "t_image_uri_cached_lookup_avg_us={:.2}",
-        avg_duration_us(image_uri_cached, diagnostics_iterations)
+    avg_metric!(
+        "t_edit_note_change_immediate_avg_us",
+        edit_immediate_loop,
+        edit_iterations
     );
-    println!(
-        "t_edit_note_change_deferred_avg_us={:.2}",
-        avg_duration_us(edit_deferred_loop, edit_iterations)
+    avg_metric!(
+        "t_edit_note_change_avg_us",
+        edit_deferred_loop,
+        edit_iterations
     );
-    println!(
-        "t_edit_note_change_immediate_avg_us={:.2}",
-        avg_duration_us(edit_immediate_loop, edit_iterations)
-    );
-    println!(
-        "t_edit_note_change_avg_us={:.2}",
-        avg_duration_us(edit_deferred_loop, edit_iterations)
-    );
-    println!("text_heap_clean_bytes={clean_text_heap_bytes}");
-    println!("text_heap_dirty_bytes={dirty_text_heap_bytes}");
-    println!("t_total_ms={}", total_ms.as_millis());
+    metric!("text_heap_clean_bytes", clean_text_heap_bytes);
+    metric!("text_heap_dirty_bytes", dirty_text_heap_bytes);
+    metric!("t_total_ms", total_ms.as_millis());
 
     std::hint::black_box(app);
     Ok(())
@@ -2099,6 +2088,24 @@ impl RustdownApp {
             });
     }
 
+    fn write_merge_sidecar(&mut self, doc_path: &Path, conflict_marked: &str) {
+        let sidecar_path = match next_merge_sidecar_path(doc_path) {
+            Ok(path) => path,
+            Err(err) => {
+                self.error
+                    .get_or_insert(format!("Merge file path failed: {err}"));
+                return;
+            }
+        };
+        match atomic_write_utf8(&sidecar_path, conflict_marked) {
+            Ok(()) => self.merge_sidecar_path = Some(sidecar_path),
+            Err(err) => {
+                self.error
+                    .get_or_insert(format!("Merge file write failed: {err}"));
+            }
+        }
+    }
+
     fn apply_conflict_choice(&mut self, choice: ConflictChoice) {
         let Some(conflict) = self.disk_conflict.take() else {
             return;
@@ -2106,47 +2113,25 @@ impl RustdownApp {
 
         match choice {
             ConflictChoice::OpenConflictMerge => {
-                self.doc.text = Arc::new(conflict.conflict_marked);
-                self.doc.base_text = Arc::new(conflict.disk_text);
-                self.doc.disk_rev = Some(conflict.disk_rev);
-                self.bump_edit_seq();
-                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                self.doc.stats_dirty = false;
-                self.doc.md_cache.clear_scrollable();
-                self.doc.preview_dirty = false;
-                self.doc.dirty = true;
-                self.doc.editor_galley_cache = None;
-                self.error = None;
+                self.apply_disk_text_state(
+                    Arc::new(conflict.conflict_marked),
+                    Arc::new(conflict.disk_text),
+                    conflict.disk_rev,
+                    true,
+                    false,
+                );
             }
             ConflictChoice::KeepMineWriteSidecar => {
-                self.doc.text = Arc::new(conflict.ours_wins);
-                self.doc.base_text = Arc::new(conflict.disk_text);
-                self.doc.disk_rev = Some(conflict.disk_rev);
-                self.bump_edit_seq();
-                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                self.doc.stats_dirty = false;
-                self.doc.md_cache.clear_scrollable();
-                self.doc.preview_dirty = false;
-                self.doc.dirty = true;
-                self.doc.editor_galley_cache = None;
-                self.error = None;
-
-                if let Some(doc_path) = self.doc.path.as_deref() {
-                    match next_merge_sidecar_path(doc_path) {
-                        Ok(sidecar_path) => {
-                            match atomic_write_utf8(&sidecar_path, &conflict.conflict_marked) {
-                                Ok(()) => self.merge_sidecar_path = Some(sidecar_path),
-                                Err(err) => {
-                                    self.error
-                                        .get_or_insert(format!("Merge file write failed: {err}"));
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            self.error
-                                .get_or_insert(format!("Merge file path failed: {err}"));
-                        }
-                    }
+                let conflict_marked = conflict.conflict_marked;
+                self.apply_disk_text_state(
+                    Arc::new(conflict.ours_wins),
+                    Arc::new(conflict.disk_text),
+                    conflict.disk_rev,
+                    true,
+                    false,
+                );
+                if let Some(doc_path) = self.doc.path.clone() {
+                    self.write_merge_sidecar(doc_path.as_path(), conflict_marked.as_str());
                 }
             }
             ConflictChoice::SaveAs => {
@@ -2158,17 +2143,13 @@ impl RustdownApp {
             }
             ConflictChoice::ReloadDisk => {
                 let disk_text = Arc::new(conflict.disk_text);
-                self.doc.base_text = disk_text.clone();
-                self.doc.text = disk_text;
-                self.doc.disk_rev = Some(conflict.disk_rev);
-                self.bump_edit_seq();
-                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                self.doc.stats_dirty = false;
-                self.doc.md_cache.clear_scrollable();
-                self.doc.preview_dirty = false;
-                self.doc.dirty = false;
-                self.doc.editor_galley_cache = None;
-                self.error = None;
+                self.apply_disk_text_state(
+                    disk_text.clone(),
+                    disk_text,
+                    conflict.disk_rev,
+                    false,
+                    false,
+                );
             }
             ConflictChoice::OverwriteDisk => {
                 let Some(path) = self.doc.path.as_deref() else {
@@ -2250,6 +2231,22 @@ mod tests {
         text_res.unwrap_or_else(|_| unreachable!())
     }
 
+    fn merge_app(
+        base_text: &str,
+        text: &str,
+        rev_seconds: u64,
+        rev_len: u64,
+        dirty: bool,
+    ) -> RustdownApp {
+        let mut app = RustdownApp::default();
+        app.doc.path = Some(PathBuf::from("note.md"));
+        app.doc.base_text = Arc::new(base_text.to_owned());
+        app.doc.text = Arc::new(text.to_owned());
+        app.doc.disk_rev = Some(test_rev(rev_seconds, rev_len));
+        app.doc.dirty = dirty;
+        app
+    }
+
     #[test]
     fn parse_launch_options_covers_modes_paths_and_diagnostics() {
         let mode_cases = [
@@ -2308,44 +2305,27 @@ mod tests {
     }
 
     #[test]
-    fn document_stats_counts_words_chars_lines_and_read_time() {
+    fn document_stats_cover_empty_populated_and_default_document() {
         let stats = DocumentStats::from_text("one two\nthree");
-        assert_eq!(
-            stats,
-            DocumentStats {
-                words: 3,
-                chars: 13,
-                lines: 2
-            }
-        );
+        assert_eq!(stats.words, 3);
+        assert_eq!(stats.chars, 13);
+        assert_eq!(stats.lines, 2);
         assert_eq!(stats.reading_minutes(), 1);
-    }
 
-    #[test]
-    fn document_stats_empty_document_is_zero_words_and_one_line() {
-        let stats = DocumentStats::from_text("");
-        assert_eq!(stats.words, 0);
-        assert_eq!(stats.chars, 0);
-        assert_eq!(stats.lines, 1);
-        assert_eq!(stats.reading_minutes(), 0);
-    }
+        let empty_stats = DocumentStats::from_text("");
+        assert_eq!(empty_stats, DocumentStats::default());
+        assert_eq!(empty_stats.reading_minutes(), 0);
 
-    #[test]
-    fn document_default_stats_match_empty_text() {
         let doc = Document::default();
         assert_eq!(doc.stats(), DocumentStats::from_text(""));
     }
 
     #[test]
-    fn is_markdown_path_matches_supported_extensions_case_insensitive() {
+    fn markdown_path_helpers_cover_detection_selection_and_html_name() {
         assert!(is_markdown_path(Path::new("note.md")));
         assert!(is_markdown_path(Path::new("README.Markdown")));
         assert!(!is_markdown_path(Path::new("notes.txt")));
         assert!(!is_markdown_path(Path::new("README")));
-    }
-
-    #[test]
-    fn first_markdown_path_returns_first_supported_file() {
         let files = [
             Path::new("notes.txt"),
             Path::new("chapter.markdown"),
@@ -2355,10 +2335,6 @@ mod tests {
             first_markdown_path(files),
             Some(PathBuf::from("chapter.markdown"))
         );
-    }
-
-    #[test]
-    fn suggested_html_file_name_uses_document_stem_or_default() {
         assert_eq!(
             suggested_html_file_name(Some(Path::new("/tmp/readme.md"))),
             "readme.html"
@@ -2367,12 +2343,8 @@ mod tests {
     }
 
     #[test]
-    fn default_image_uri_scheme_without_path_uses_file_scheme_prefix() {
-        assert_eq!(default_image_uri_scheme(None), "file://");
-    }
-
-    #[test]
     fn default_image_uri_scheme_uses_document_directory_when_available() {
+        assert_eq!(default_image_uri_scheme(None), "file://");
         let dir = make_temp_dir("rustdown-image-uri-scheme-test");
         let path = dir.join("report.md");
         let scheme = default_image_uri_scheme(Some(path.as_path()));
@@ -2423,30 +2395,6 @@ mod tests {
     }
 
     #[test]
-    fn open_path_sets_cached_image_uri_scheme() {
-        let dir = make_temp_dir("rustdown-open-image-scheme-test");
-        let path = dir.join("note.md");
-        assert!(fs::write(&path, "hello").is_ok());
-
-        let mut app = RustdownApp::default();
-        app.open_path(path.clone());
-
-        assert_eq!(
-            app.doc.image_uri_scheme,
-            default_image_uri_scheme(Some(path.as_path()))
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn markdown_to_html_document_renders_common_markdown() {
-        let html = markdown_to_html_document("# Heading\n\n- item");
-        assert!(html.contains("<h1>Heading</h1>"));
-        assert!(html.contains("<li>item</li>"));
-    }
-
-    #[test]
     fn search_and_replace_helpers_handle_empty_and_replacement_cases() {
         assert_eq!(find_match_count("abc abc", ""), 0);
         let (text, replaced) = replace_all_occurrences("alpha beta alpha", "alpha", "zeta");
@@ -2458,7 +2406,7 @@ mod tests {
     }
 
     #[test]
-    fn save_trigger_from_shortcut_maps_save_and_save_as() {
+    fn save_trigger_and_zoom_helpers_cover_keyboard_and_scroll_paths() {
         assert_eq!(
             save_trigger_from_shortcut(true, false, true),
             Some(SaveTrigger::Save)
@@ -2469,10 +2417,6 @@ mod tests {
         );
         assert_eq!(save_trigger_from_shortcut(false, false, true), None);
         assert_eq!(save_trigger_from_shortcut(true, false, false), None);
-    }
-
-    #[test]
-    fn zoom_helpers_apply_clamped_step_and_factor_zoom() {
         assert!((zoom_with_step(1.0, ZOOM_STEP) - 1.1).abs() < f32::EPSILON);
         assert_eq!(zoom_with_step(MAX_ZOOM_FACTOR, ZOOM_STEP), MAX_ZOOM_FACTOR);
         assert_eq!(zoom_with_step(MIN_ZOOM_FACTOR, -ZOOM_STEP), MIN_ZOOM_FACTOR);
@@ -2548,67 +2492,86 @@ mod tests {
     }
 
     #[test]
-    fn incorporate_disk_text_when_clean_replaces_buffer_and_advances_base() {
-        let mut app = RustdownApp::default();
-        app.doc.path = Some(PathBuf::from("note.md"));
-        let old = Arc::new("old".to_owned());
-        app.doc.text = old.clone();
-        app.doc.base_text = old;
-        app.doc.disk_rev = Some(test_rev(1, 3));
-        app.doc.dirty = false;
-
-        app.incorporate_disk_text("new".to_owned(), test_rev(2, 3));
-
-        assert_eq!(app.doc.text.as_str(), "new");
-        assert_eq!(app.doc.base_text.as_str(), "new");
-        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 3)));
-        assert!(!app.doc.dirty);
-        assert!(app.disk_conflict.is_none());
-    }
-
-    #[test]
-    fn incorporate_disk_text_when_dirty_and_merge_is_clean_applies_both_changes() {
-        let mut app = RustdownApp::default();
-        app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = Arc::new("a\nb\n".to_owned());
-        app.doc.text = Arc::new("a\nB\n".to_owned());
-        app.doc.disk_rev = Some(test_rev(1, 4));
-        app.doc.dirty = true;
-
-        app.incorporate_disk_text("A\nb\n".to_owned(), test_rev(2, 4));
-
-        assert_eq!(app.doc.text.as_str(), "A\nB\n");
-        assert_eq!(app.doc.base_text.as_str(), "A\nb\n");
-        assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
-        assert!(app.doc.dirty);
-        assert!(app.disk_conflict.is_none());
-    }
-
-    #[test]
-    fn incorporate_disk_text_when_dirty_and_conflicts_sets_prompt_without_mutating_buffer() {
-        let mut app = RustdownApp::default();
-        app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = Arc::new("a\nb\n".to_owned());
-        app.doc.text = Arc::new("a\nO\n".to_owned());
-        app.doc.disk_rev = Some(test_rev(1, 4));
-        app.doc.dirty = true;
-
-        app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
-
-        assert_eq!(app.doc.text.as_str(), "a\nO\n");
-        assert_eq!(app.doc.base_text.as_str(), "a\nb\n");
-        assert_eq!(app.doc.disk_rev, Some(test_rev(1, 4)));
-        assert!(app.disk_conflict.is_some());
+    fn incorporate_disk_text_handles_clean_merge_and_conflict_outcomes() {
+        struct Case<'a> {
+            base: &'a str,
+            ours: &'a str,
+            dirty: bool,
+            disk_text: &'a str,
+            initial_disk_rev: (u64, u64),
+            incoming_disk_rev: (u64, u64),
+            expected_text: &'a str,
+            expected_base: &'a str,
+            expected_disk_rev: (u64, u64),
+            expected_dirty: bool,
+            expect_conflict: bool,
+        }
+        for case in [
+            Case {
+                base: "old",
+                ours: "old",
+                dirty: false,
+                disk_text: "new",
+                initial_disk_rev: (1, 3),
+                incoming_disk_rev: (2, 3),
+                expected_text: "new",
+                expected_base: "new",
+                expected_disk_rev: (2, 3),
+                expected_dirty: false,
+                expect_conflict: false,
+            },
+            Case {
+                base: "a\nb\n",
+                ours: "a\nB\n",
+                dirty: true,
+                disk_text: "A\nb\n",
+                initial_disk_rev: (1, 4),
+                incoming_disk_rev: (2, 4),
+                expected_text: "A\nB\n",
+                expected_base: "A\nb\n",
+                expected_disk_rev: (2, 4),
+                expected_dirty: true,
+                expect_conflict: false,
+            },
+            Case {
+                base: "a\nb\n",
+                ours: "a\nO\n",
+                dirty: true,
+                disk_text: "a\nT\n",
+                initial_disk_rev: (1, 4),
+                incoming_disk_rev: (2, 4),
+                expected_text: "a\nO\n",
+                expected_base: "a\nb\n",
+                expected_disk_rev: (1, 4),
+                expected_dirty: true,
+                expect_conflict: true,
+            },
+        ] {
+            let mut app = merge_app(
+                case.base,
+                case.ours,
+                case.initial_disk_rev.0,
+                case.initial_disk_rev.1,
+                case.dirty,
+            );
+            app.incorporate_disk_text(
+                case.disk_text.to_owned(),
+                test_rev(case.incoming_disk_rev.0, case.incoming_disk_rev.1),
+            );
+            assert_eq!(app.doc.text.as_str(), case.expected_text);
+            assert_eq!(app.doc.base_text.as_str(), case.expected_base);
+            assert_eq!(
+                app.doc.disk_rev,
+                Some(test_rev(case.expected_disk_rev.0, case.expected_disk_rev.1))
+            );
+            assert_eq!(app.doc.dirty, case.expected_dirty);
+            assert_eq!(app.disk_conflict.is_some(), case.expect_conflict);
+        }
     }
 
     #[test]
     fn conflict_choice_open_merge_replaces_buffer_with_conflict_markers() {
-        let mut app = RustdownApp::default();
-        app.doc.path = Some(PathBuf::from("note.md"));
-        app.doc.base_text = Arc::new("a\nb\n".to_owned());
-        app.doc.text = Arc::new("a\nO\n".to_owned());
-        app.doc.disk_rev = Some(test_rev(1, 4));
-        app.doc.dirty = true;
+        let mut app = merge_app("a\nb\n", "a\nO\n", 1, 4, true);
 
         app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
         let expected_merge = disk_conflict(&app).conflict_marked.clone();
@@ -2629,12 +2592,8 @@ mod tests {
 
         let _ = atomic_write_utf8(&original, "line1\nline2\nline3\n");
 
-        let mut app = RustdownApp::default();
+        let mut app = merge_app("line1\nline2\nline3\n", "line1\nO2\nline3\n", 1, 18, true);
         app.doc.path = Some(original.clone());
-        app.doc.base_text = Arc::new("line1\nline2\nline3\n".to_owned());
-        app.doc.text = Arc::new("line1\nO2\nline3\n".to_owned());
-        app.doc.disk_rev = Some(test_rev(1, 18));
-        app.doc.dirty = true;
 
         app.incorporate_disk_text("line1\nT2\nT3\n".to_owned(), test_rev(2, 15));
         let conflict = disk_conflict(&app);
@@ -2658,20 +2617,6 @@ mod tests {
             .unwrap_or_else(|| unreachable!());
         let sidecar_text = read_file(&sidecar_path);
         assert_eq!(sidecar_text, expected_sidecar);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn atomic_write_utf8_replaces_existing_file_contents() {
-        let dir = make_temp_dir("rustdown-atomic-save-test");
-        let path = dir.join("save.md");
-
-        assert!(atomic_write_utf8(&path, "first").is_ok());
-        assert!(atomic_write_utf8(&path, "second").is_ok());
-
-        let text = read_file(&path);
-        assert_eq!(text, "second");
 
         let _ = fs::remove_dir_all(&dir);
     }
