@@ -29,6 +29,11 @@ Start in Side-by-side mode:
 cargo run -p rustdown -- -s
 ```
 
+Print version:
+```bash
+cargo run -p rustdown -- -v
+```
+
 Run profiling diagnostics for markdown load/render pipelines:
 ```bash
 cargo run -p rustdown -- --diagnostics-open README.md --diag-iterations=120

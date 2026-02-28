@@ -90,6 +90,7 @@ const UI_FONT_FALLBACK_PATHS: &[&str] = &[];
 struct LaunchOptions {
     mode: Mode,
     path: Option<PathBuf>,
+    print_version: bool,
     diagnostics: DiagnosticsMode,
     diagnostics_iterations: usize,
     diagnostics_runs: usize,
@@ -110,6 +111,7 @@ where
 {
     let mut mode = None;
     let mut path = None;
+    let mut print_version = false;
     let mut diagnostics = DiagnosticsMode::Off;
     let mut diagnostics_iterations = DIAGNOSTICS_DEFAULT_ITERATIONS;
     let mut diagnostics_runs = DIAGNOSTICS_DEFAULT_RUNS;
@@ -128,6 +130,10 @@ where
             }
             if arg == "-s" {
                 mode = Some(Mode::SideBySide);
+                continue;
+            }
+            if arg == "-v" || arg == "--version" {
+                print_version = true;
                 continue;
             }
             if arg == "--diagnostics-open" || arg == "--diag-open" {
@@ -181,14 +187,26 @@ where
     LaunchOptions {
         mode,
         path,
+        print_version,
         diagnostics,
         diagnostics_iterations,
         diagnostics_runs,
     }
 }
 
+#[must_use]
+fn app_version() -> &'static str {
+    option_env!("RUSTDOWN_BUILD_VERSION")
+        .filter(|value| !value.is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
+    if launch_options.print_version {
+        println!("{}", app_version());
+        return Ok(());
+    }
     if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
         for run in 0..launch_options.diagnostics_runs {
             if launch_options.diagnostics_runs > 1 {
@@ -2403,6 +2421,7 @@ mod tests {
             let options = parse(args);
             assert_eq!(options.mode, mode);
             assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
+            assert!(!options.print_version);
             assert_eq!(options.diagnostics, DiagnosticsMode::Off);
             assert_eq!(
                 options.diagnostics_iterations,
@@ -2417,11 +2436,24 @@ mod tests {
             options.path.as_deref(),
             Some(PathBuf::from("README.md")).as_deref()
         );
+        assert!(!options.print_version);
         assert_eq!(
             options.diagnostics_iterations,
             DIAGNOSTICS_DEFAULT_ITERATIONS
         );
         assert_eq!(options.diagnostics_runs, DIAGNOSTICS_DEFAULT_RUNS);
+
+        let options = parse(&["-v"]);
+        assert!(options.print_version);
+        assert_eq!(options.mode, Mode::Edit);
+        assert!(options.path.is_none());
+
+        let options = parse(&["--version", "README.md"]);
+        assert!(options.print_version);
+        assert_eq!(
+            options.path.as_deref(),
+            Some(PathBuf::from("README.md")).as_deref()
+        );
 
         let cases = [
             ("--diag-iterations=25", 25),
