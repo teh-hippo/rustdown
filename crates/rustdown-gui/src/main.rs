@@ -35,6 +35,7 @@ use live_merge::{Merge3Outcome, merge_three_way};
 const DEBOUNCE: Duration = Duration::from_millis(150);
 const DISK_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DISK_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
+const STATS_RECALC_DEBOUNCE: Duration = Duration::from_millis(120);
 const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
@@ -42,6 +43,7 @@ const READING_SPEED_WPM: usize = 200;
 const FONT_SIZE_DELTA: f32 = 2.0;
 const SMALL_FONT_SIZE_DELTA: f32 = 1.0;
 const PANEL_EDGE_PADDING: f32 = 8.0;
+const DIAGNOSTICS_DEFAULT_ITERATIONS: usize = 200;
 const UI_FONT_NAME: &str = "rustdown-ui-font";
 #[cfg(target_os = "linux")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -88,6 +90,7 @@ struct LaunchOptions {
     mode: Mode,
     path: Option<PathBuf>,
     diagnostics: DiagnosticsMode,
+    diagnostics_iterations: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -106,6 +109,7 @@ where
     let mut mode = None;
     let mut path = None;
     let mut diagnostics = DiagnosticsMode::Off;
+    let mut diagnostics_iterations = DIAGNOSTICS_DEFAULT_ITERATIONS;
     let mut parse_flags = true;
 
     for arg in args {
@@ -125,6 +129,19 @@ where
             }
             if arg == "--diagnostics-open" || arg == "--diag-open" {
                 diagnostics = DiagnosticsMode::OpenPipeline;
+                continue;
+            }
+            if let Some(value) = arg
+                .to_str()
+                .and_then(|value| {
+                    value
+                        .strip_prefix("--diag-iterations=")
+                        .or_else(|| value.strip_prefix("--diagnostics-iterations="))
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+            {
+                diagnostics_iterations = value;
                 continue;
             }
             if arg.to_str().is_some_and(|value| value.starts_with('-')) {
@@ -149,13 +166,17 @@ where
         mode,
         path,
         diagnostics,
+        diagnostics_iterations,
     }
 }
 
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
-        if let Err(err) = run_open_pipeline_diagnostics(launch_options.path.as_deref()) {
+        if let Err(err) = run_open_pipeline_diagnostics(
+            launch_options.path.as_deref(),
+            launch_options.diagnostics_iterations,
+        ) {
             eprintln!("Diagnostics failed: {err}");
         }
         return Ok(());
@@ -180,13 +201,30 @@ fn main() -> eframe::Result {
     )
 }
 
-fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
+fn avg_duration_us(total: Duration, iterations: usize) -> f64 {
+    total.as_secs_f64() * 1_000_000.0 / iterations.max(1) as f64
+}
+
+fn estimate_text_heap_bytes(text: &Arc<String>, base_text: &Arc<String>) -> usize {
+    text.capacity()
+        + if Arc::ptr_eq(text, base_text) {
+            0
+        } else {
+            base_text.capacity()
+        }
+}
+
+fn run_open_pipeline_diagnostics(
+    path: Option<&Path>,
+    diagnostics_iterations: usize,
+) -> io::Result<()> {
     let Some(path) = path else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "missing markdown path (usage: rustdown --diagnostics-open <file.md>)",
         ));
     };
+    let diagnostics_iterations = diagnostics_iterations.max(1);
 
     let total_start = Instant::now();
 
@@ -249,10 +287,13 @@ fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
         mode: Mode::Edit,
         doc: Document {
             path: Some(path.to_path_buf()),
+            image_uri_scheme: default_image_uri_scheme(Some(path)),
             text,
             base_text,
             disk_rev: Some(disk_rev),
             stats,
+            stats_dirty: false,
+            preview_dirty: false,
             dirty: false,
             md_cache,
             last_edit_at: None,
@@ -273,6 +314,157 @@ fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
         egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
     });
     let editor_frame2_ms = editor_frame2_start.elapsed();
+    let core_total_ms = total_start.elapsed();
+
+    let mut preview_app = RustdownApp {
+        mode: Mode::Preview,
+        doc: Document {
+            path: Some(path.to_path_buf()),
+            image_uri_scheme: app.doc.image_uri_scheme.clone(),
+            text: app.doc.text.clone(),
+            base_text: app.doc.base_text.clone(),
+            disk_rev: app.doc.disk_rev,
+            stats: app.doc.stats,
+            stats_dirty: false,
+            preview_dirty: false,
+            dirty: false,
+            md_cache: CommonMarkCache::default(),
+            last_edit_at: None,
+            edit_seq: app.doc.edit_seq,
+            editor_galley_cache: None,
+        },
+        ..Default::default()
+    };
+
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 768.0),
+        )),
+        ..Default::default()
+    };
+    let preview_frame1_start = Instant::now();
+    let _ = ctx.run(raw.clone(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| preview_app.show_preview(ui));
+    });
+    let preview_frame1_ms = preview_frame1_start.elapsed();
+    let preview_frame2_start = Instant::now();
+    let _ = ctx.run(raw, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| preview_app.show_preview(ui));
+    });
+    let preview_frame2_ms = preview_frame2_start.elapsed();
+
+    let stats_loop_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        std::hint::black_box(DocumentStats::from_text(std::hint::black_box(
+            app.doc.text.as_str(),
+        )));
+    }
+    let stats_loop = stats_loop_start.elapsed();
+
+    let html_loop_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        std::hint::black_box(markdown_to_html_document(std::hint::black_box(
+            app.doc.text.as_str(),
+        )));
+    }
+    let html_loop = html_loop_start.elapsed();
+
+    let highlight_job_loop_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        std::hint::black_box(highlight::markdown_layout_job(
+            style.as_ref(),
+            &style.visuals,
+            std::hint::black_box(app.doc.text.as_str()),
+            false,
+        ));
+    }
+    let highlight_job_loop = highlight_job_loop_start.elapsed();
+
+    let highlight_layout_loop_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        let loop_job = highlight::markdown_layout_job(
+            style.as_ref(),
+            &style.visuals,
+            std::hint::black_box(app.doc.text.as_str()),
+            false,
+        );
+        let loop_galley = ctx.fonts(|fonts| fonts.layout_job(loop_job));
+        std::hint::black_box(loop_galley.rows.len());
+    }
+    let highlight_layout_loop = highlight_layout_loop_start.elapsed();
+
+    let image_uri_recompute_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        std::hint::black_box(default_image_uri_scheme(Some(path)));
+    }
+    let image_uri_recompute = image_uri_recompute_start.elapsed();
+    let cached_image_uri = app.doc.image_uri_scheme.as_str();
+    let image_uri_cached_start = Instant::now();
+    for _ in 0..diagnostics_iterations {
+        std::hint::black_box(cached_image_uri);
+    }
+    let image_uri_cached = image_uri_cached_start.elapsed();
+
+    let mut edit_bench_app = RustdownApp {
+        mode: Mode::Edit,
+        doc: Document {
+            path: Some(path.to_path_buf()),
+            image_uri_scheme: default_image_uri_scheme(Some(path)),
+            text: Arc::new(app.doc.text.as_str().to_owned()),
+            base_text: Arc::new(app.doc.text.as_str().to_owned()),
+            disk_rev: app.doc.disk_rev,
+            stats: app.doc.stats,
+            stats_dirty: false,
+            preview_dirty: false,
+            dirty: false,
+            md_cache: CommonMarkCache::default(),
+            last_edit_at: None,
+            edit_seq: 0,
+            editor_galley_cache: None,
+        },
+        ..Default::default()
+    };
+    let edit_iterations = diagnostics_iterations.min(256);
+    let edit_deferred_loop_start = Instant::now();
+    for _ in 0..edit_iterations {
+        Arc::make_mut(&mut edit_bench_app.doc.text).push('x');
+        edit_bench_app.bump_edit_seq();
+        edit_bench_app.note_text_changed(true);
+    }
+    let edit_deferred_loop = edit_deferred_loop_start.elapsed();
+
+    let mut edit_immediate_bench_app = RustdownApp {
+        mode: Mode::Edit,
+        doc: Document {
+            path: Some(path.to_path_buf()),
+            image_uri_scheme: default_image_uri_scheme(Some(path)),
+            text: Arc::new(app.doc.text.as_str().to_owned()),
+            base_text: Arc::new(app.doc.text.as_str().to_owned()),
+            disk_rev: app.doc.disk_rev,
+            stats: app.doc.stats,
+            stats_dirty: false,
+            preview_dirty: false,
+            dirty: false,
+            md_cache: CommonMarkCache::default(),
+            last_edit_at: None,
+            edit_seq: 0,
+            editor_galley_cache: None,
+        },
+        ..Default::default()
+    };
+    let edit_immediate_loop_start = Instant::now();
+    for _ in 0..edit_iterations {
+        Arc::make_mut(&mut edit_immediate_bench_app.doc.text).push('x');
+        edit_immediate_bench_app.bump_edit_seq();
+        edit_immediate_bench_app.note_text_changed(false);
+    }
+    let edit_immediate_loop = edit_immediate_loop_start.elapsed();
+
+    let clean_text_heap_bytes = estimate_text_heap_bytes(&app.doc.text, &app.doc.base_text);
+    let mut dirty_text = app.doc.text.clone();
+    Arc::make_mut(&mut dirty_text).push('x');
+    let dirty_text_heap_bytes = estimate_text_heap_bytes(&dirty_text, &app.doc.base_text);
 
     let total_ms = total_start.elapsed();
 
@@ -297,6 +489,49 @@ fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
     println!("galley_rows={}", galley.rows.len());
     println!("t_editor_frame1_ms={}", editor_frame1_ms.as_millis());
     println!("t_editor_frame2_ms={}", editor_frame2_ms.as_millis());
+    println!("t_core_total_ms={}", core_total_ms.as_millis());
+    println!("t_preview_frame1_ms={}", preview_frame1_ms.as_millis());
+    println!("t_preview_frame2_ms={}", preview_frame2_ms.as_millis());
+    println!("diag_iterations={diagnostics_iterations}");
+    println!("diag_edit_iterations={edit_iterations}");
+    println!(
+        "t_stats_loop_avg_us={:.2}",
+        avg_duration_us(stats_loop, diagnostics_iterations)
+    );
+    println!(
+        "t_html_loop_avg_us={:.2}",
+        avg_duration_us(html_loop, diagnostics_iterations)
+    );
+    println!(
+        "t_highlight_job_loop_avg_us={:.2}",
+        avg_duration_us(highlight_job_loop, diagnostics_iterations)
+    );
+    println!(
+        "t_highlight_layout_loop_avg_us={:.2}",
+        avg_duration_us(highlight_layout_loop, diagnostics_iterations)
+    );
+    println!(
+        "t_image_uri_recompute_avg_us={:.2}",
+        avg_duration_us(image_uri_recompute, diagnostics_iterations)
+    );
+    println!(
+        "t_image_uri_cached_lookup_avg_us={:.2}",
+        avg_duration_us(image_uri_cached, diagnostics_iterations)
+    );
+    println!(
+        "t_edit_note_change_deferred_avg_us={:.2}",
+        avg_duration_us(edit_deferred_loop, edit_iterations)
+    );
+    println!(
+        "t_edit_note_change_immediate_avg_us={:.2}",
+        avg_duration_us(edit_immediate_loop, edit_iterations)
+    );
+    println!(
+        "t_edit_note_change_avg_us={:.2}",
+        avg_duration_us(edit_deferred_loop, edit_iterations)
+    );
+    println!("text_heap_clean_bytes={clean_text_heap_bytes}");
+    println!("text_heap_dirty_bytes={dirty_text_heap_bytes}");
     println!("t_total_ms={}", total_ms.as_millis());
 
     std::hint::black_box(app);
@@ -493,10 +728,13 @@ struct RustdownApp {
 
 struct Document {
     path: Option<PathBuf>,
+    image_uri_scheme: String,
     text: Arc<String>,
     base_text: Arc<String>,
     disk_rev: Option<DiskRevision>,
     stats: DocumentStats,
+    stats_dirty: bool,
+    preview_dirty: bool,
     dirty: bool,
     md_cache: CommonMarkCache,
     last_edit_at: Option<Instant>,
@@ -509,10 +747,13 @@ impl Default for Document {
         let text = Arc::new(String::new());
         Self {
             path: None,
+            image_uri_scheme: default_image_uri_scheme(None),
             text: text.clone(),
             base_text: text,
             disk_rev: None,
             stats: DocumentStats::default(),
+            stats_dirty: false,
+            preview_dirty: false,
             dirty: false,
             md_cache: CommonMarkCache::default(),
             last_edit_at: None,
@@ -785,6 +1026,7 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
+        self.refresh_stats_if_due(ctx);
 
         let dialog_open = self.pending_action.is_some() || self.disk_conflict.is_some();
         let (
@@ -1322,7 +1564,9 @@ impl RustdownApp {
                             self.doc.disk_rev = Some(disk_rev);
                             self.bump_edit_seq();
                             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                            self.doc.stats_dirty = false;
                             self.doc.md_cache.clear_scrollable();
+                            self.doc.preview_dirty = false;
                             self.doc.last_edit_at = None;
                             self.doc.dirty = false;
                             self.doc.editor_galley_cache = None;
@@ -1338,7 +1582,9 @@ impl RustdownApp {
                             self.doc.disk_rev = Some(disk_rev);
                             self.bump_edit_seq();
                             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                            self.doc.stats_dirty = false;
                             self.doc.md_cache.clear_scrollable();
+                            self.doc.preview_dirty = false;
                             self.doc.dirty = true;
                             self.doc.editor_galley_cache = None;
                             self.error = None;
@@ -1386,7 +1632,9 @@ impl RustdownApp {
             self.doc.disk_rev = Some(disk_rev);
             self.bump_edit_seq();
             self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+            self.doc.stats_dirty = false;
             self.doc.md_cache.clear_scrollable();
+            self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
             self.error = None;
             return;
@@ -1403,7 +1651,9 @@ impl RustdownApp {
                 self.doc.disk_rev = Some(disk_rev);
                 self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.stats_dirty = false;
                 self.doc.md_cache.clear_scrollable();
+                self.doc.preview_dirty = false;
                 self.error = None;
             }
             Merge3Outcome::Conflicted {
@@ -1443,6 +1693,7 @@ impl RustdownApp {
 
         if mode == Mode::Edit {
             self.doc.md_cache.clear_scrollable();
+            self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
         }
     }
@@ -1478,11 +1729,30 @@ impl RustdownApp {
         self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
     }
 
-    fn note_text_changed(&mut self) {
+    fn refresh_stats_now(&mut self) {
+        self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+        self.doc.stats_dirty = false;
+    }
+
+    fn refresh_stats_if_due(&mut self, ctx: &egui::Context) {
+        if !self.doc.stats_dirty {
+            return;
+        }
+        if let Some(remaining) = self.doc.debounce_remaining(STATS_RECALC_DEBOUNCE) {
+            ctx.request_repaint_after(remaining);
+            return;
+        }
+        self.refresh_stats_now();
+    }
+
+    fn note_text_changed(&mut self, defer_stats_recalc: bool) {
         self.doc.dirty = true;
         self.doc.last_edit_at = Some(Instant::now());
-        self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-        self.doc.md_cache.clear_scrollable();
+        self.doc.stats_dirty = true;
+        self.doc.preview_dirty = true;
+        if !defer_stats_recalc {
+            self.refresh_stats_now();
+        }
     }
 
     fn open_search(&mut self, replace_mode: bool) {
@@ -1508,7 +1778,7 @@ impl RustdownApp {
         if let Cow::Owned(text) = text {
             self.doc.text = Arc::new(text);
             self.bump_edit_seq();
-            self.note_text_changed();
+            self.note_text_changed(false);
         }
         replaced
     }
@@ -1522,7 +1792,7 @@ impl RustdownApp {
 
         self.doc.text = Arc::new(formatted);
         self.bump_edit_seq();
-        self.note_text_changed();
+        self.note_text_changed(false);
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
@@ -1587,7 +1857,7 @@ impl RustdownApp {
 
         self.doc.edit_seq = next_seq;
         if changed {
-            self.note_text_changed();
+            self.note_text_changed(true);
         }
     }
 
@@ -1599,14 +1869,18 @@ impl RustdownApp {
             return;
         }
 
-        let image_uri_scheme = default_image_uri_scheme(self.doc.path.as_deref());
-        egui::ScrollArea::vertical()
-            .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                CommonMarkViewer::new()
-                    .default_implicit_uri_scheme(image_uri_scheme.as_str())
-                    .show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
-            });
+        if self.doc.preview_dirty {
+            self.doc.md_cache.clear_scrollable();
+            self.doc.preview_dirty = false;
+        }
+        CommonMarkViewer::new()
+            .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
+            .show_scrollable(
+                "preview_markdown",
+                ui,
+                &mut self.doc.md_cache,
+                self.doc.text.as_str(),
+            );
     }
 
     fn request_action(&mut self, action: PendingAction) {
@@ -1647,12 +1921,16 @@ impl RustdownApp {
                 let text = Arc::new(text);
                 let base_text = text.clone();
                 let stats = DocumentStats::from_text(text.as_str());
+                let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
                 self.doc = Document {
                     path: Some(path),
+                    image_uri_scheme,
                     text,
                     base_text,
                     disk_rev: Some(disk_rev),
                     stats,
+                    stats_dirty: false,
+                    preview_dirty: false,
                     dirty: false,
                     md_cache: CommonMarkCache::default(),
                     last_edit_at: None,
@@ -1663,8 +1941,10 @@ impl RustdownApp {
                 self.reset_disk_sync_state();
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
                 self.doc = Document {
                     path: Some(path),
+                    image_uri_scheme,
                     ..Document::default()
                 };
                 self.error = None;
@@ -1730,6 +2010,7 @@ impl RustdownApp {
             Ok(()) => {
                 if update_doc_path {
                     self.doc.path = Some(path.clone());
+                    self.doc.image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
                 }
                 self.doc.dirty = false;
                 self.doc.base_text = self.doc.text.clone();
@@ -1838,7 +2119,9 @@ impl RustdownApp {
                 self.doc.disk_rev = Some(conflict.disk_rev);
                 self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.stats_dirty = false;
                 self.doc.md_cache.clear_scrollable();
+                self.doc.preview_dirty = false;
                 self.doc.dirty = true;
                 self.doc.editor_galley_cache = None;
                 self.error = None;
@@ -1849,7 +2132,9 @@ impl RustdownApp {
                 self.doc.disk_rev = Some(conflict.disk_rev);
                 self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.stats_dirty = false;
                 self.doc.md_cache.clear_scrollable();
+                self.doc.preview_dirty = false;
                 self.doc.dirty = true;
                 self.doc.editor_galley_cache = None;
                 self.error = None;
@@ -1886,7 +2171,9 @@ impl RustdownApp {
                 self.doc.disk_rev = Some(conflict.disk_rev);
                 self.bump_edit_seq();
                 self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+                self.doc.stats_dirty = false;
                 self.doc.md_cache.clear_scrollable();
+                self.doc.preview_dirty = false;
                 self.doc.dirty = false;
                 self.doc.editor_galley_cache = None;
                 self.error = None;
@@ -1976,6 +2263,10 @@ mod tests {
             assert_eq!(options.mode, mode);
             assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
             assert_eq!(options.diagnostics, DiagnosticsMode::Off);
+            assert_eq!(
+                options.diagnostics_iterations,
+                DIAGNOSTICS_DEFAULT_ITERATIONS
+            );
         }
     }
 
@@ -1986,6 +2277,25 @@ mod tests {
         assert_eq!(
             options.path.as_deref(),
             Some(PathBuf::from("README.md")).as_deref()
+        );
+        assert_eq!(
+            options.diagnostics_iterations,
+            DIAGNOSTICS_DEFAULT_ITERATIONS
+        );
+    }
+
+    #[test]
+    fn parse_launch_options_parses_diagnostics_iteration_flags() {
+        let options = parse(&["--diag-iterations=25", "README.md"]);
+        assert_eq!(options.diagnostics_iterations, 25);
+
+        let options = parse(&["--diagnostics-iterations=10", "README.md"]);
+        assert_eq!(options.diagnostics_iterations, 10);
+
+        let options = parse(&["--diag-iterations=0", "README.md"]);
+        assert_eq!(
+            options.diagnostics_iterations,
+            DIAGNOSTICS_DEFAULT_ITERATIONS
         );
     }
 
@@ -2125,6 +2435,23 @@ mod tests {
     }
 
     #[test]
+    fn open_path_sets_cached_image_uri_scheme() {
+        let dir = make_temp_dir("rustdown-open-image-scheme-test");
+        let path = dir.join("note.md");
+        assert!(fs::write(&path, "hello").is_ok());
+
+        let mut app = RustdownApp::default();
+        app.open_path(path.clone());
+
+        assert_eq!(
+            app.doc.image_uri_scheme,
+            default_image_uri_scheme(Some(path.as_path()))
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn markdown_to_html_document_renders_common_markdown() {
         let html = markdown_to_html_document("# Heading\n\n- item");
         assert!(html.contains("<h1>Heading</h1>"));
@@ -2174,6 +2501,28 @@ mod tests {
         assert_eq!(zoom_with_factor(MAX_ZOOM_FACTOR, 2.0), MAX_ZOOM_FACTOR);
         assert!((zoom_with_factor(1.0, 0.0) - 1.0).abs() < f32::EPSILON);
         assert!((zoom_with_factor(1.0, f32::NAN) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn deferred_note_text_changed_marks_stats_dirty_until_due_refresh() {
+        let mut app = RustdownApp::default();
+        app.doc.text = Arc::new("alpha beta".to_owned());
+        app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
+        app.doc.base_text = app.doc.text.clone();
+
+        app.doc.text = Arc::new("alpha beta gamma".to_owned());
+        app.bump_edit_seq();
+        app.note_text_changed(true);
+
+        assert!(app.doc.stats_dirty);
+        assert_eq!(app.doc.stats, DocumentStats::from_text("alpha beta"));
+
+        app.doc.last_edit_at = Some(Instant::now() - STATS_RECALC_DEBOUNCE);
+        let ctx = egui::Context::default();
+        app.refresh_stats_if_due(&ctx);
+
+        assert!(!app.doc.stats_dirty);
+        assert_eq!(app.doc.stats, DocumentStats::from_text("alpha beta gamma"));
     }
 
     #[test]
