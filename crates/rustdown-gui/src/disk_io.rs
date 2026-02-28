@@ -218,10 +218,9 @@ mod tests {
 
         let result = read_stable_utf8(&path);
         assert!(result.is_ok(), "read_stable_utf8 failed: {result:?}");
-        if let Ok((text, rev)) = result {
-            assert_eq!(text, "content");
-            assert_eq!(rev.len, 7);
-        }
+        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, "content");
+        assert_eq!(rev.len, 7);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -255,7 +254,7 @@ mod tests {
 
         let result = next_merge_sidecar_path(&original);
         assert!(result.is_ok());
-        let sidecar = result.ok().unwrap_or_default();
+        let sidecar = result.unwrap_or_else(|_| unreachable!());
         assert_eq!(
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge.md"
@@ -275,7 +274,7 @@ mod tests {
 
         let result = next_merge_sidecar_path(&original);
         assert!(result.is_ok());
-        let sidecar = result.ok().unwrap_or_default();
+        let sidecar = result.unwrap_or_else(|_| unreachable!());
         assert_eq!(
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge-2.md"
@@ -291,7 +290,7 @@ mod tests {
 
         let result = next_merge_sidecar_path(&original);
         assert!(result.is_ok());
-        let sidecar = result.ok().unwrap_or_default();
+        let sidecar = result.unwrap_or_else(|_| unreachable!());
         assert_eq!(
             sidecar.file_name().unwrap_or_default(),
             "README.rustdown-merge"

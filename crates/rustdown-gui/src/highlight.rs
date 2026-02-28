@@ -234,12 +234,23 @@ mod tests {
     fn section_for_snippet<'a>(
         job: &'a egui::text::LayoutJob,
         snippet: &str,
-    ) -> Option<&'a egui::text::LayoutSection> {
-        let start = job.text.find(snippet)?;
+    ) -> &'a egui::text::LayoutSection {
+        let start = job.text.find(snippet);
+        assert!(
+            start.is_some(),
+            "Expected snippet '{snippet}' in rendered text"
+        );
+        let start = start.unwrap_or_else(|| unreachable!());
         let end = start + snippet.len();
-        job.sections
+        let section = job
+            .sections
             .iter()
-            .find(|section| section.byte_range.start <= start && section.byte_range.end >= end)
+            .find(|section| section.byte_range.start <= start && section.byte_range.end >= end);
+        assert!(
+            section.is_some(),
+            "Expected section for snippet '{snippet}'"
+        );
+        section.unwrap_or_else(|| unreachable!())
     }
 
     #[test]
@@ -249,8 +260,6 @@ mod tests {
         let source = "~~~azurecli\naz aks list\n~~~\n";
         let job = markdown_layout_job(&style, &visuals, source, false);
         let code_section = section_for_snippet(&job, "az aks list");
-        assert!(code_section.is_some(), "Expected code section to exist");
-        let code_section = code_section.unwrap_or_else(|| unreachable!());
         assert_eq!(code_section.format.background, visuals.faint_bg_color);
         assert_eq!(
             code_section.format.font_id,
@@ -265,8 +274,6 @@ mod tests {
         let source = "~~~bash\necho hi\n~~~\n";
         let job = markdown_layout_job(&style, &visuals, source, false);
         let fence_section = section_for_snippet(&job, "~~~bash");
-        assert!(fence_section.is_some(), "Expected fence section to exist");
-        let fence_section = fence_section.unwrap_or_else(|| unreachable!());
         assert_eq!(fence_section.format.color, visuals.weak_text_color());
     }
 
@@ -282,14 +289,6 @@ mod tests {
         let default_h2 = section_for_snippet(&default_job, "Next");
         let color_h1 = section_for_snippet(&color_job, "Top");
         let color_h2 = section_for_snippet(&color_job, "Next");
-
-        assert!(default_h1.is_some() && default_h2.is_some());
-        assert!(color_h1.is_some() && color_h2.is_some());
-
-        let default_h1 = default_h1.unwrap_or_else(|| unreachable!());
-        let default_h2 = default_h2.unwrap_or_else(|| unreachable!());
-        let color_h1 = color_h1.unwrap_or_else(|| unreachable!());
-        let color_h2 = color_h2.unwrap_or_else(|| unreachable!());
 
         assert_eq!(default_h1.format.color, visuals.hyperlink_color);
         assert_eq!(default_h2.format.color, visuals.hyperlink_color);

@@ -1272,17 +1272,69 @@ impl eframe::App for RustdownApp {
 }
 
 impl RustdownApp {
+    fn clear_disk_watcher(&mut self) {
+        self.disk_watcher = None;
+        self.disk_watch_root = None;
+        self.disk_watch_target_name = None;
+        self.disk_watch_rx = None;
+    }
+
+    fn schedule_disk_reload(&mut self, now: Instant) {
+        let due_at = now + DISK_RELOAD_DEBOUNCE;
+        if self
+            .pending_disk_reload_at
+            .is_none_or(|existing| existing > due_at)
+        {
+            self.pending_disk_reload_at = Some(due_at);
+        }
+    }
+
+    fn apply_disk_text_state(
+        &mut self,
+        text: Arc<String>,
+        base_text: Arc<String>,
+        disk_rev: DiskRevision,
+        dirty: bool,
+        clear_last_edit: bool,
+    ) {
+        self.doc.text = text;
+        self.doc.base_text = base_text;
+        self.doc.disk_rev = Some(disk_rev);
+        self.bump_edit_seq();
+        self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
+        self.doc.stats_dirty = false;
+        self.doc.md_cache.clear_scrollable();
+        self.doc.preview_dirty = false;
+        self.doc.dirty = dirty;
+        if clear_last_edit {
+            self.doc.last_edit_at = None;
+        }
+        self.doc.editor_galley_cache = None;
+        self.error = None;
+    }
+
+    fn set_disk_conflict(
+        &mut self,
+        disk_text: String,
+        disk_rev: DiskRevision,
+        conflict_marked: String,
+        ours_wins: String,
+    ) {
+        self.disk_conflict = Some(DiskConflict {
+            disk_text,
+            disk_rev,
+            conflict_marked,
+            ours_wins,
+        });
+    }
+
     fn reset_disk_sync_state(&mut self) {
         self.disk_reload_nonce = self.disk_reload_nonce.wrapping_add(1);
         self.disk_poll_at = None;
         self.pending_disk_reload_at = None;
         self.disk_reload_in_flight = false;
         self.disk_conflict = None;
-
-        self.disk_watcher = None;
-        self.disk_watch_root = None;
-        self.disk_watch_target_name = None;
-        self.disk_watch_rx = None;
+        self.clear_disk_watcher();
     }
 
     fn ensure_disk_read_channel(&mut self) {
@@ -1304,10 +1356,7 @@ impl RustdownApp {
             return;
         }
 
-        self.disk_watcher = None;
-        self.disk_watch_rx = None;
-        self.disk_watch_root = None;
-        self.disk_watch_target_name = None;
+        self.clear_disk_watcher();
 
         let Some(target_name) = target_name else {
             return;
@@ -1364,18 +1413,12 @@ impl RustdownApp {
                 }
                 Ok(Err(err)) => {
                     self.error.get_or_insert(format!("Watch error: {err}"));
-                    self.disk_watcher = None;
-                    self.disk_watch_rx = None;
-                    self.disk_watch_root = None;
-                    self.disk_watch_target_name = None;
+                    self.clear_disk_watcher();
                     return false;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.disk_watcher = None;
-                    self.disk_watch_rx = None;
-                    self.disk_watch_root = None;
-                    self.disk_watch_target_name = None;
+                    self.clear_disk_watcher();
                     return false;
                 }
             }
@@ -1401,11 +1444,7 @@ impl RustdownApp {
 
         let now = Instant::now();
         if self.drain_disk_watch_events() {
-            let due_at = now + DISK_RELOAD_DEBOUNCE;
-            match self.pending_disk_reload_at {
-                Some(existing) if existing <= due_at => {}
-                _ => self.pending_disk_reload_at = Some(due_at),
-            }
+            self.schedule_disk_reload(now);
         }
 
         if self.disk_watcher.is_none() && !self.disk_reload_in_flight {
@@ -1415,13 +1454,7 @@ impl RustdownApp {
                     self.disk_poll_at = Some(now + DISK_POLL_INTERVAL);
 
                     match disk_revision(path.as_path()) {
-                        Ok(rev) if Some(rev) != self.doc.disk_rev => {
-                            let due_at = now + DISK_RELOAD_DEBOUNCE;
-                            match self.pending_disk_reload_at {
-                                Some(existing) if existing <= due_at => {}
-                                _ => self.pending_disk_reload_at = Some(due_at),
-                            }
-                        }
+                        Ok(rev) if Some(rev) != self.doc.disk_rev => self.schedule_disk_reload(now),
                         Ok(_) => {}
                         Err(err) => {
                             self.error
@@ -1544,12 +1577,7 @@ impl RustdownApp {
                     self.disk_reload_in_flight = false;
 
                     if self.doc.edit_seq != msg.edit_seq {
-                        let now = Instant::now();
-                        let due_at = now + DISK_RELOAD_DEBOUNCE;
-                        match self.pending_disk_reload_at {
-                            Some(existing) if existing <= due_at => {}
-                            _ => self.pending_disk_reload_at = Some(due_at),
-                        }
+                        self.schedule_disk_reload(Instant::now());
                         continue;
                     }
 
@@ -1559,35 +1587,26 @@ impl RustdownApp {
                             disk_rev,
                         }) => {
                             let disk_text = Arc::new(disk_text);
-                            self.doc.base_text = disk_text.clone();
-                            self.doc.text = disk_text;
-                            self.doc.disk_rev = Some(disk_rev);
-                            self.bump_edit_seq();
-                            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                            self.doc.stats_dirty = false;
-                            self.doc.md_cache.clear_scrollable();
-                            self.doc.preview_dirty = false;
-                            self.doc.last_edit_at = None;
-                            self.doc.dirty = false;
-                            self.doc.editor_galley_cache = None;
-                            self.error = None;
+                            self.apply_disk_text_state(
+                                disk_text.clone(),
+                                disk_text,
+                                disk_rev,
+                                false,
+                                true,
+                            );
                         }
                         Ok(DiskReloadOutcome::MergeClean {
                             merged_text,
                             disk_text,
                             disk_rev,
                         }) => {
-                            self.doc.text = Arc::new(merged_text);
-                            self.doc.base_text = Arc::new(disk_text);
-                            self.doc.disk_rev = Some(disk_rev);
-                            self.bump_edit_seq();
-                            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                            self.doc.stats_dirty = false;
-                            self.doc.md_cache.clear_scrollable();
-                            self.doc.preview_dirty = false;
-                            self.doc.dirty = true;
-                            self.doc.editor_galley_cache = None;
-                            self.error = None;
+                            self.apply_disk_text_state(
+                                Arc::new(merged_text),
+                                Arc::new(disk_text),
+                                disk_rev,
+                                true,
+                                false,
+                            );
                         }
                         Ok(DiskReloadOutcome::MergeConflict {
                             disk_text,
@@ -1595,12 +1614,7 @@ impl RustdownApp {
                             conflict_marked,
                             ours_wins,
                         }) => {
-                            self.disk_conflict = Some(DiskConflict {
-                                disk_text,
-                                disk_rev,
-                                conflict_marked,
-                                ours_wins,
-                            });
+                            self.set_disk_conflict(disk_text, disk_rev, conflict_marked, ours_wins);
                         }
                         Err(err) => {
                             self.error = Some(format!("Reload failed: {err}"));
@@ -1627,16 +1641,7 @@ impl RustdownApp {
 
         if !self.doc.dirty {
             let disk_text = Arc::new(disk_text);
-            self.doc.base_text = disk_text.clone();
-            self.doc.text = disk_text;
-            self.doc.disk_rev = Some(disk_rev);
-            self.bump_edit_seq();
-            self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-            self.doc.stats_dirty = false;
-            self.doc.md_cache.clear_scrollable();
-            self.doc.preview_dirty = false;
-            self.doc.last_edit_at = None;
-            self.error = None;
+            self.apply_disk_text_state(disk_text.clone(), disk_text, disk_rev, false, true);
             return;
         }
 
@@ -1646,26 +1651,19 @@ impl RustdownApp {
             disk_text.as_str(),
         ) {
             Merge3Outcome::Clean(merged) => {
-                self.doc.text = Arc::new(merged);
-                self.doc.base_text = Arc::new(disk_text);
-                self.doc.disk_rev = Some(disk_rev);
-                self.bump_edit_seq();
-                self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-                self.doc.stats_dirty = false;
-                self.doc.md_cache.clear_scrollable();
-                self.doc.preview_dirty = false;
-                self.error = None;
+                self.apply_disk_text_state(
+                    Arc::new(merged),
+                    Arc::new(disk_text),
+                    disk_rev,
+                    true,
+                    false,
+                );
             }
             Merge3Outcome::Conflicted {
                 conflict_marked,
                 ours_wins,
             } => {
-                self.disk_conflict = Some(DiskConflict {
-                    disk_text,
-                    disk_rev,
-                    conflict_marked,
-                    ours_wins,
-                });
+                self.set_disk_conflict(disk_text, disk_rev, conflict_marked, ours_wins);
             }
         }
     }
@@ -1891,6 +1889,26 @@ impl RustdownApp {
         }
     }
 
+    fn load_document(&mut self, path: PathBuf, text: String, disk_rev: Option<DiskRevision>) {
+        let text = Arc::new(text);
+        let base_text = text.clone();
+        self.doc = Document {
+            path: Some(path.clone()),
+            image_uri_scheme: default_image_uri_scheme(Some(path.as_path())),
+            stats: DocumentStats::from_text(text.as_str()),
+            text,
+            base_text,
+            disk_rev,
+            stats_dirty: false,
+            preview_dirty: false,
+            dirty: false,
+            md_cache: CommonMarkCache::default(),
+            last_edit_at: None,
+            edit_seq: 0,
+            editor_galley_cache: None,
+        };
+    }
+
     fn apply_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewBlank => {
@@ -1918,35 +1936,12 @@ impl RustdownApp {
     fn open_path(&mut self, path: PathBuf) {
         match read_stable_utf8(&path) {
             Ok((text, disk_rev)) => {
-                let text = Arc::new(text);
-                let base_text = text.clone();
-                let stats = DocumentStats::from_text(text.as_str());
-                let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
-                self.doc = Document {
-                    path: Some(path),
-                    image_uri_scheme,
-                    text,
-                    base_text,
-                    disk_rev: Some(disk_rev),
-                    stats,
-                    stats_dirty: false,
-                    preview_dirty: false,
-                    dirty: false,
-                    md_cache: CommonMarkCache::default(),
-                    last_edit_at: None,
-                    edit_seq: 0,
-                    editor_galley_cache: None,
-                };
+                self.load_document(path, text, Some(disk_rev));
                 self.error = None;
                 self.reset_disk_sync_state();
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
-                self.doc = Document {
-                    path: Some(path),
-                    image_uri_scheme,
-                    ..Document::default()
-                };
+                self.load_document(path, String::new(), None);
                 self.error = None;
                 self.reset_disk_sync_state();
             }
@@ -1954,6 +1949,13 @@ impl RustdownApp {
                 self.error.get_or_insert(format!("Open failed: {err}"));
             }
         }
+    }
+
+    fn save_path_choice(&self, save_as: bool) -> Option<(PathBuf, bool)> {
+        if !save_as && let Some(path) = self.doc.path.clone() {
+            return Some((path, false));
+        }
+        markdown_file_dialog().save_file().map(|path| (path, true))
     }
 
     fn export_html(&mut self) -> bool {
@@ -1975,18 +1977,8 @@ impl RustdownApp {
     }
 
     fn save_doc(&mut self, save_as: bool) -> bool {
-        let (path, update_doc_path) = if save_as {
-            let Some(path) = markdown_file_dialog().save_file() else {
-                return false;
-            };
-            (path, true)
-        } else if let Some(path) = self.doc.path.clone() {
-            (path, false)
-        } else {
-            let Some(path) = markdown_file_dialog().save_file() else {
-                return false;
-            };
-            (path, true)
+        let Some((path, update_doc_path)) = self.save_path_choice(save_as) else {
+            return false;
         };
 
         let saving_to_current_path = self.doc.path.as_deref() == Some(path.as_path());
@@ -2244,9 +2236,23 @@ mod tests {
         dir
     }
 
+    fn disk_conflict(app: &RustdownApp) -> &DiskConflict {
+        assert!(
+            app.disk_conflict.is_some(),
+            "Expected conflict prompt to be set"
+        );
+        app.disk_conflict.as_ref().unwrap_or_else(|| unreachable!())
+    }
+
+    fn read_file(path: &Path) -> String {
+        let text_res = fs::read_to_string(path);
+        assert!(text_res.is_ok(), "Failed to read file: {text_res:?}");
+        text_res.unwrap_or_else(|_| unreachable!())
+    }
+
     #[test]
-    fn parse_launch_options_parses_modes_and_paths() {
-        let cases = [
+    fn parse_launch_options_covers_modes_paths_and_diagnostics() {
+        let mode_cases = [
             (&[][..], Mode::Edit, None),
             (&["-p"][..], Mode::Preview, None),
             (&["-s"][..], Mode::SideBySide, None),
@@ -2256,9 +2262,19 @@ mod tests {
                 Some("README.md"),
             ),
             (&["-p", "README.md"][..], Mode::Preview, Some("README.md")),
+            (
+                &["--gapplication-service", "README.md"][..],
+                Mode::Preview,
+                Some("README.md"),
+            ),
+            (
+                &["--", "--scratch.md"][..],
+                Mode::Preview,
+                Some("--scratch.md"),
+            ),
         ];
 
-        for (args, mode, path) in cases {
+        for (args, mode, path) in mode_cases {
             let options = parse(args);
             assert_eq!(options.mode, mode);
             assert_eq!(options.path.as_deref(), path.map(PathBuf::from).as_deref());
@@ -2268,10 +2284,7 @@ mod tests {
                 DIAGNOSTICS_DEFAULT_ITERATIONS
             );
         }
-    }
 
-    #[test]
-    fn parse_launch_options_parses_diagnostics_open_pipeline() {
         let options = parse(&["--diagnostics-open", "README.md"]);
         assert_eq!(options.diagnostics, DiagnosticsMode::OpenPipeline);
         assert_eq!(
@@ -2282,41 +2295,16 @@ mod tests {
             options.diagnostics_iterations,
             DIAGNOSTICS_DEFAULT_ITERATIONS
         );
-    }
 
-    #[test]
-    fn parse_launch_options_parses_diagnostics_iteration_flags() {
-        let options = parse(&["--diag-iterations=25", "README.md"]);
-        assert_eq!(options.diagnostics_iterations, 25);
-
-        let options = parse(&["--diagnostics-iterations=10", "README.md"]);
-        assert_eq!(options.diagnostics_iterations, 10);
-
-        let options = parse(&["--diag-iterations=0", "README.md"]);
-        assert_eq!(
-            options.diagnostics_iterations,
-            DIAGNOSTICS_DEFAULT_ITERATIONS
-        );
-    }
-
-    #[test]
-    fn parse_launch_options_ignores_unknown_switches() {
-        let options = parse(&["--gapplication-service", "README.md"]);
-        assert_eq!(options.mode, Mode::Preview);
-        assert_eq!(
-            options.path.as_deref(),
-            Some(PathBuf::from("README.md")).as_deref()
-        );
-    }
-
-    #[test]
-    fn parse_launch_options_accepts_dash_prefixed_path_after_double_dash() {
-        let options = parse(&["--", "--scratch.md"]);
-        assert_eq!(options.mode, Mode::Preview);
-        assert_eq!(
-            options.path.as_deref(),
-            Some(PathBuf::from("--scratch.md")).as_deref()
-        );
+        let cases = [
+            ("--diag-iterations=25", 25),
+            ("--diagnostics-iterations=10", 10),
+            ("--diag-iterations=0", DIAGNOSTICS_DEFAULT_ITERATIONS),
+        ];
+        for (flag, expected) in cases {
+            let options = parse(&[flag, "README.md"]);
+            assert_eq!(options.diagnostics_iterations, expected);
+        }
     }
 
     #[test]
@@ -2459,19 +2447,11 @@ mod tests {
     }
 
     #[test]
-    fn find_match_count_returns_zero_for_empty_query() {
+    fn search_and_replace_helpers_handle_empty_and_replacement_cases() {
         assert_eq!(find_match_count("abc abc", ""), 0);
-    }
-
-    #[test]
-    fn replace_all_occurrences_replaces_and_counts_matches() {
         let (text, replaced) = replace_all_occurrences("alpha beta alpha", "alpha", "zeta");
         assert_eq!(text.as_ref(), "zeta beta zeta");
         assert_eq!(replaced, 2);
-    }
-
-    #[test]
-    fn replace_all_occurrences_ignores_identical_replacement() {
         let (text, replaced) = replace_all_occurrences("alpha beta", "alpha", "alpha");
         assert_eq!(text.as_ref(), "alpha beta");
         assert_eq!(replaced, 0);
@@ -2631,14 +2611,7 @@ mod tests {
         app.doc.dirty = true;
 
         app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
-        assert!(
-            app.disk_conflict.is_some(),
-            "Expected conflict prompt to be set"
-        );
-        let expected_merge = match app.disk_conflict.as_ref() {
-            Some(conflict) => conflict.conflict_marked.clone(),
-            None => return,
-        };
+        let expected_merge = disk_conflict(&app).conflict_marked.clone();
 
         app.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
 
@@ -2664,17 +2637,9 @@ mod tests {
         app.doc.dirty = true;
 
         app.incorporate_disk_text("line1\nT2\nT3\n".to_owned(), test_rev(2, 15));
-        assert!(
-            app.disk_conflict.is_some(),
-            "Expected conflict prompt to be set"
-        );
-        let (expected_sidecar, expected_ours_wins) = match app.disk_conflict.as_ref() {
-            Some(conflict) => (conflict.conflict_marked.clone(), conflict.ours_wins.clone()),
-            None => {
-                let _ = fs::remove_dir_all(&dir);
-                return;
-            }
-        };
+        let conflict = disk_conflict(&app);
+        let expected_sidecar = conflict.conflict_marked.clone();
+        let expected_ours_wins = conflict.ours_wins.clone();
 
         app.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
 
@@ -2687,26 +2652,11 @@ mod tests {
             app.merge_sidecar_path.is_some(),
             "Expected merge sidecar path to be set"
         );
-        let sidecar_path = match app.merge_sidecar_path.clone() {
-            Some(path) => path,
-            None => {
-                let _ = fs::remove_dir_all(&dir);
-                return;
-            }
-        };
-
-        let sidecar_text_res = fs::read_to_string(&sidecar_path);
-        assert!(
-            sidecar_text_res.is_ok(),
-            "Failed to read sidecar file: {sidecar_text_res:?}"
-        );
-        let sidecar_text = match sidecar_text_res {
-            Ok(text) => text,
-            Err(_) => {
-                let _ = fs::remove_dir_all(&dir);
-                return;
-            }
-        };
+        let sidecar_path = app
+            .merge_sidecar_path
+            .clone()
+            .unwrap_or_else(|| unreachable!());
+        let sidecar_text = read_file(&sidecar_path);
         assert_eq!(sidecar_text, expected_sidecar);
 
         let _ = fs::remove_dir_all(&dir);
@@ -2720,15 +2670,7 @@ mod tests {
         assert!(atomic_write_utf8(&path, "first").is_ok());
         assert!(atomic_write_utf8(&path, "second").is_ok());
 
-        let text_res = fs::read_to_string(&path);
-        assert!(text_res.is_ok(), "Failed to read saved file: {text_res:?}");
-        let text = match text_res {
-            Ok(text) => text,
-            Err(_) => {
-                let _ = fs::remove_dir_all(&dir);
-                return;
-            }
-        };
+        let text = read_file(&path);
         assert_eq!(text, "second");
 
         let _ = fs::remove_dir_all(&dir);
