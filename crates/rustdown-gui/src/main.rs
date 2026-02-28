@@ -25,6 +25,7 @@ mod disk_io;
 mod format;
 mod highlight;
 mod live_merge;
+mod markdown_fence;
 
 use disk_io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
@@ -48,18 +49,39 @@ const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
 ];
+#[cfg(target_os = "linux")]
+const UI_FONT_FALLBACK_PATHS: &[&str] = &[
+    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+];
 #[cfg(target_os = "macos")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/Library/Fonts/Arial.ttf",
+];
+#[cfg(target_os = "macos")]
+const UI_FONT_FALLBACK_PATHS: &[&str] = &[
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Symbol.ttf",
 ];
 #[cfg(target_os = "windows")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
     r"C:\Windows\Fonts\segoeui.ttf",
     r"C:\Windows\Fonts\arial.ttf",
 ];
+#[cfg(target_os = "windows")]
+const UI_FONT_FALLBACK_PATHS: &[&str] = &[
+    r"C:\Windows\Fonts\seguiemj.ttf",
+    r"C:\Windows\Fonts\seguisym.ttf",
+    r"C:\Windows\Fonts\arialuni.ttf",
+];
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[];
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const UI_FONT_FALLBACK_PATHS: &[&str] = &[];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LaunchOptions {
@@ -81,7 +103,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let mut mode = Mode::Edit;
+    let mut mode = None;
     let mut path = None;
     let mut diagnostics = DiagnosticsMode::Off;
     let mut parse_flags = true;
@@ -94,11 +116,11 @@ where
                 continue;
             }
             if arg == "-p" {
-                mode = Mode::Preview;
+                mode = Some(Mode::Preview);
                 continue;
             }
             if arg == "-s" {
-                mode = Mode::SideBySide;
+                mode = Some(Mode::SideBySide);
                 continue;
             }
             if arg == "--diagnostics-open" || arg == "--diag-open" {
@@ -114,6 +136,14 @@ where
             path = Some(PathBuf::from(arg));
         }
     }
+
+    let mode = mode.unwrap_or_else(|| {
+        if path.is_some() {
+            Mode::Preview
+        } else {
+            Mode::Edit
+        }
+    });
 
     LaunchOptions {
         mode,
@@ -199,6 +229,7 @@ fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
         style.as_ref(),
         &style.visuals,
         std::hint::black_box(text.as_str()),
+        false,
     ));
     let highlight_job_ms = highlight_job_start.elapsed();
 
@@ -273,23 +304,53 @@ fn run_open_pipeline_diagnostics(path: Option<&Path>) -> io::Result<()> {
 }
 
 fn configure_single_font(ctx: &egui::Context) -> Result<(), String> {
-    let font_data = load_single_font()?;
-    let font_name = UI_FONT_NAME.to_owned();
+    let primary_font_data = load_single_font()?;
+    let primary_font_name = UI_FONT_NAME.to_owned();
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.clear();
     fonts.families.clear();
     fonts.font_data.insert(
-        font_name.clone(),
-        Arc::new(egui::FontData::from_owned(font_data)),
+        primary_font_name.clone(),
+        Arc::new(egui::FontData::from_owned(primary_font_data)),
+    );
+    let mut proportional = vec![primary_font_name.clone()];
+    let mut monospace = vec![primary_font_name];
+    append_font_fallbacks(
+        &mut fonts,
+        &mut proportional,
+        &mut monospace,
+        UI_FONT_FALLBACK_PATHS,
     );
     fonts
         .families
-        .insert(egui::FontFamily::Proportional, vec![font_name.clone()]);
+        .insert(egui::FontFamily::Proportional, proportional);
     fonts
         .families
-        .insert(egui::FontFamily::Monospace, vec![font_name]);
+        .insert(egui::FontFamily::Monospace, monospace);
     ctx.set_fonts(fonts);
     Ok(())
+}
+
+fn append_font_fallbacks(
+    fonts: &mut egui::FontDefinitions,
+    proportional: &mut Vec<String>,
+    monospace: &mut Vec<String>,
+    paths: &[&str],
+) -> usize {
+    let mut loaded = 0usize;
+    for path in paths {
+        let Ok(data) = fs::read(path) else {
+            continue;
+        };
+        let name = format!("{UI_FONT_NAME}-fallback-{loaded}");
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
+        proportional.push(name.clone());
+        monospace.push(name);
+        loaded += 1;
+    }
+    loaded
 }
 
 fn configure_ui_style(ctx: &egui::Context) {
@@ -373,6 +434,25 @@ fn suggested_html_file_name(path: Option<&Path>) -> String {
 }
 
 #[must_use]
+fn default_image_uri_scheme(path: Option<&Path>) -> String {
+    let Some(parent) = path.and_then(Path::parent) else {
+        return "file://".to_owned();
+    };
+
+    let base = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    let mut normalized = base.to_string_lossy().replace('\\', "/");
+    if !normalized.starts_with('/') {
+        normalized.insert(0, '/');
+    }
+    if !normalized.ends_with('/') {
+        normalized.push('/');
+    }
+    format!("file://{normalized}")
+}
+
+#[must_use]
 fn markdown_to_html_document(source: &str) -> String {
     let mut options = pulldown_cmark::Options::empty();
     options.insert(pulldown_cmark::Options::ENABLE_TABLES);
@@ -393,6 +473,7 @@ struct RustdownApp {
     pending_action: Option<PendingAction>,
     last_viewport_title: String,
     focus_search: bool,
+    heading_color_mode: bool,
 
     disk_reload_nonce: u64,
 
@@ -446,6 +527,7 @@ struct EditorGalleyCache {
     seq: u64,
     wrap_width_bits: u32,
     zoom_factor_bits: u32,
+    heading_color_mode: bool,
     galley: Arc<egui::Galley>,
 }
 
@@ -682,6 +764,24 @@ fn save_trigger_from_shortcut(command: bool, shift: bool, key_s: bool) -> Option
     }
 }
 
+#[must_use]
+fn clamped_zoom_factor(zoom_factor: f32) -> f32 {
+    zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR)
+}
+
+#[must_use]
+fn zoom_with_step(current_zoom: f32, delta: f32) -> f32 {
+    clamped_zoom_factor(current_zoom + delta)
+}
+
+#[must_use]
+fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
+    if !factor.is_finite() || factor <= 0.0 {
+        return clamped_zoom_factor(current_zoom);
+    }
+    clamped_zoom_factor(current_zoom * factor)
+}
+
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
@@ -699,6 +799,7 @@ impl eframe::App for RustdownApp {
             export_html,
             zoom_in,
             zoom_out,
+            zoom_delta,
             escape,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
@@ -719,6 +820,7 @@ impl eframe::App for RustdownApp {
                 cmd && i.key_pressed(egui::Key::E),
                 cmd && i.key_pressed(egui::Key::Equals),
                 cmd && i.key_pressed(egui::Key::Minus),
+                i.zoom_delta(),
                 i.key_pressed(egui::Key::Escape),
             )
         });
@@ -757,6 +859,9 @@ impl eframe::App for RustdownApp {
             if zoom_out {
                 self.adjust_zoom(ctx, -ZOOM_STEP);
             }
+            if (zoom_delta - 1.0).abs() > f32::EPSILON {
+                self.adjust_zoom_factor(ctx, zoom_delta);
+            }
             if escape && self.search.visible {
                 self.close_search();
             }
@@ -776,6 +881,13 @@ impl eframe::App for RustdownApp {
                     }
                 }
 
+                ui.separator();
+                if ui
+                    .toggle_value(&mut self.heading_color_mode, "Color headings (exp)")
+                    .changed()
+                {
+                    self.doc.editor_galley_cache = None;
+                }
                 ui.separator();
                 if ui.button("Export HTML").clicked() {
                     let _ = self.export_html();
@@ -1336,8 +1448,11 @@ impl RustdownApp {
     }
 
     fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
-        let zoom = (ctx.zoom_factor() + delta).clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
-        ctx.set_zoom_factor(zoom);
+        ctx.set_zoom_factor(zoom_with_step(ctx.zoom_factor(), delta));
+    }
+
+    fn adjust_zoom_factor(&self, ctx: &egui::Context, factor: f32) {
+        ctx.set_zoom_factor(zoom_with_factor(ctx.zoom_factor(), factor));
     }
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
@@ -1411,6 +1526,7 @@ impl RustdownApp {
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
+        let heading_color_mode = self.heading_color_mode;
         let (changed, next_seq) = {
             let seq = Cell::new(self.doc.edit_seq);
             let Document {
@@ -1436,17 +1552,24 @@ impl RustdownApp {
                     && cache.seq == seq
                     && cache.wrap_width_bits == wrap_width_bits
                     && cache.zoom_factor_bits == zoom_factor_bits
+                    && cache.heading_color_mode == heading_color_mode
                 {
                     return cache.galley.clone();
                 }
 
-                let mut job = highlight::markdown_layout_job(ui.style(), ui.visuals(), string);
+                let mut job = highlight::markdown_layout_job(
+                    ui.style(),
+                    ui.visuals(),
+                    string,
+                    heading_color_mode,
+                );
                 job.wrap.max_width = wrap_width;
                 let galley = ui.fonts(|fonts| fonts.layout_job(job));
                 *editor_galley_cache = Some(EditorGalleyCache {
                     seq,
                     wrap_width_bits,
                     zoom_factor_bits,
+                    heading_color_mode,
                     galley: galley.clone(),
                 });
                 galley
@@ -1476,10 +1599,13 @@ impl RustdownApp {
             return;
         }
 
+        let image_uri_scheme = default_image_uri_scheme(self.doc.path.as_deref());
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                CommonMarkViewer::new().show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
+                CommonMarkViewer::new()
+                    .default_implicit_uri_scheme(image_uri_scheme.as_str())
+                    .show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
             });
     }
 
@@ -1839,7 +1965,7 @@ mod tests {
             (&["-s"][..], Mode::SideBySide, None),
             (
                 &["README.md", "OTHER.md"][..],
-                Mode::Edit,
+                Mode::Preview,
                 Some("README.md"),
             ),
             (&["-p", "README.md"][..], Mode::Preview, Some("README.md")),
@@ -1866,7 +1992,7 @@ mod tests {
     #[test]
     fn parse_launch_options_ignores_unknown_switches() {
         let options = parse(&["--gapplication-service", "README.md"]);
-        assert_eq!(options.mode, Mode::Edit);
+        assert_eq!(options.mode, Mode::Preview);
         assert_eq!(
             options.path.as_deref(),
             Some(PathBuf::from("README.md")).as_deref()
@@ -1876,6 +2002,7 @@ mod tests {
     #[test]
     fn parse_launch_options_accepts_dash_prefixed_path_after_double_dash() {
         let options = parse(&["--", "--scratch.md"]);
+        assert_eq!(options.mode, Mode::Preview);
         assert_eq!(
             options.path.as_deref(),
             Some(PathBuf::from("--scratch.md")).as_deref()
@@ -1942,6 +2069,62 @@ mod tests {
     }
 
     #[test]
+    fn default_image_uri_scheme_without_path_uses_file_scheme_prefix() {
+        assert_eq!(default_image_uri_scheme(None), "file://");
+    }
+
+    #[test]
+    fn default_image_uri_scheme_uses_document_directory_when_available() {
+        let dir = make_temp_dir("rustdown-image-uri-scheme-test");
+        let path = dir.join("report.md");
+        let scheme = default_image_uri_scheme(Some(path.as_path()));
+
+        assert!(scheme.starts_with("file://"));
+        assert!(scheme.ends_with('/'));
+        let dir_name = dir.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        assert!(
+            scheme.contains(dir_name),
+            "Expected '{scheme}' to contain '{dir_name}'"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_font_fallbacks_loads_existing_files_only() {
+        let dir = make_temp_dir("rustdown-font-fallback-test");
+        let existing = dir.join("emoji.ttf");
+        let missing = dir.join("missing.ttf");
+        assert!(fs::write(&existing, b"not-a-real-font").is_ok());
+
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.clear();
+        fonts.families.clear();
+        let mut proportional = vec!["primary".to_owned()];
+        let mut monospace = vec!["primary".to_owned()];
+
+        let existing_path = existing.to_string_lossy().to_string();
+        let missing_path = missing.to_string_lossy().to_string();
+        let loaded = append_font_fallbacks(
+            &mut fonts,
+            &mut proportional,
+            &mut monospace,
+            &[existing_path.as_str(), missing_path.as_str()],
+        );
+
+        assert_eq!(loaded, 1);
+        assert_eq!(proportional.len(), 2);
+        assert_eq!(monospace.len(), 2);
+        assert!(
+            fonts
+                .font_data
+                .contains_key(&format!("{UI_FONT_NAME}-fallback-0"))
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn markdown_to_html_document_renders_common_markdown() {
         let html = markdown_to_html_document("# Heading\n\n- item");
         assert!(html.contains("<h1>Heading</h1>"));
@@ -1979,6 +2162,18 @@ mod tests {
         );
         assert_eq!(save_trigger_from_shortcut(false, false, true), None);
         assert_eq!(save_trigger_from_shortcut(true, false, false), None);
+    }
+
+    #[test]
+    fn zoom_helpers_apply_clamped_step_and_factor_zoom() {
+        assert!((zoom_with_step(1.0, ZOOM_STEP) - 1.1).abs() < f32::EPSILON);
+        assert_eq!(zoom_with_step(MAX_ZOOM_FACTOR, ZOOM_STEP), MAX_ZOOM_FACTOR);
+        assert_eq!(zoom_with_step(MIN_ZOOM_FACTOR, -ZOOM_STEP), MIN_ZOOM_FACTOR);
+
+        assert!((zoom_with_factor(1.0, 1.2) - 1.2).abs() < f32::EPSILON);
+        assert_eq!(zoom_with_factor(MAX_ZOOM_FACTOR, 2.0), MAX_ZOOM_FACTOR);
+        assert!((zoom_with_factor(1.0, 0.0) - 1.0).abs() < f32::EPSILON);
+        assert!((zoom_with_factor(1.0, f32::NAN) - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

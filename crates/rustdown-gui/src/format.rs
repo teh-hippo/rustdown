@@ -2,6 +2,8 @@
 
 use std::{borrow::Cow, fs, path::Path};
 
+use crate::markdown_fence::{FenceState, consume_fence_delimiter};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EndOfLine {
     Lf,
@@ -35,13 +37,11 @@ pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
         Cow::Borrowed(source)
     };
     let mut out = String::with_capacity(normalized.len() + 2);
-    let mut in_fence = false;
+    let mut in_fence: Option<FenceState> = None;
     let mut segments = normalized.split('\n').peekable();
     while let Some(line) = segments.next() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-        }
-        if options.trim_trailing_whitespace && !in_fence {
+        let is_fence_delimiter = consume_fence_delimiter(line, &mut in_fence);
+        if options.trim_trailing_whitespace && in_fence.is_none() && !is_fence_delimiter {
             let hard_break = line.ends_with("  ");
             out.push_str(line.trim_end_matches([' ', '\t']));
             if hard_break {
@@ -229,6 +229,13 @@ mod tests {
         let source = "plain \nhard break  \n```\ncode   \n```\n";
         let formatted = format_markdown(source, DEFAULT_OPTIONS);
         assert_eq!(formatted, "plain\nhard break  \n```\ncode   \n```\n");
+    }
+
+    #[test]
+    fn format_markdown_preserves_tilde_fence_content_whitespace() {
+        let source = "~~~azurecli\naz aks list   \n~~~\n";
+        let formatted = format_markdown(source, DEFAULT_OPTIONS);
+        assert_eq!(formatted, source);
     }
 
     #[test]
