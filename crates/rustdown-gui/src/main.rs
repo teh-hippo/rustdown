@@ -439,6 +439,20 @@ fn run_open_pipeline_diagnostics(
         let loop_galley = ctx.fonts(|fonts| fonts.layout_job(loop_job));
         std::hint::black_box(loop_galley.rows.len());
     });
+    let search_query = "az";
+    let search_count_loop = measure_iterations(diagnostics_iterations, || {
+        std::hint::black_box(find_match_count(
+            std::hint::black_box(app.doc.text.as_str()),
+            std::hint::black_box(search_query),
+        ));
+    });
+    let mut search_state = SearchState {
+        query: search_query.to_owned(),
+        ..Default::default()
+    };
+    let search_cached_loop = measure_iterations(diagnostics_iterations, || {
+        std::hint::black_box(search_state.match_count(app.doc.text.as_str(), app.doc.edit_seq));
+    });
 
     let image_uri_recompute = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(default_image_uri_scheme(Some(path)));
@@ -531,6 +545,16 @@ fn run_open_pipeline_diagnostics(
     avg_metric!(
         "t_highlight_layout_loop_avg_us",
         highlight_layout_loop,
+        diagnostics_iterations
+    );
+    avg_metric!(
+        "t_search_count_loop_avg_us",
+        search_count_loop,
+        diagnostics_iterations
+    );
+    avg_metric!(
+        "t_search_cached_count_loop_avg_us",
+        search_cached_loop,
         diagnostics_iterations
     );
     avg_metric!(
@@ -922,6 +946,28 @@ struct DocumentStats {
 impl DocumentStats {
     #[must_use]
     fn from_text(text: &str) -> Self {
+        if text.is_ascii() {
+            let mut words = 0;
+            let mut lines = 1;
+            let mut in_word = false;
+            for &byte in text.as_bytes() {
+                if byte == b'\n' {
+                    lines += 1;
+                }
+                if byte.is_ascii_whitespace() {
+                    in_word = false;
+                } else if !in_word {
+                    words += 1;
+                    in_word = true;
+                }
+            }
+            return Self {
+                words,
+                chars: text.len(),
+                lines,
+            };
+        }
+
         let mut words = 0;
         let mut chars = 0;
         let mut lines = 1;
@@ -971,6 +1017,24 @@ struct SearchState {
     query: String,
     replacement: String,
     last_replace_count: Option<usize>,
+    match_count_query: String,
+    match_count_seq: u64,
+    match_count: usize,
+}
+
+impl SearchState {
+    fn match_count(&mut self, haystack: &str, haystack_seq: u64) -> usize {
+        if self.match_count_seq == haystack_seq && self.match_count_query == self.query {
+            return self.match_count;
+        }
+
+        let count = find_match_count(haystack, self.query.as_str());
+        self.match_count_query.clear();
+        self.match_count_query.push_str(self.query.as_str());
+        self.match_count_seq = haystack_seq;
+        self.match_count = count;
+        count
+    }
 }
 
 #[must_use]
@@ -1251,8 +1315,9 @@ impl eframe::App for RustdownApp {
                         self.search.last_replace_count = None;
                     }
 
-                    let matches =
-                        find_match_count(self.doc.text.as_str(), self.search.query.as_str());
+                    let matches = self
+                        .search
+                        .match_count(self.doc.text.as_str(), self.doc.edit_seq);
                     let label = if matches == 1 { "match" } else { "matches" };
                     ui.label(format!("{matches} {label}"));
 
@@ -2387,6 +2452,11 @@ mod tests {
         assert_eq!(stats.lines, 2);
         assert_eq!(stats.reading_minutes(), 1);
 
+        let unicode_stats = DocumentStats::from_text("héllo 世界\n🙂");
+        assert_eq!(unicode_stats.words, 3);
+        assert_eq!(unicode_stats.chars, 10);
+        assert_eq!(unicode_stats.lines, 2);
+
         let empty_stats = DocumentStats::from_text("");
         assert_eq!(empty_stats, DocumentStats::default());
         assert_eq!(empty_stats.reading_minutes(), 0);
@@ -2478,6 +2548,16 @@ mod tests {
         let (text, replaced) = replace_all_occurrences("alpha beta", "alpha", "alpha");
         assert_eq!(text.as_ref(), "alpha beta");
         assert_eq!(replaced, 0);
+
+        let mut search = SearchState {
+            query: "alpha".to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(search.match_count("alpha beta alpha", 1), 2);
+        assert_eq!(search.match_count("alpha beta alpha", 1), 2);
+        search.query = "beta".to_owned();
+        assert_eq!(search.match_count("alpha beta alpha", 1), 1);
+        assert_eq!(search.match_count("alpha beta alpha", 2), 1);
     }
 
     #[test]
