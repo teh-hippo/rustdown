@@ -33,6 +33,10 @@ Run profiling diagnostics for markdown load/render pipelines:
 ```bash
 cargo run -p rustdown -- --diagnostics-open README.md --diag-iterations=120
 ```
+For repeated runs in one invocation:
+```bash
+cargo run -p rustdown -- --diagnostics-open README.md --diag-iterations=120 --diag-runs=5
+```
 
 rustdown loads a single system UI font at startup. Override with `RUSTDOWN_FONT_PATH=/path/to/font.ttf`.
 On Linux it checks:

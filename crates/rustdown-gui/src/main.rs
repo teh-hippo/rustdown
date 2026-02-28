@@ -12,7 +12,7 @@ use std::{
     cell::Cell,
     ffi::OsString,
     fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
@@ -44,6 +44,7 @@ const FONT_SIZE_DELTA: f32 = 2.0;
 const SMALL_FONT_SIZE_DELTA: f32 = 1.0;
 const PANEL_EDGE_PADDING: f32 = 8.0;
 const DIAGNOSTICS_DEFAULT_ITERATIONS: usize = 200;
+const DIAGNOSTICS_DEFAULT_RUNS: usize = 1;
 const UI_FONT_NAME: &str = "rustdown-ui-font";
 #[cfg(target_os = "linux")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -91,6 +92,7 @@ struct LaunchOptions {
     path: Option<PathBuf>,
     diagnostics: DiagnosticsMode,
     diagnostics_iterations: usize,
+    diagnostics_runs: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,6 +112,7 @@ where
     let mut path = None;
     let mut diagnostics = DiagnosticsMode::Off;
     let mut diagnostics_iterations = DIAGNOSTICS_DEFAULT_ITERATIONS;
+    let mut diagnostics_runs = DIAGNOSTICS_DEFAULT_RUNS;
     let mut parse_flags = true;
 
     for arg in args {
@@ -144,6 +147,19 @@ where
                 diagnostics_iterations = value;
                 continue;
             }
+            if let Some(value) = arg
+                .to_str()
+                .and_then(|value| {
+                    value
+                        .strip_prefix("--diag-runs=")
+                        .or_else(|| value.strip_prefix("--diagnostics-runs="))
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+            {
+                diagnostics_runs = value;
+                continue;
+            }
             if arg.to_str().is_some_and(|value| value.starts_with('-')) {
                 continue;
             }
@@ -167,17 +183,28 @@ where
         path,
         diagnostics,
         diagnostics_iterations,
+        diagnostics_runs,
     }
 }
 
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
-        if let Err(err) = run_open_pipeline_diagnostics(
-            launch_options.path.as_deref(),
-            launch_options.diagnostics_iterations,
-        ) {
-            eprintln!("Diagnostics failed: {err}");
+        for run in 0..launch_options.diagnostics_runs {
+            if launch_options.diagnostics_runs > 1 {
+                println!(
+                    "diagnostics_run={}/{}",
+                    run + 1,
+                    launch_options.diagnostics_runs
+                );
+            }
+            if let Err(err) = run_open_pipeline_diagnostics(
+                launch_options.path.as_deref(),
+                launch_options.diagnostics_iterations,
+            ) {
+                eprintln!("Diagnostics failed: {err}");
+                break;
+            }
         }
         return Ok(());
     }
@@ -372,6 +399,17 @@ fn run_open_pipeline_diagnostics(
         egui::CentralPanel::default().show(ctx, |ui| preview_app.show_preview(ui));
     });
     let preview_frame2_ms = preview_frame2_start.elapsed();
+    let frame_iterations = diagnostics_iterations.min(120);
+    let editor_cached_loop = measure_iterations(frame_iterations, || {
+        let _ = ctx.run(diagnostics_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.show_editor(ui));
+        });
+    });
+    let preview_cached_loop = measure_iterations(frame_iterations, || {
+        let _ = ctx.run(diagnostics_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| preview_app.show_preview(ui));
+        });
+    });
 
     let stats_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(DocumentStats::from_text(std::hint::black_box(
@@ -482,6 +520,7 @@ fn run_open_pipeline_diagnostics(
     metric!("t_preview_frame2_ms", preview_frame2_ms.as_millis());
     metric!("diag_iterations", diagnostics_iterations);
     metric!("diag_edit_iterations", edit_iterations);
+    metric!("diag_frame_iterations", frame_iterations);
     avg_metric!("t_stats_loop_avg_us", stats_loop, diagnostics_iterations);
     avg_metric!("t_html_loop_avg_us", html_loop, diagnostics_iterations);
     avg_metric!(
@@ -513,6 +552,16 @@ fn run_open_pipeline_diagnostics(
         "t_edit_note_change_immediate_avg_us",
         edit_immediate_loop,
         edit_iterations
+    );
+    avg_metric!(
+        "t_editor_cached_frame_avg_us",
+        editor_cached_loop,
+        frame_iterations
+    );
+    avg_metric!(
+        "t_preview_cached_frame_avg_us",
+        preview_cached_loop,
+        frame_iterations
     );
     avg_metric!(
         "t_edit_note_change_avg_us",
@@ -663,9 +712,17 @@ fn default_image_uri_scheme(path: Option<&Path>) -> String {
         return "file://".to_owned();
     };
 
-    let base = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
+    let needs_canonicalize = !parent.is_absolute()
+        || parent
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    let base = if needs_canonicalize {
+        parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf())
+    } else {
+        parent.to_path_buf()
+    };
     let mut normalized = base.to_string_lossy().replace('\\', "/");
     if !normalized.starts_with('/') {
         normalized.insert(0, '/');
@@ -1381,17 +1438,19 @@ impl RustdownApp {
     }
 
     fn drain_disk_watch_events(&mut self) -> bool {
-        let Some(rx) = self.disk_watch_rx.take() else {
+        let Some(rx) = self.disk_watch_rx.as_ref() else {
             return false;
         };
 
-        let target_name = self.disk_watch_target_name.clone();
+        let target_name = self.disk_watch_target_name.as_deref();
         let mut saw_change = false;
+        let mut watch_error = None;
+        let mut disconnected = false;
 
         loop {
             match rx.try_recv() {
                 Ok(Ok(event)) => {
-                    if let Some(target) = target_name.as_deref()
+                    if let Some(target) = target_name
                         && event
                             .paths
                             .iter()
@@ -1401,19 +1460,25 @@ impl RustdownApp {
                     }
                 }
                 Ok(Err(err)) => {
-                    self.error.get_or_insert(format!("Watch error: {err}"));
-                    self.clear_disk_watcher();
-                    return false;
+                    watch_error = Some(format!("Watch error: {err}"));
+                    break;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.clear_disk_watcher();
-                    return false;
+                    disconnected = true;
+                    break;
                 }
             }
         }
-
-        self.disk_watch_rx = Some(rx);
+        if let Some(err) = watch_error {
+            self.error.get_or_insert(err);
+            self.clear_disk_watcher();
+            return false;
+        }
+        if disconnected {
+            self.clear_disk_watcher();
+            return false;
+        }
         saw_change
     }
 
@@ -1550,12 +1615,12 @@ impl RustdownApp {
     }
 
     fn drain_disk_read_results(&mut self) {
-        let Some(rx) = self.disk_read_rx.take() else {
-            return;
-        };
-
         loop {
-            match rx.try_recv() {
+            let recv = match self.disk_read_rx.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => return,
+            };
+            match recv {
                 Ok(msg) => {
                     if msg.nonce != self.disk_reload_nonce {
                         continue;
@@ -1619,8 +1684,6 @@ impl RustdownApp {
                 }
             }
         }
-
-        self.disk_read_rx = Some(rx);
     }
 
     fn incorporate_disk_text(&mut self, disk_text: String, disk_rev: DiskRevision) {
@@ -2280,6 +2343,7 @@ mod tests {
                 options.diagnostics_iterations,
                 DIAGNOSTICS_DEFAULT_ITERATIONS
             );
+            assert_eq!(options.diagnostics_runs, DIAGNOSTICS_DEFAULT_RUNS);
         }
 
         let options = parse(&["--diagnostics-open", "README.md"]);
@@ -2292,6 +2356,7 @@ mod tests {
             options.diagnostics_iterations,
             DIAGNOSTICS_DEFAULT_ITERATIONS
         );
+        assert_eq!(options.diagnostics_runs, DIAGNOSTICS_DEFAULT_RUNS);
 
         let cases = [
             ("--diag-iterations=25", 25),
@@ -2301,6 +2366,16 @@ mod tests {
         for (flag, expected) in cases {
             let options = parse(&[flag, "README.md"]);
             assert_eq!(options.diagnostics_iterations, expected);
+        }
+
+        let run_cases = [
+            ("--diag-runs=3", 3),
+            ("--diagnostics-runs=7", 7),
+            ("--diag-runs=0", DIAGNOSTICS_DEFAULT_RUNS),
+        ];
+        for (flag, expected) in run_cases {
+            let options = parse(&[flag, "README.md"]);
+            assert_eq!(options.diagnostics_runs, expected);
         }
     }
 
