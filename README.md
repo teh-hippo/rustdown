@@ -17,6 +17,7 @@ Open a file directly:
 ```bash
 cargo run -p rustdown -- README.md
 ```
+When a markdown path is provided at launch, rustdown opens in **Preview** mode by default.
 
 Start in Preview mode:
 ```bash
@@ -46,6 +47,8 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 - Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
 - Cmd/Ctrl++: Increase font size
 - Cmd/Ctrl+-: Decrease font size
+- Ctrl/Cmd + mouse wheel (or pinch gesture): Zoom text
+- Experimental: toggle **Color headings (exp)** in the status bar for thematic heading colors in the editor
   
 Tip: the mode indicator in the bottom bar is clickable.
 Tip: you can also drag and drop `.md`/`.markdown` files into the window to open them.
