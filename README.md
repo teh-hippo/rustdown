@@ -29,9 +29,10 @@ Start in Side-by-side mode:
 cargo run -p rustdown -- -s
 ```
 
-Print version:
+Print version (`-v` or `--version`):
 ```bash
 cargo run -p rustdown -- -v
+cargo run -p rustdown -- --version
 ```
 
 Run profiling diagnostics for markdown load/render pipelines:
