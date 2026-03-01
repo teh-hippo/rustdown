@@ -40,8 +40,9 @@ const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
 const READING_SPEED_WPM: usize = 200;
-const FONT_SIZE_DELTA: f32 = 2.0;
-const SMALL_FONT_SIZE_DELTA: f32 = 1.0;
+const DEFAULT_BODY_BUTTON_FONT_SIZE: f32 = 19.0;
+const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 18.0;
+const DEFAULT_SMALL_FONT_SIZE: f32 = 13.0;
 const PANEL_EDGE_PADDING: f32 = 8.0;
 const DIAGNOSTICS_DEFAULT_ITERATIONS: usize = 200;
 const DIAGNOSTICS_DEFAULT_RUNS: usize = 1;
@@ -670,17 +671,16 @@ fn append_font_fallbacks(
 
 fn configure_ui_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
-        for text_style in [
-            egui::TextStyle::Body,
-            egui::TextStyle::Button,
-            egui::TextStyle::Monospace,
-        ] {
+        for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
             if let Some(font_id) = style.text_styles.get_mut(&text_style) {
-                font_id.size += FONT_SIZE_DELTA;
+                font_id.size = DEFAULT_BODY_BUTTON_FONT_SIZE;
             }
         }
+        if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Monospace) {
+            font_id.size = DEFAULT_MONOSPACE_FONT_SIZE;
+        }
         if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
-            font_id.size += SMALL_FONT_SIZE_DELTA;
+            font_id.size = DEFAULT_SMALL_FONT_SIZE;
         }
     });
 }
@@ -2484,6 +2484,41 @@ mod tests {
             let options = parse(&[flag, "README.md"]);
             assert_eq!(options.diagnostics_runs, expected);
         }
+    }
+
+    #[test]
+    fn configure_ui_style_applies_default_font_sizes() {
+        let ctx = egui::Context::default();
+        configure_ui_style(&ctx);
+        let style = ctx.style();
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Body)
+                .map(|font| font.size),
+            Some(DEFAULT_BODY_BUTTON_FONT_SIZE)
+        );
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Button)
+                .map(|font| font.size),
+            Some(DEFAULT_BODY_BUTTON_FONT_SIZE)
+        );
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Monospace)
+                .map(|font| font.size),
+            Some(DEFAULT_MONOSPACE_FONT_SIZE)
+        );
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Small)
+                .map(|font| font.size),
+            Some(DEFAULT_SMALL_FONT_SIZE)
+        );
     }
 
     #[test]
