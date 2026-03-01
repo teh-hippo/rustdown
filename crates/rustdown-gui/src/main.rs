@@ -119,6 +119,10 @@ where
 
     for arg in args {
         let arg = arg.into();
+        if arg == "-v" || arg == "--version" {
+            print_version = true;
+            continue;
+        }
         if parse_flags {
             if arg == "--" {
                 parse_flags = false;
@@ -130,10 +134,6 @@ where
             }
             if arg == "-s" {
                 mode = Some(Mode::SideBySide);
-                continue;
-            }
-            if arg == "-v" || arg == "--version" {
-                print_version = true;
                 continue;
             }
             if arg == "--diagnostics-open" || arg == "--diag-open" {
@@ -2454,6 +2454,16 @@ mod tests {
             options.path.as_deref(),
             Some(PathBuf::from("README.md")).as_deref()
         );
+
+        let options = parse(&["--", "-v"]);
+        assert!(options.print_version);
+        assert_eq!(options.mode, Mode::Edit);
+        assert!(options.path.is_none());
+
+        let options = parse(&["--", "--version"]);
+        assert!(options.print_version);
+        assert_eq!(options.mode, Mode::Edit);
+        assert!(options.path.is_none());
 
         let cases = [
             ("--diag-iterations=25", 25),
