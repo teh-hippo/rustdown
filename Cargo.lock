@@ -2602,6 +2602,7 @@ dependencies = [
  "notify",
  "pulldown-cmark",
  "rfd",
+ "winit",
 ]
 
 [[package]]

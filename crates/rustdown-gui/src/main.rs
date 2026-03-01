@@ -20,6 +20,8 @@ use std::{
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(target_os = "linux")]
+use winit::platform::x11::EventLoopBuilderExtX11 as _;
 
 mod disk_io;
 mod format;
@@ -201,6 +203,26 @@ fn app_version() -> &'static str {
         .unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+#[cfg(target_os = "linux")]
+#[must_use]
+fn linux_kernel_release_mentions_wsl(release: &str) -> bool {
+    release.to_ascii_lowercase().contains("microsoft")
+}
+
+#[cfg(target_os = "linux")]
+#[must_use]
+fn is_wsl() -> bool {
+    std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || fs::read_to_string("/proc/sys/kernel/osrelease")
+            .is_ok_and(|release| linux_kernel_release_mentions_wsl(&release))
+}
+
+#[cfg(target_os = "linux")]
+#[must_use]
+fn should_force_x11_backend() -> bool {
+    is_wsl() && std::env::var_os("DISPLAY").is_some()
+}
+
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.print_version {
@@ -228,11 +250,22 @@ fn main() -> eframe::Result {
     }
     let app = RustdownApp::from_launch_options(launch_options);
 
+    #[cfg(target_os = "linux")]
+    let force_x11_backend = should_force_x11_backend();
+
     // Viewport sizes are in points, so they scale with the OS DPI factor.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
             .with_min_inner_size([480.0, 320.0]),
+        #[cfg(target_os = "linux")]
+        event_loop_builder: force_x11_backend.then(|| {
+            Box::new(
+                |builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>| {
+                    builder.with_x11();
+                },
+            ) as eframe::EventLoopBuilderHook
+        }),
         ..Default::default()
     };
     eframe::run_native(
@@ -2474,6 +2507,18 @@ mod tests {
             let options = parse(&[flag, "README.md"]);
             assert_eq!(options.diagnostics_runs, expected);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_kernel_release_detection_distinguishes_wsl() {
+        assert!(linux_kernel_release_mentions_wsl(
+            "5.15.167.4-microsoft-standard-WSL2"
+        ));
+        assert!(linux_kernel_release_mentions_wsl(
+            "6.6.87.2-microsoft-standard-WSL2"
+        ));
+        assert!(!linux_kernel_release_mentions_wsl("6.8.0-52-generic"));
     }
 
     #[test]

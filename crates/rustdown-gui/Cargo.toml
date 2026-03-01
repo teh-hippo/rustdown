@@ -26,3 +26,7 @@ eframe = { version = "0.30", default-features = false, features = [
   "wayland",
   "x11",
 ] }
+winit = { version = "0.30", default-features = false, features = [
+  "wayland",
+  "x11",
+] }
