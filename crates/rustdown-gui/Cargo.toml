@@ -14,7 +14,7 @@ eframe = { version = "0.30", default-features = false, features = [
   "glow",
 ] }
 egui_commonmark = { version = "0.19.0", default-features = false, features = ["pulldown_cmark", "load-images"] }
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 rfd = "0.15"
 imara-diff = { version = "0.2.0", default-features = false }
 notify = "8.0.0"
