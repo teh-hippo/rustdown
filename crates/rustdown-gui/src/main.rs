@@ -2089,7 +2089,11 @@ impl RustdownApp {
 
         // Consume any pending nav-scroll target.  We cannot inject into
         // show_scrollable's internal ScrollArea, so apply directly.
-        if let Some(y) = self.nav.pending_scroll_y.take() {
+        // Only consume when this is the scroll target (Preview-only mode);
+        // in SideBySide the editor is the scroll target instead.
+        if self.mode == Mode::Preview
+            && let Some(y) = self.nav.pending_scroll_y.take()
+        {
             let scroll_id = nav_panel::preview_scroll_id();
             if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
                 state.offset = egui::vec2(state.offset.x, y);
