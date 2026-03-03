@@ -83,3 +83,16 @@ Formatting is intentionally simple; if a `.editorconfig` file is present, rustdo
 | Windows | x86_64 | Built and tested in CI |
 
 Pre-built binaries are available on the [Releases](https://github.com/teh-hippo/rustdown/releases) page.
+
+### Linux runtime dependencies
+
+The pre-built Linux binary dynamically links against system libraries.
+Most desktop environments already have these, but minimal installs (including WSL) may need:
+
+```bash
+# Debian / Ubuntu / WSL
+sudo apt-get install libwayland-client0 libxkbcommon0 libxkbcommon-x11-0 libgtk-3-0
+```
+
+`libxkbcommon-x11-0` is only required for X11 sessions; on pure Wayland it is optional.
+On WSL, installing it enables an X11 clipboard workaround that prevents resize crashes.
