@@ -13,77 +13,67 @@
   <!-- Rounded square background -->
   <rect width="512" height="512" rx="80" ry="80" fill="url(#bg)"/>
 
-  <!-- Document page - slightly tilted, held by crab -->
-  <g transform="translate(256,290)">
-    <rect x="-80" y="-120" width="160" height="200" rx="8" fill="#f0ede8" stroke="#d0ccc5" stroke-width="2"/>
+  <!-- Document held above the crab's head -->
+  <g transform="translate(256,105)">
+    <rect x="-70" y="-65" width="140" height="120" rx="6" fill="#f0ede8" stroke="#d0ccc5" stroke-width="2"/>
     <!-- Markdown lines on the page -->
-    <rect x="-58" y="-96" width="50" height="8" rx="2" fill="#888"/>
-    <rect x="-58" y="-78" width="100" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="-66" width="90" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="-54" width="95" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="-36" width="40" height="7" rx="2" fill="#888"/>
-    <rect x="-58" y="-20" width="80" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="-8" width="100" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="4" width="70" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="22" width="35" height="7" rx="2" fill="#888"/>
-    <rect x="-58" y="38" width="105" height="5" rx="1.5" fill="#bbb"/>
-    <rect x="-58" y="50" width="85" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-50" y="-46" width="40" height="7" rx="2" fill="#888"/>
+    <rect x="-50" y="-32" width="85" height="4" rx="1.5" fill="#bbb"/>
+    <rect x="-50" y="-22" width="75" height="4" rx="1.5" fill="#bbb"/>
+    <rect x="-50" y="-6" width="32" height="6" rx="2" fill="#888"/>
+    <rect x="-50" y="8" width="90" height="4" rx="1.5" fill="#bbb"/>
+    <rect x="-50" y="18" width="65" height="4" rx="1.5" fill="#bbb"/>
+    <rect x="-50" y="28" width="80" height="4" rx="1.5" fill="#bbb"/>
     <!-- Dog-ear fold -->
-    <path d="M52 -120 L80 -120 L80 -92 Z" fill="#d8d4ce"/>
+    <path d="M46 -65 L70 -65 L70 -41 Z" fill="#d8d4ce"/>
   </g>
 
-  <!-- Crab body - sitting on top of the document -->
-  <ellipse cx="256" cy="155" rx="120" ry="58" fill="url(#shell)"/>
+  <!-- Left arm reaching up to hold document -->
+  <path d="M160 260 Q140 210 155 170 Q162 150 175 145"
+        stroke="#D05020" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <!-- Left claw gripping document bottom-left -->
+  <path d="M172 148 Q155 132 148 142 Q140 155 155 162 L170 158 Z" fill="#E05828"/>
+  <path d="M148 142 Q136 132 132 142 Q130 152 140 155" fill="none" stroke="#C04818" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M148 142 Q142 128 150 122 Q160 120 162 130" fill="none" stroke="#C04818" stroke-width="4.5" stroke-linecap="round"/>
+
+  <!-- Right arm reaching up to hold document -->
+  <path d="M352 260 Q372 210 357 170 Q350 150 337 145"
+        stroke="#D05020" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <!-- Right claw gripping document bottom-right -->
+  <path d="M340 148 Q357 132 364 142 Q372 155 357 162 L342 158 Z" fill="#E05828"/>
+  <path d="M364 142 Q376 132 380 142 Q382 152 372 155" fill="none" stroke="#C04818" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M364 142 Q370 128 362 122 Q352 120 350 130" fill="none" stroke="#C04818" stroke-width="4.5" stroke-linecap="round"/>
+
+  <!-- Crab body - large, center of the icon -->
+  <ellipse cx="256" cy="310" rx="130" ry="80" fill="url(#shell)"/>
   <!-- Shell texture lines -->
-  <ellipse cx="256" cy="145" rx="85" ry="32" fill="none" stroke="#F88050" stroke-width="2" opacity="0.5"/>
-  <ellipse cx="256" cy="152" rx="55" ry="18" fill="none" stroke="#F88050" stroke-width="1.5" opacity="0.35"/>
+  <ellipse cx="256" cy="298" rx="95" ry="42" fill="none" stroke="#F88050" stroke-width="2.5" opacity="0.45"/>
+  <ellipse cx="256" cy="305" rx="60" ry="22" fill="none" stroke="#F88050" stroke-width="2" opacity="0.3"/>
 
-  <!-- Left claw gripping the document edge -->
-  <path d="M140 190 Q108 170 95 185 Q82 200 100 215 L120 220 Q135 210 140 200 Z"
-        fill="#E05828"/>
-  <!-- Left claw pincer -->
-  <path d="M95 185 Q78 170 72 180 Q68 192 82 198"
-        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
-  <path d="M95 185 Q88 168 96 160 Q106 156 110 168"
-        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
-  <!-- Left arm connecting body to claw -->
-  <path d="M155 195 Q148 200 140 198" stroke="#D05020" stroke-width="14" stroke-linecap="round" fill="none"/>
-
-  <!-- Right claw gripping the document edge -->
-  <path d="M372 190 Q404 170 417 185 Q430 200 412 215 L392 220 Q377 210 372 200 Z"
-        fill="#E05828"/>
-  <!-- Right claw pincer -->
-  <path d="M417 185 Q434 170 440 180 Q444 192 430 198"
-        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
-  <path d="M417 185 Q424 168 416 160 Q406 156 402 168"
-        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
-  <!-- Right arm connecting body to claw -->
-  <path d="M357 195 Q364 200 372 198" stroke="#D05020" stroke-width="14" stroke-linecap="round" fill="none"/>
-
-  <!-- Legs - left side, tucked behind document -->
-  <line x1="165" y1="185" x2="115" y2="230" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
-  <line x1="155" y1="195" x2="100" y2="245" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
-  <line x1="148" y1="205" x2="95" y2="260" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <!-- Legs - left side -->
+  <line x1="152" y1="330" x2="82" y2="370" stroke="#C04818" stroke-width="7" stroke-linecap="round"/>
+  <line x1="142" y1="350" x2="68" y2="395" stroke="#C04818" stroke-width="7" stroke-linecap="round"/>
+  <line x1="138" y1="370" x2="62" y2="418" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
 
   <!-- Legs - right side -->
-  <line x1="347" y1="185" x2="397" y2="230" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
-  <line x1="357" y1="195" x2="412" y2="245" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
-  <line x1="364" y1="205" x2="417" y2="260" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <line x1="360" y1="330" x2="430" y2="370" stroke="#C04818" stroke-width="7" stroke-linecap="round"/>
+  <line x1="370" y1="350" x2="444" y2="395" stroke="#C04818" stroke-width="7" stroke-linecap="round"/>
+  <line x1="374" y1="370" x2="450" y2="418" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
 
   <!-- Eye stalks -->
-  <ellipse cx="215" cy="105" rx="7" ry="16" fill="#E05828"/>
-  <ellipse cx="297" cy="105" rx="7" ry="16" fill="#E05828"/>
+  <ellipse cx="218" cy="235" rx="8" ry="18" fill="#E05828"/>
+  <ellipse cx="294" cy="235" rx="8" ry="18" fill="#E05828"/>
 
   <!-- Eyeballs -->
-  <circle cx="215" cy="92" r="17" fill="white"/>
-  <circle cx="297" cy="92" r="17" fill="white"/>
-  <!-- Pupils - looking slightly down at the document -->
-  <circle cx="218" cy="95" r="9" fill="#1a1a1a"/>
-  <circle cx="300" cy="95" r="9" fill="#1a1a1a"/>
+  <circle cx="218" cy="220" r="19" fill="white"/>
+  <circle cx="294" cy="220" r="19" fill="white"/>
+  <!-- Pupils - looking up at the document -->
+  <circle cx="216" cy="215" r="10" fill="#1a1a1a"/>
+  <circle cx="292" cy="215" r="10" fill="#1a1a1a"/>
   <!-- Eye shine -->
-  <circle cx="222" cy="91" r="4" fill="white" opacity="0.9"/>
-  <circle cx="304" cy="91" r="4" fill="white" opacity="0.9"/>
+  <circle cx="212" cy="211" r="4.5" fill="white" opacity="0.9"/>
+  <circle cx="288" cy="211" r="4.5" fill="white" opacity="0.9"/>
 
-  <!-- Happy little mouth -->
-  <path d="M242 175 Q256 186 270 175" fill="none" stroke="#8B2500" stroke-width="3" stroke-linecap="round"/>
+  <!-- Happy mouth -->
+  <path d="M240 340 Q256 355 272 340" fill="none" stroke="#8B2500" stroke-width="3.5" stroke-linecap="round"/>
 </svg>
