@@ -143,14 +143,12 @@ pub(crate) fn markdown_layout_job(
         }
         if in_fence.is_some() {
             let kind = FmtIdx::InlineCode;
-            if pending_fmt == Some(kind) {
-                pending_end = line_end;
-            } else {
+            if pending_fmt != Some(kind) {
                 flush(&mut job, &pending_fmt, pending_start, pending_end);
                 pending_fmt = Some(kind);
                 pending_start = line_start;
-                pending_end = line_end;
             }
+            pending_end = line_end;
             continue;
         }
 
@@ -158,27 +156,23 @@ pub(crate) fn markdown_layout_job(
         let level = trimmed.bytes().take_while(|b| *b == b'#').count();
         if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
             let kind = FmtIdx::Heading(level);
-            if pending_fmt == Some(kind) {
-                pending_end = line_end;
-            } else {
+            if pending_fmt != Some(kind) {
                 flush(&mut job, &pending_fmt, pending_start, pending_end);
                 pending_fmt = Some(kind);
                 pending_start = line_start;
-                pending_end = line_end;
             }
+            pending_end = line_end;
             continue;
         }
 
         if memchr::memchr(b'`', line.as_bytes()).is_none() {
             let kind = FmtIdx::Base;
-            if pending_fmt == Some(kind) {
-                pending_end = line_end;
-            } else {
+            if pending_fmt != Some(kind) {
                 flush(&mut job, &pending_fmt, pending_start, pending_end);
                 pending_fmt = Some(kind);
                 pending_start = line_start;
-                pending_end = line_end;
             }
+            pending_end = line_end;
             continue;
         }
 

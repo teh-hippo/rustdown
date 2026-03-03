@@ -151,6 +151,7 @@ pub(crate) fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Out
         }
 
         loop {
+            #[allow(clippy::useless_let_if_seq)]
             let mut progressed = false;
             if let Some(next) = ours_edits.get(i_ours)
                 && next.base_start < group_end
@@ -200,7 +201,6 @@ pub(crate) fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Out
             ensure_newline(&mut conflict_marked);
             conflict_marked.push_str(">>>>>>> theirs\n");
         }
-
         pos = group_end;
     }
 
@@ -230,7 +230,8 @@ fn diff_edits<'a>(base: &'a str, other: &'a str) -> Vec<Edit<'a>> {
         .collect()
 }
 
-fn edits_overlap(left: &Edit<'_>, right: &Edit<'_>) -> bool {
+#[allow(clippy::suspicious_operation_groupings)]
+const fn edits_overlap(left: &Edit<'_>, right: &Edit<'_>) -> bool {
     if left.base_start == left.base_end && right.base_start == right.base_end {
         return left.base_start == right.base_start;
     }
@@ -250,12 +251,7 @@ fn edits_identical(left: &Edit<'_>, right: &Edit<'_>) -> bool {
         && left.replacement == right.replacement
 }
 
-fn render_range_with_edits<'a>(
-    base: &[&str],
-    start: usize,
-    end: usize,
-    edits: &[Edit<'a>],
-) -> String {
+fn render_range_with_edits(base: &[&str], start: usize, end: usize, edits: &[Edit<'_>]) -> String {
     let mut out = String::new();
     let mut pos = start;
     for edit in edits {

@@ -214,7 +214,7 @@ fn app_version() -> &'static str {
 
 /// On WSL, smithay-clipboard connects via Wayland and panics with
 /// "Broken pipe (os error 32)" during window resize.  Clearing
-/// WAYLAND_DISPLAY forces the clipboard backend to X11 (arboard),
+/// `WAYLAND_DISPLAY` forces the clipboard backend to X11 (arboard),
 /// which avoids the crash while keeping clipboard fully functional.
 /// See <https://github.com/emilk/egui/issues/3805>.
 #[cfg(target_os = "linux")]
@@ -724,7 +724,7 @@ fn load_single_font() -> Result<Vec<u8>, String> {
     for path in UI_FONT_CANDIDATE_PATHS {
         match fs::read(path) {
             Ok(data) => return Ok(data),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(format!("Failed to read UI font at '{path}': {err}")),
         }
     }
@@ -867,7 +867,7 @@ struct TrackedTextBuffer<'a, 'b> {
     seq: &'b Cell<u64>,
 }
 
-impl<'a, 'b> egui::TextBuffer for TrackedTextBuffer<'a, 'b> {
+impl egui::TextBuffer for TrackedTextBuffer<'_, '_> {
     fn is_mutable(&self) -> bool {
         true
     }
@@ -932,7 +932,7 @@ impl Document {
     fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
-        (since < debounce).then(|| debounce - since)
+        debounce.checked_sub(since)
     }
 
     #[must_use]
@@ -951,7 +951,7 @@ impl Document {
     }
 
     #[must_use]
-    fn stats(&self) -> DocumentStats {
+    const fn stats(&self) -> DocumentStats {
         self.stats
     }
 }
@@ -1049,20 +1049,20 @@ enum Mode {
 
 impl Mode {
     #[must_use]
-    fn cycle(self) -> Self {
+    const fn cycle(self) -> Self {
         match self {
-            Mode::Edit => Mode::Preview,
-            Mode::Preview => Mode::SideBySide,
-            Mode::SideBySide => Mode::Edit,
+            Self::Edit => Self::Preview,
+            Self::Preview => Self::SideBySide,
+            Self::SideBySide => Self::Edit,
         }
     }
 
     #[must_use]
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
-            Mode::Edit => "Edit",
-            Mode::Preview => "Preview",
-            Mode::SideBySide => "Side-by-side",
+            Self::Edit => "Edit",
+            Self::Preview => "Preview",
+            Self::SideBySide => "Side-by-side",
         }
     }
 }
@@ -1080,7 +1080,11 @@ enum SaveTrigger {
 }
 
 #[must_use]
-fn save_trigger_from_shortcut(command: bool, shift: bool, key_s: bool) -> Option<SaveTrigger> {
+const fn save_trigger_from_shortcut(
+    command: bool,
+    shift: bool,
+    key_s: bool,
+) -> Option<SaveTrigger> {
     if !(command && key_s) {
         return None;
     }
@@ -1092,7 +1096,7 @@ fn save_trigger_from_shortcut(command: bool, shift: bool, key_s: bool) -> Option
 }
 
 #[must_use]
-fn clamped_zoom_factor(zoom_factor: f32) -> f32 {
+const fn clamped_zoom_factor(zoom_factor: f32) -> f32 {
     zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR)
 }
 
@@ -1113,8 +1117,7 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 fn char_index_to_byte(text: &str, char_index: usize) -> usize {
     text.char_indices()
         .nth(char_index)
-        .map(|(i, _)| i)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(i, _)| i)
 }
 
 /// Build a `(row_y, row_start_byte)` table from galley rows.
@@ -1500,14 +1503,14 @@ impl RustdownApp {
             Ok(watcher) => watcher,
             Err(err) => {
                 self.error
-                    .get_or_insert(format!("Watch setup failed: {err}"));
+                    .get_or_insert_with(|| format!("Watch setup failed: {err}"));
                 return;
             }
         };
 
         if let Err(err) = watcher.watch(watch_root, RecursiveMode::NonRecursive) {
             self.error
-                .get_or_insert(format!("Watch start failed: {err}"));
+                .get_or_insert_with(|| format!("Watch start failed: {err}"));
             return;
         }
 
@@ -1593,7 +1596,7 @@ impl RustdownApp {
                         Ok(_) => {}
                         Err(err) => {
                             self.error
-                                .get_or_insert(format!("Disk check failed: {err}"));
+                                .get_or_insert_with(|| format!("Disk check failed: {err}"));
                         }
                     }
                 }
@@ -1829,10 +1832,12 @@ impl RustdownApp {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
         ctx.set_zoom_factor(zoom_with_step(ctx.zoom_factor(), delta));
     }
 
+    #[allow(clippy::unused_self)]
     fn adjust_zoom_factor(&self, ctx: &egui::Context, factor: f32) {
         ctx.set_zoom_factor(zoom_with_factor(ctx.zoom_factor(), factor));
     }
@@ -1846,11 +1851,11 @@ impl RustdownApp {
         if self.last_viewport_title == title {
             return;
         }
-        self.last_viewport_title = title.clone();
+        self.last_viewport_title.clone_from(&title);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
-    fn bump_edit_seq(&mut self) {
+    const fn bump_edit_seq(&mut self) {
         self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
     }
 
@@ -1880,14 +1885,14 @@ impl RustdownApp {
         }
     }
 
-    fn open_search(&mut self, replace_mode: bool) {
+    const fn open_search(&mut self, replace_mode: bool) {
         self.search.visible = true;
         self.search.replace_mode = replace_mode;
         self.search.last_replace_count = None;
         self.focus_search = true;
     }
 
-    fn close_search(&mut self) {
+    const fn close_search(&mut self) {
         self.search.visible = false;
         self.search.replace_mode = false;
         self.search.last_replace_count = None;
@@ -2039,10 +2044,10 @@ impl RustdownApp {
     /// store it in `pending_scroll_y`.  Must run *before* the scroll areas
     /// render so the target is consumed on the same frame.
     fn resolve_nav_scroll_target(&mut self, ctx: &egui::Context) {
+        use nav_panel::NavScrollTarget;
         let Some(target) = self.nav.pending_scroll.take() else {
             return;
         };
-        use nav_panel::NavScrollTarget;
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
         let target_y = match target {
             NavScrollTarget::Top => Some(0.0_f32),
@@ -2121,9 +2126,10 @@ impl RustdownApp {
     fn load_document(&mut self, path: PathBuf, text: String, disk_rev: Option<DiskRevision>) {
         let text = Arc::new(text);
         let base_text = text.clone();
+        let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
         self.doc = Document {
-            path: Some(path.clone()),
-            image_uri_scheme: default_image_uri_scheme(Some(path.as_path())),
+            path: Some(path),
+            image_uri_scheme,
             stats: DocumentStats::from_text(text.as_str()),
             text,
             base_text,
@@ -2175,7 +2181,8 @@ impl RustdownApp {
                 self.reset_disk_sync_state();
             }
             Err(err) => {
-                self.error.get_or_insert(format!("Open failed: {err}"));
+                self.error
+                    .get_or_insert_with(|| format!("Open failed: {err}"));
             }
         }
     }
@@ -2200,7 +2207,7 @@ impl RustdownApp {
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
                     self.error
-                        .get_or_insert(format!("Pre-save reload failed: {err}"));
+                        .get_or_insert_with(|| format!("Pre-save reload failed: {err}"));
                 }
             }
         }
@@ -2315,7 +2322,7 @@ impl RustdownApp {
             Ok(path) => path,
             Err(err) => {
                 self.error
-                    .get_or_insert(format!("Merge file path failed: {err}"));
+                    .get_or_insert_with(|| format!("Merge file path failed: {err}"));
                 return;
             }
         };
@@ -2323,7 +2330,7 @@ impl RustdownApp {
             Ok(()) => self.merge_sidecar_path = Some(sidecar_path),
             Err(err) => {
                 self.error
-                    .get_or_insert(format!("Merge file write failed: {err}"));
+                    .get_or_insert_with(|| format!("Merge file write failed: {err}"));
             }
         }
     }
@@ -2383,7 +2390,8 @@ impl RustdownApp {
                     Ok(()) => {}
                     Err(err) => {
                         self.disk_conflict = Some(conflict);
-                        self.error.get_or_insert(format!("Overwrite failed: {err}"));
+                        self.error
+                            .get_or_insert_with(|| format!("Overwrite failed: {err}"));
                         return;
                     }
                 }
@@ -2409,6 +2417,7 @@ enum ConflictChoice {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::time::SystemTime;
@@ -2751,7 +2760,7 @@ mod tests {
         assert!(app.doc.stats_dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("alpha beta"));
 
-        app.doc.last_edit_at = Some(Instant::now() - STATS_RECALC_DEBOUNCE);
+        app.doc.last_edit_at = Instant::now().checked_sub(STATS_RECALC_DEBOUNCE);
         let ctx = egui::Context::default();
         app.refresh_stats_if_due(&ctx);
 
@@ -2903,7 +2912,7 @@ mod tests {
         let _ = atomic_write_utf8(&original, "line1\nline2\nline3\n");
 
         let mut app = merge_app("line1\nline2\nline3\n", "line1\nO2\nline3\n", 1, 18, true);
-        app.doc.path = Some(original.clone());
+        app.doc.path = Some(original);
 
         app.incorporate_disk_text("line1\nT2\nT3\n".to_owned(), test_rev(2, 15));
         let conflict = disk_conflict(&app);

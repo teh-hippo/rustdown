@@ -102,7 +102,7 @@ pub fn active_heading_index(
     result
 }
 
-fn heading_level_to_u8(level: HeadingLevel) -> u8 {
+const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
         HeadingLevel::H2 => 2,
@@ -180,7 +180,7 @@ mod tests {
         // Position after "## B" but before "### C"
         let b_offset = headings[1].byte_offset;
         let c_offset = headings[2].byte_offset;
-        let mid = (b_offset + c_offset) / 2;
+        let mid = b_offset.midpoint(c_offset);
         assert_eq!(active_heading_index(&headings, 4, mid), Some(1));
     }
 

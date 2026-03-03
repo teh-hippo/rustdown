@@ -27,6 +27,7 @@ const DEFAULT_OPTIONS: FormatOptions = FormatOptions {
 pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
     let eol = match options.end_of_line {
         Some(EndOfLine::CrLf) => "\r\n",
+        #[allow(clippy::match_same_arms)]
         Some(EndOfLine::Lf) => "\n",
         None if source.contains("\r\n") => "\r\n",
         None => "\n",
@@ -134,14 +135,14 @@ fn editorconfig_overrides(contents: &str, file: &str) -> Overrides {
         }
         match key {
             key if key.eq_ignore_ascii_case("trim_trailing_whitespace") => {
-                overrides.trim = parse_bool(value)
+                overrides.trim = parse_bool(value);
             }
             key if key.eq_ignore_ascii_case("insert_final_newline") => {
-                overrides.insert = parse_bool(value)
+                overrides.insert = parse_bool(value);
             }
             key if key.eq_ignore_ascii_case("end_of_line") => overrides.eol = parse_eol(value),
             _ => {}
-        };
+        }
     }
     overrides
 }
@@ -166,8 +167,13 @@ fn parse_eol(value: &str) -> Option<EndOfLine> {
 
 fn section_match(pattern: &str, file: &str) -> bool {
     let pattern = pattern.trim();
-    pattern == "*.{md,markdown}" && (file.ends_with(".md") || file.ends_with(".markdown"))
-        || glob_match(pattern, file)
+    let ext_matches = || {
+        let path = Path::new(file);
+        path.extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
+        })
+    };
+    pattern == "*.{md,markdown}" && ext_matches() || glob_match(pattern, file)
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {

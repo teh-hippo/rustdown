@@ -5,7 +5,7 @@ use eframe::egui;
 use crate::nav_outline::{self, HeadingEntry};
 
 /// What the nav panel wants the host to scroll to.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NavScrollTarget {
     /// Jump to a heading at this byte offset in the source text.
     ByteOffset(usize),
@@ -25,7 +25,7 @@ pub struct NavState {
     outline_seq: u64,
     /// Maximum heading depth to display (1..=6, default 4).
     pub max_depth: u8,
-    /// Cached visible-index list, rebuilt when max_depth or outline changes.
+    /// Cached visible-index list, rebuilt when `max_depth` or outline changes.
     visible_indices: Vec<usize>,
     /// Cached top-level positions within `visible_indices`.
     top_positions: Vec<usize>,
@@ -301,7 +301,7 @@ fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickActi
     for &gi in &cx.visible[..first_top_vis] {
         let h = &cx.outline[gi];
         let style = RowStyle {
-            indent: (h.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+            indent: f32::from(h.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
             is_active: cx.active_index == Some(gi),
             has_children: false,
             is_expanded: false,
@@ -327,7 +327,7 @@ fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickActi
         let has_children = next_vis > vis_pos + 1;
 
         let style = RowStyle {
-            indent: (heading.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+            indent: f32::from(heading.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
             is_active: cx.active_index == Some(gi),
             has_children,
             is_expanded,
@@ -344,7 +344,7 @@ fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickActi
             for &child_vis in &cx.visible[vis_pos + 1..next_vis] {
                 let child = &cx.outline[child_vis];
                 let child_style = RowStyle {
-                    indent: (child.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+                    indent: f32::from(child.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
                     is_active: cx.active_index == Some(child_vis),
                     has_children: false,
                     is_expanded: false,
@@ -392,6 +392,7 @@ fn render_heading_row(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -526,7 +527,7 @@ mod tests {
         let mut state = make_state("# A\n\ntext\n\n## B\n\nmore\n\n### C\n");
         state.update_active_from_scroll_y(0.0);
         let first = state.active_index;
-        let last_offset = state.outline.last().map(|h| h.byte_offset).unwrap_or(0);
+        let last_offset = state.outline.last().map_or(0, |h| h.byte_offset);
         let big_y = preview_byte_to_scroll_y(&state.outline, last_offset);
         state.update_active_from_scroll_y(big_y);
         let last = state.active_index;

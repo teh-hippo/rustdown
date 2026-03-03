@@ -95,7 +95,7 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
     println!("nav_first_frame_us={frame_us}");
 
     // --- Phase 3: Programmatic heading navigation ---
-    let last_heading_offset = app.nav.outline.last().map(|h| h.byte_offset).unwrap_or(0);
+    let last_heading_offset = app.nav.outline.last().map_or(0, |h| h.byte_offset);
 
     app.nav.pending_scroll = Some(NavScrollTarget::ByteOffset(last_heading_offset));
     let nav_start = Instant::now();
