@@ -373,4 +373,111 @@ mod tests {
             assert_eq!(edits_overlap(&a, &b), expected);
         }
     }
+
+    #[test]
+    fn edits_identical_detects_same_and_different() {
+        let a = edit(1, 2, &["X\n"]);
+        let b = edit(1, 2, &["X\n"]);
+        let c = edit(1, 2, &["Y\n"]);
+        let d = edit(1, 3, &["X\n"]);
+        assert!(edits_identical(&a, &b));
+        assert!(!edits_identical(&a, &c));
+        assert!(!edits_identical(&a, &d));
+    }
+
+    #[test]
+    fn render_range_with_edits_applies_replacements() {
+        let base_lines = vec!["a\n", "b\n", "c\n"];
+        let edits = vec![edit(1, 2, &["X\n"])];
+        let result = render_range_with_edits(&base_lines, 0, 3, &edits);
+        assert_eq!(result, "a\nX\nc\n");
+    }
+
+    #[test]
+    fn render_range_preserves_unedited_lines() {
+        let base_lines = vec!["a\n", "b\n", "c\n"];
+        let result = render_range_with_edits(&base_lines, 0, 3, &[]);
+        assert_eq!(result, "a\nb\nc\n");
+    }
+
+    #[test]
+    fn ensure_newline_appends_when_missing() {
+        let mut buf = "hello".to_owned();
+        ensure_newline(&mut buf);
+        assert_eq!(buf, "hello\n");
+
+        let mut buf2 = "hello\n".to_owned();
+        ensure_newline(&mut buf2);
+        assert_eq!(buf2, "hello\n");
+
+        let mut buf3 = String::new();
+        ensure_newline(&mut buf3);
+        assert!(buf3.is_empty());
+    }
+
+    #[test]
+    fn merge_identical_edits_both_sides_clean() {
+        // When both sides make the same edit, it should merge cleanly.
+        assert_clean("a\nb\nc\n", "a\nX\nc\n", "a\nX\nc\n", "a\nX\nc\n");
+    }
+
+    #[test]
+    fn merge_empty_base_both_insert() {
+        let (conflict, ours_wins) = assert_conflict("", "hello\n", "world\n");
+        assert!(conflict.contains("<<<<<<< ours"));
+        assert!(conflict.contains("hello\n"));
+        assert!(conflict.contains("world\n"));
+        assert_eq!(ours_wins, "hello\n");
+    }
+
+    #[test]
+    fn edits_overlap_insertion_at_same_point() {
+        // Two insertions at the same position (zero-width edits at same base_start).
+        let a = edit(3, 3, &["x\n"]);
+        let b = edit(3, 3, &["y\n"]);
+        assert!(edits_overlap(&a, &b));
+    }
+
+    #[test]
+    fn edits_overlap_zero_width_inside_range() {
+        // Zero-width insertion inside another edit's range.
+        let wide = edit(1, 4, &["R\n"]);
+        let insertion = edit(2, 2, &["I\n"]);
+        assert!(edits_overlap(&wide, &insertion));
+        assert!(edits_overlap(&insertion, &wide));
+    }
+
+    #[test]
+    fn render_range_with_edits_handles_insertion() {
+        // Insertion at position 1 (no lines removed).
+        let base_lines = vec!["a\n", "b\n", "c\n"];
+        let edits = vec![edit(1, 1, &["NEW\n"])];
+        let result = render_range_with_edits(&base_lines, 0, 3, &edits);
+        assert_eq!(result, "a\nNEW\nb\nc\n");
+    }
+
+    #[test]
+    fn render_range_with_edits_handles_deletion() {
+        let base_lines = vec!["a\n", "b\n", "c\n"];
+        let edits = vec![edit(1, 2, &[])]; // Delete line at index 1.
+        let result = render_range_with_edits(&base_lines, 0, 3, &edits);
+        assert_eq!(result, "a\nc\n");
+    }
+
+    #[test]
+    fn merge_non_overlapping_edits_from_both_sides() {
+        // Ours edits start, theirs edits end, no overlap.
+        assert_clean(
+            "a\nb\nc\nd\ne\n",
+            "A\nb\nc\nd\ne\n",
+            "a\nb\nc\nd\nE\n",
+            "A\nb\nc\nd\nE\n",
+        );
+    }
+
+    #[test]
+    fn merge_adjacent_non_overlapping_edits() {
+        // Edit lines 1 and 2 from different sides.
+        assert_clean("a\nb\nc\n", "A\nb\nc\n", "a\nB\nc\n", "A\nB\nc\n");
+    }
 }

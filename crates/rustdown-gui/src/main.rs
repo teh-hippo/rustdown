@@ -2985,4 +2985,253 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn char_index_to_byte_handles_ascii_and_multibyte() {
+        assert_eq!(char_index_to_byte("hello", 0), 0);
+        assert_eq!(char_index_to_byte("hello", 3), 3);
+        assert_eq!(char_index_to_byte("hello", 5), 5);
+        // Beyond length returns text.len().
+        assert_eq!(char_index_to_byte("hello", 100), 5);
+        // Multibyte: e-acute is 2 bytes in UTF-8.
+        assert_eq!(char_index_to_byte("h\u{00e9}llo", 0), 0);
+        assert_eq!(char_index_to_byte("h\u{00e9}llo", 1), 1);
+        assert_eq!(char_index_to_byte("h\u{00e9}llo", 2), 3);
+    }
+
+    #[test]
+    fn row_byte_offset_to_y_binary_search() {
+        let rows = vec![(0.0_f32, 0_u32), (20.0, 10), (40.0, 25), (60.0, 50)];
+        assert_eq!(row_byte_offset_to_y(&rows, 0), 0.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 5), 0.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 10), 20.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 15), 20.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 30), 40.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 100), 60.0);
+        // Empty rows.
+        assert_eq!(row_byte_offset_to_y(&[], 10), 0.0);
+    }
+
+    #[test]
+    fn row_y_to_byte_offset_binary_search() {
+        let rows = vec![(0.0_f32, 0_u32), (20.0, 10), (40.0, 25)];
+        assert_eq!(row_y_to_byte_offset(&rows, 0.0), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, 10.0), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, 20.0), 10);
+        assert_eq!(row_y_to_byte_offset(&rows, 35.0), 10);
+        assert_eq!(row_y_to_byte_offset(&rows, 40.0), 25);
+        assert_eq!(row_y_to_byte_offset(&rows, 100.0), 25);
+        // Empty rows.
+        assert_eq!(row_y_to_byte_offset(&[], 50.0), 0);
+    }
+
+    #[test]
+    fn bytecount_newlines_counts_correctly() {
+        assert_eq!(bytecount_newlines(""), 0);
+        assert_eq!(bytecount_newlines("no newline"), 0);
+        assert_eq!(bytecount_newlines("a\nb\nc\n"), 3);
+        assert_eq!(bytecount_newlines("\n\n\n"), 3);
+    }
+
+    #[test]
+    fn document_title_and_path_label() {
+        let default_doc = Document::default();
+        assert_eq!(default_doc.title().as_ref(), "Untitled");
+        assert_eq!(default_doc.path_label().as_ref(), "Unsaved");
+
+        let doc = Document {
+            path: Some(PathBuf::from("/home/user/notes.md")),
+            ..Document::default()
+        };
+        assert_eq!(doc.title().as_ref(), "notes.md");
+        assert_eq!(doc.path_label().as_ref(), "/home/user/notes.md");
+    }
+
+    #[test]
+    fn document_debounce_remaining_returns_none_when_no_edit() {
+        let doc = Document::default();
+        assert!(doc.debounce_remaining(Duration::from_millis(500)).is_none());
+    }
+
+    #[test]
+    fn mode_cycle_covers_all_modes() {
+        assert_eq!(Mode::Edit.cycle(), Mode::Preview);
+        assert_eq!(Mode::Preview.cycle(), Mode::SideBySide);
+        assert_eq!(Mode::SideBySide.cycle(), Mode::Edit);
+    }
+
+    #[test]
+    fn mode_labels() {
+        assert_eq!(Mode::Edit.label(), "Edit");
+        assert_eq!(Mode::Preview.label(), "Preview");
+        assert_eq!(Mode::SideBySide.label(), "Side-by-side");
+    }
+
+    #[test]
+    fn find_match_count_single_byte_and_multi_byte() {
+        assert_eq!(find_match_count("aaa", "a"), 3);
+        assert_eq!(find_match_count("abcabc", "abc"), 2);
+        assert_eq!(find_match_count("hello", "xyz"), 0);
+        assert_eq!(find_match_count("", "a"), 0);
+    }
+
+    #[test]
+    fn tracked_text_buffer_increments_seq_on_edit() {
+        let seq = Cell::new(0_u64);
+        let mut text = Arc::new("hello".to_owned());
+        {
+            let mut buf = TrackedTextBuffer {
+                text: &mut text,
+                seq: &seq,
+            };
+            let inserted = egui::TextBuffer::insert_text(&mut buf, " world", 5);
+            assert_eq!(inserted, 6);
+        }
+        assert_eq!(seq.get(), 1);
+        assert_eq!(text.as_str(), "hello world");
+    }
+
+    #[test]
+    fn tracked_text_buffer_no_op_insert_does_not_bump_seq() {
+        let seq = Cell::new(0_u64);
+        let mut text = Arc::new("hello".to_owned());
+        {
+            let mut buf = TrackedTextBuffer {
+                text: &mut text,
+                seq: &seq,
+            };
+            let inserted = egui::TextBuffer::insert_text(&mut buf, "", 5);
+            assert_eq!(inserted, 0);
+        }
+        assert_eq!(seq.get(), 0);
+    }
+
+    #[test]
+    fn tracked_text_buffer_delete_bumps_seq() {
+        let seq = Cell::new(0_u64);
+        let mut text = Arc::new("hello".to_owned());
+        {
+            let mut buf = TrackedTextBuffer {
+                text: &mut text,
+                seq: &seq,
+            };
+            egui::TextBuffer::delete_char_range(&mut buf, 2..4);
+        }
+        assert_eq!(seq.get(), 1);
+        assert_eq!(text.as_str(), "heo");
+    }
+
+    #[test]
+    fn tracked_text_buffer_empty_range_delete_no_bump() {
+        let seq = Cell::new(0_u64);
+        let mut text = Arc::new("hello".to_owned());
+        {
+            let mut buf = TrackedTextBuffer {
+                text: &mut text,
+                seq: &seq,
+            };
+            egui::TextBuffer::delete_char_range(&mut buf, 3..3);
+        }
+        assert_eq!(seq.get(), 0);
+    }
+
+    #[test]
+    fn search_state_caches_by_query_and_seq() {
+        let mut search = SearchState {
+            query: "a".to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(search.match_count("aaa", 1), 3);
+        // Same query and seq should use cache.
+        assert_eq!(search.match_count("aaa", 1), 3);
+        // Changing seq forces recount.
+        assert_eq!(search.match_count("aa", 2), 2);
+        // Changing query forces recount.
+        search.query = "b".to_owned();
+        assert_eq!(search.match_count("bb", 2), 2);
+    }
+
+    #[test]
+    fn zoom_with_factor_edge_cases() {
+        assert_eq!(zoom_with_factor(1.0, -1.0), clamped_zoom_factor(1.0));
+        assert_eq!(
+            zoom_with_factor(1.0, f32::INFINITY),
+            clamped_zoom_factor(1.0)
+        );
+        assert_eq!(zoom_with_factor(1.0, f32::NAN), clamped_zoom_factor(1.0));
+        assert_eq!(zoom_with_factor(1.0, 0.0), clamped_zoom_factor(1.0));
+    }
+
+    #[test]
+    fn clamped_zoom_factor_clamps_bounds() {
+        assert_eq!(clamped_zoom_factor(0.1), MIN_ZOOM_FACTOR);
+        assert_eq!(clamped_zoom_factor(10.0), MAX_ZOOM_FACTOR);
+        assert_eq!(clamped_zoom_factor(1.5), 1.5);
+    }
+
+    #[test]
+    fn document_stats_single_newline() {
+        let stats = DocumentStats::from_text("\n");
+        assert_eq!(stats.lines, 2);
+    }
+
+    #[test]
+    fn replace_all_occurrences_returns_borrowed_on_no_match() {
+        let (result, count) = replace_all_occurrences("hello world", "xyz", "abc");
+        assert_eq!(count, 0);
+        assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn replace_all_occurrences_empty_needle_returns_borrowed() {
+        let (result, count) = replace_all_occurrences("hello", "", "abc");
+        assert_eq!(count, 0);
+        assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn default_image_uri_scheme_covers_paths_with_special_components() {
+        assert_eq!(
+            default_image_uri_scheme(Some(Path::new("/a/b/c/file.md"))),
+            "file:///a/b/c/"
+        );
+        assert_eq!(
+            default_image_uri_scheme(Some(Path::new("relative/file.md"))),
+            "file:///relative/"
+        );
+    }
+
+    #[test]
+    fn set_mode_changes_mode() {
+        let mut app = RustdownApp::default();
+        assert_eq!(app.mode, Mode::Edit);
+        app.set_mode(Mode::Preview);
+        assert_eq!(app.mode, Mode::Preview);
+        // Going to Preview drops editor galley cache.
+        assert!(app.doc.editor_galley_cache.is_none());
+        // Going back to Edit clears preview state.
+        app.set_mode(Mode::Edit);
+        assert_eq!(app.mode, Mode::Edit);
+    }
+
+    #[test]
+    fn load_document_resets_state() {
+        let dir = make_temp_dir("rustdown-load-doc-test");
+        let path = dir.join("test.md");
+        fs::write(&path, "test content").ok();
+        let rev = disk_io::disk_revision(&path).ok();
+
+        let mut app = RustdownApp::default();
+        app.doc.dirty = true;
+        app.load_document(path.clone(), "test content".to_owned(), rev);
+
+        assert_eq!(app.doc.path.as_deref(), Some(path.as_path()));
+        assert_eq!(app.doc.text.as_str(), "test content");
+        assert_eq!(app.doc.base_text.as_str(), "test content");
+        assert!(!app.doc.dirty);
+        assert!(!app.doc.stats_dirty);
+        assert_eq!(app.doc.stats, DocumentStats::from_text("test content"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

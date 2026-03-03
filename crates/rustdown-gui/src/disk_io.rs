@@ -285,4 +285,58 @@ mod tests {
             "README.rustdown-merge"
         );
     }
+
+    #[test]
+    fn next_merge_sidecar_path_defaults_to_current_dir_when_no_parent() {
+        // A bare filename with no parent directory should default to ".".
+        let original = Path::new("notes.md");
+        let result = next_merge_sidecar_path(original);
+        assert!(result.is_ok());
+        let sidecar = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            sidecar.file_name().unwrap_or_default(),
+            "notes.rustdown-merge.md"
+        );
+        assert_eq!(
+            sidecar.parent().unwrap_or_else(|| unreachable!()),
+            Path::new(".")
+        );
+    }
+
+    #[test]
+    fn next_merge_sidecar_path_rejects_bare_directory() {
+        let result = next_merge_sidecar_path(Path::new("/"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_dir_file() {
+        let dir = test_dir("rustdown-atomic-parent-test");
+        let path = dir.join("subdir-file.md");
+        assert!(atomic_write_utf8(&path, "hello").is_ok());
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn read_stable_utf8_returns_consistent_content() {
+        let dir = test_dir("rustdown-stable-read-test");
+        let path = dir.join("stable.md");
+        fs::write(&path, "stable content").ok();
+
+        let result = read_stable_utf8(&path);
+        assert!(result.is_ok());
+        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, "stable content");
+        assert_eq!(rev.len, 14);
+    }
+
+    #[test]
+    fn disk_revision_reports_correct_length() {
+        let dir = test_dir("rustdown-disk-rev-len-test");
+        let path = dir.join("sized.md");
+        fs::write(&path, "12345").ok();
+        let rev = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        assert_eq!(rev.len, 5);
+    }
 }

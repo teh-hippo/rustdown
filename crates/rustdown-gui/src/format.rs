@@ -295,4 +295,80 @@ mod tests {
         assert!(!options.insert_final_newline);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn glob_match_covers_star_prefix_suffix_and_middle() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("exact", "exact"));
+        assert!(!glob_match("exact", "other"));
+        assert!(glob_match("*.md", "README.md"));
+        assert!(!glob_match("*.md", "README.txt"));
+        assert!(glob_match("test*", "testing"));
+        assert!(!glob_match("test*", "other"));
+        assert!(glob_match("a*c", "abc"));
+        assert!(glob_match("a*c", "aXYZc"));
+        assert!(!glob_match("a*c", "aXYZd"));
+        // No wildcards and not equal.
+        assert!(!glob_match("abc", "def"));
+    }
+
+    #[test]
+    fn parse_bool_recognizes_true_false_values() {
+        assert_eq!(parse_bool("true"), Some(true));
+        assert_eq!(parse_bool("false"), Some(false));
+        assert_eq!(parse_bool("TRUE"), Some(true));
+        assert_eq!(parse_bool("False"), Some(false));
+        assert_eq!(parse_bool(""), None);
+        assert_eq!(parse_bool("yes"), None);
+    }
+
+    #[test]
+    fn parse_eol_recognizes_lf_and_crlf() {
+        assert_eq!(parse_eol("lf"), Some(EndOfLine::Lf));
+        assert_eq!(parse_eol("crlf"), Some(EndOfLine::CrLf));
+        assert_eq!(parse_eol("LF"), Some(EndOfLine::Lf));
+        assert_eq!(parse_eol("CRLF"), Some(EndOfLine::CrLf));
+        assert_eq!(parse_eol("cr"), None);
+        assert_eq!(parse_eol(""), None);
+    }
+
+    #[test]
+    fn format_markdown_crlf_end_of_line() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::CrLf),
+        };
+        let result = format_markdown("a\nb", opts);
+        assert_eq!(result, "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn format_markdown_no_final_newline() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        // "hello  " has a hard break (trailing double space) which is preserved.
+        let result = format_markdown("hello  ", opts);
+        assert_eq!(result, "hello  ");
+    }
+
+    #[test]
+    fn options_for_path_returns_defaults_for_none() {
+        let opts = options_for_path(None);
+        assert!(opts.trim_trailing_whitespace);
+        assert!(opts.insert_final_newline);
+        assert_eq!(opts.end_of_line, None);
+    }
+
+    #[test]
+    fn section_match_handles_markdown_extensions() {
+        assert!(section_match("*.md", "test.md"));
+        // Case-insensitive match only applies for the *.{md,markdown} pattern.
+        assert!(section_match("*.{md,markdown}", "test.MD"));
+        assert!(section_match("*.{md,markdown}", "test.markdown"));
+        assert!(!section_match("*.txt", "test.md"));
+    }
 }

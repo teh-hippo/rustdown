@@ -284,4 +284,119 @@ mod tests {
         assert_ne!(color_h2.format.color, visuals.hyperlink_color);
         assert_ne!(color_h1.format.color, color_h2.format.color);
     }
+
+    #[test]
+    fn inline_code_renders_backtick_delimiters_and_content() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "Use `foo` here\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+
+        let code = section_for_snippet(&job, "foo");
+        assert_eq!(code.format.background, visuals.faint_bg_color);
+        assert_eq!(
+            code.format.font_id,
+            egui::TextStyle::Monospace.resolve(&style)
+        );
+        // Backtick delimiters should be styled as weak text.
+        let open_tick = job
+            .sections
+            .iter()
+            .find(|s| s.byte_range.start == 4 && s.byte_range.end == 5);
+        assert!(open_tick.is_some(), "Expected section for opening backtick");
+        assert_eq!(
+            open_tick.unwrap_or_else(|| unreachable!()).format.color,
+            visuals.weak_text_color()
+        );
+    }
+
+    #[test]
+    fn unmatched_backtick_does_not_crash_and_emits_weak_section() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "text `orphan\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        // The unmatched backtick should produce a weak-text section.
+        let tick = job
+            .sections
+            .iter()
+            .find(|s| s.byte_range.start == 5 && s.byte_range.end == 6);
+        assert!(tick.is_some(), "Expected section for unmatched backtick");
+        assert_eq!(
+            tick.unwrap_or_else(|| unreachable!()).format.color,
+            visuals.weak_text_color()
+        );
+    }
+
+    #[test]
+    fn light_mode_heading_colors_differ_from_dark() {
+        let dark = egui::Visuals::dark();
+        let light = egui::Visuals::light();
+        let dark_h1 = heading_color(&dark, 1, true);
+        let light_h1 = heading_color(&light, 1, true);
+        assert_ne!(dark_h1, light_h1);
+    }
+
+    #[test]
+    fn heading_color_clamps_at_palette_bounds() {
+        let visuals = egui::Visuals::dark();
+        let h0 = heading_color(&visuals, 0, true);
+        let h1 = heading_color(&visuals, 1, true);
+        let h7 = heading_color(&visuals, 7, true);
+        let h6 = heading_color(&visuals, 6, true);
+        // Level 0 (out of range) saturates to first palette entry.
+        assert_eq!(h0, h1);
+        // Level 7 (out of range) saturates to last palette entry.
+        assert_eq!(h7, h6);
+    }
+
+    #[test]
+    fn all_six_heading_levels_get_unique_colors() {
+        let visuals = egui::Visuals::dark();
+        let colors: Vec<_> = (1..=6)
+            .map(|level| heading_color(&visuals, level, true))
+            .collect();
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(
+                    colors[i],
+                    colors[j],
+                    "Heading levels {} and {} share a color",
+                    i + 1,
+                    j + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plain_text_produces_single_base_section() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "just plain text\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].byte_range, 0..source.len());
+        assert_eq!(job.sections[0].format.color, visuals.text_color());
+    }
+
+    #[test]
+    fn empty_source_produces_no_sections() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let job = markdown_layout_job(&style, &visuals, "", false);
+        assert!(job.sections.is_empty());
+    }
+
+    #[test]
+    fn multiple_inline_code_spans_in_one_line() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "`a` and `b`\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let a_sec = section_for_snippet(&job, "a");
+        let b_sec = section_for_snippet(&job, "b");
+        assert_eq!(a_sec.format.background, visuals.faint_bg_color);
+        assert_eq!(b_sec.format.background, visuals.faint_bg_color);
+    }
 }
