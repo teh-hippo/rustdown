@@ -215,18 +215,43 @@ const fn app_version() -> &'static str {
 /// `WAYLAND_DISPLAY` forces the clipboard backend to X11 (arboard),
 /// which avoids the crash while keeping clipboard fully functional.
 /// See <https://github.com/emilk/egui/issues/3805>.
+///
+/// The workaround is only applied when `libxkbcommon-x11.so` is present;
+/// without it the X11 backend cannot initialise and the app would panic
+/// on startup.  When the library is absent, Wayland remains active and
+/// the user sees a diagnostic hint to install it.
 #[cfg(target_os = "linux")]
 fn apply_wsl_workarounds() {
     if let Ok(ver) = std::fs::read_to_string("/proc/version")
         && ver.to_ascii_lowercase().contains("microsoft")
     {
-        // SAFETY: called at the top of main() before any threads are
-        // spawned, so there is no concurrent access to the environment.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var("WAYLAND_DISPLAY");
+        if x11_keyboard_lib_available() {
+            // SAFETY: called at the top of main() before any threads are
+            // spawned, so there is no concurrent access to the environment.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var("WAYLAND_DISPLAY");
+            }
+        } else {
+            eprintln!(
+                "rustdown: WSL detected but libxkbcommon-x11.so not found; \
+                 X11 clipboard workaround disabled. Install libxkbcommon-x11-dev \
+                 to avoid resize crashes."
+            );
         }
     }
+}
+
+/// Returns `true` when `libxkbcommon-x11.so` can be loaded by the dynamic
+/// linker, meaning the X11 keyboard backend will work at runtime.
+#[cfg(target_os = "linux")]
+fn x11_keyboard_lib_available() -> bool {
+    // SAFETY: libxkbcommon-x11 is a well-known system library with no
+    // harmful init-time side effects.  We load only to probe availability
+    // and the library is dropped immediately.
+    #[allow(unsafe_code)]
+    let result = unsafe { libloading::Library::new("libxkbcommon-x11.so") };
+    result.is_ok()
 }
 
 fn main() -> eframe::Result {

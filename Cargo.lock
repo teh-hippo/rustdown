@@ -2318,6 +2318,7 @@ dependencies = [
  "egui_commonmark",
  "image",
  "imara-diff",
+ "libloading",
  "memchr",
  "notify",
  "pulldown-cmark",
