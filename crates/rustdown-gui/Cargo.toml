@@ -13,7 +13,7 @@ workspace = true
 eframe = { version = "0.31", default-features = false, features = [
   "glow",
 ] }
-egui_commonmark = { version = "0.20.0", default-features = false, features = ["pulldown_cmark", "load-images"] }
+egui_commonmark = { version = "0.22.0", default-features = false, features = ["pulldown_cmark", "load-images"] }
 pulldown-cmark = "0.12"
 memchr = "2"
 rfd = { version = "0.15", default-features = false }
