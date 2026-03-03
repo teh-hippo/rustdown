@@ -206,10 +206,8 @@ where
 }
 
 #[must_use]
-fn app_version() -> &'static str {
-    option_env!("RUSTDOWN_BUILD_VERSION")
-        .filter(|value| !value.is_empty())
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
+const fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 /// On WSL, smithay-clipboard connects via Wayland and panics with

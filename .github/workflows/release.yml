@@ -40,8 +40,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libgtk-3-dev
 
       - name: Build release binary
-        env:
-          RUSTDOWN_BUILD_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: cargo build --release -p rustdown --locked
 
       - name: Package (Linux)
@@ -99,15 +97,4 @@ jobs:
           files: |
             artifacts/*
 
-      - name: Create/Update latest GitHub Release
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: latest
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: false
-          prerelease: false
-          overwrite_files: true
-          files: |
-            artifacts/*
+
