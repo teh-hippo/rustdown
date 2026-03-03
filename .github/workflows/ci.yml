@@ -28,7 +28,7 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libgtk-3-dev
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -52,6 +52,9 @@ jobs:
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libgtk-3-dev
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

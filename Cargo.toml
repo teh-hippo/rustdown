@@ -5,7 +5,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/teh-hippo/rustdown"
@@ -25,8 +25,8 @@ dbg_macro = "deny"
 panic = "deny"
 
 [profile.release]
-# Standard size optimizations for distribution binaries.
 strip = true
-lto = "thin"
+lto = true
+opt-level = "s"
 codegen-units = 1
 panic = "abort"
