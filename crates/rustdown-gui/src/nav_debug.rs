@@ -79,8 +79,7 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
 
     // --- Phase 1: Outline extraction ---
     let outline_start = Instant::now();
-    app.nav
-        .refresh_outline(app.doc.text.as_str(), app.doc.edit_seq);
+    app.nav.refresh_outline(&app.doc.text, app.doc.edit_seq);
     let outline_us = outline_start.elapsed().as_micros();
     let heading_count = app.nav.outline.len();
 

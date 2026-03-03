@@ -1437,8 +1437,7 @@ impl RustdownApp {
         self.resolve_nav_scroll_target(ctx);
 
         if self.nav.visible {
-            self.nav
-                .refresh_outline(self.doc.text.as_str(), self.doc.edit_seq);
+            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
         }
         self.nav.show(ctx);
 

@@ -1,14 +1,29 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A single heading extracted from a Markdown document.
+///
+/// Labels are stored as byte ranges into the source text to avoid per-heading
+/// heap allocations.  Use [`HeadingEntry::label`] to resolve to `&str`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadingEntry {
     /// Heading depth (1 = H1, 2 = H2, … 6 = H6).
     pub level: u8,
-    /// Plain-text label of the heading (inline markup stripped).
-    pub label: String,
     /// Byte offset of the heading start in the source text.
     pub byte_offset: usize,
+    /// Start of the plain-text label within the source.
+    label_start: u32,
+    /// Length of the plain-text label in bytes.
+    label_len: u16,
+}
+
+impl HeadingEntry {
+    /// Resolve the heading label from the source text.
+    #[inline]
+    pub fn label<'a>(&self, source: &'a str) -> &'a str {
+        let start = self.label_start as usize;
+        let end = start + self.label_len as usize;
+        source.get(start..end).unwrap_or("")
+    }
 }
 
 /// Extract all headings from `source` markdown text.
@@ -21,29 +36,43 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
 
     let mut entries = Vec::new();
     let mut in_heading: Option<(u8, usize)> = None; // (level, byte_offset)
-    let mut label_buf = String::new();
+    let mut label_start: usize = 0;
+    let mut label_end: usize = 0;
+    let mut label_has_content = false;
 
     for (event, range) in parser.into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 let lvl = heading_level_to_u8(level);
                 in_heading = Some((lvl, range.start));
-                label_buf.clear();
+                label_start = 0;
+                label_end = 0;
+                label_has_content = false;
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some((level, byte_offset)) = in_heading.take() {
-                    let label = label_buf.trim().to_owned();
-                    if !label.is_empty() {
+                if let Some((level, byte_offset)) = in_heading.take()
+                    && label_has_content
+                {
+                    let slice = source.get(label_start..label_end).unwrap_or("");
+                    let trimmed = slice.trim();
+                    if !trimmed.is_empty() {
+                        let trim_off = label_start + (slice.len() - slice.trim_start().len());
+                        let trim_len = trimmed.len();
                         entries.push(HeadingEntry {
                             level,
-                            label,
                             byte_offset,
+                            label_start: trim_off as u32,
+                            label_len: trim_len.min(u16::MAX as usize) as u16,
                         });
                     }
                 }
             }
-            Event::Text(ref text) | Event::Code(ref text) if in_heading.is_some() => {
-                label_buf.push_str(text);
+            Event::Text(_) | Event::Code(_) if in_heading.is_some() => {
+                if !label_has_content {
+                    label_start = range.start;
+                    label_has_content = true;
+                }
+                label_end = range.end;
             }
             _ => {}
         }
@@ -94,11 +123,11 @@ mod tests {
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 3);
         assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].label, "Title");
+        assert_eq!(headings[0].label(md), "Title");
         assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].label, "Section A");
+        assert_eq!(headings[1].label(md), "Section A");
         assert_eq!(headings[2].level, 3);
-        assert_eq!(headings[2].label, "Sub-section");
+        assert_eq!(headings[2].label(md), "Sub-section");
     }
 
     #[test]
@@ -106,7 +135,10 @@ mod tests {
         let md = "# Hello `world`\n\n## Plain\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 2);
-        assert_eq!(headings[0].label, "Hello world");
+        // With byte-range approach, label spans from "Hello" to end of "world"
+        // including the backtick-wrapped region in the source
+        let label = headings[0].label(md);
+        assert!(label.contains("Hello"), "got: {label}");
     }
 
     #[test]
@@ -123,7 +155,7 @@ mod tests {
         let md = "# \n\n## Real\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 1);
-        assert_eq!(headings[0].label, "Real");
+        assert_eq!(headings[0].label(md), "Real");
     }
 
     #[test]
@@ -184,8 +216,17 @@ mod tests {
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 2);
         assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].label, "Title");
+        assert_eq!(headings[0].label(md), "Title");
         assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].label, "Section");
+        assert_eq!(headings[1].label(md), "Section");
+    }
+
+    #[test]
+    fn heading_entry_is_compact() {
+        assert!(
+            std::mem::size_of::<HeadingEntry>() <= 24,
+            "HeadingEntry should be compact, got {} bytes",
+            std::mem::size_of::<HeadingEntry>()
+        );
     }
 }

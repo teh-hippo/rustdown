@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use eframe::egui;
 
 use crate::nav_outline::{self, HeadingEntry};
@@ -17,10 +19,18 @@ pub struct NavState {
     pub visible: bool,
     /// Cached heading outline.
     pub outline: Vec<HeadingEntry>,
+    /// The source text the outline was extracted from (for label resolution).
+    outline_source: Arc<String>,
     /// The `edit_seq` that produced the current outline.
     outline_seq: u64,
     /// Maximum heading depth to display (1..=6, default 4).
     pub max_depth: u8,
+    /// Cached visible-index list, rebuilt when max_depth or outline changes.
+    visible_indices: Vec<usize>,
+    /// Cached top-level positions within `visible_indices`.
+    top_positions: Vec<usize>,
+    /// The `(outline_seq, max_depth)` that produced the cached indices.
+    vis_cache_key: (u64, u8),
     /// Which top-level (min-level) heading *position* is expanded (accordion).
     expanded_pos: Option<usize>,
     /// The heading index the user is currently scrolled to.
@@ -37,8 +47,12 @@ impl Default for NavState {
         Self {
             visible: false,
             outline: Vec::new(),
+            outline_source: Arc::new(String::new()),
             outline_seq: u64::MAX,
             max_depth: 4,
+            visible_indices: Vec::new(),
+            top_positions: Vec::new(),
+            vis_cache_key: (u64::MAX, 0),
             expanded_pos: None,
             active_index: None,
             pending_scroll: None,
@@ -90,13 +104,15 @@ fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
 
 impl NavState {
     /// Rebuild the heading outline if the document has changed.
-    pub fn refresh_outline(&mut self, source: &str, edit_seq: u64) {
+    pub fn refresh_outline(&mut self, source: &Arc<String>, edit_seq: u64) {
         if edit_seq == self.outline_seq {
             return;
         }
-        self.outline = nav_outline::extract_headings(source);
+        self.outline = nav_outline::extract_headings(source.as_str());
+        self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
         self.expanded_pos = None;
+        self.vis_cache_key = (u64::MAX, 0); // invalidate vis cache
     }
 
     /// Update `active_index` from a byte position in the document.
@@ -159,35 +175,61 @@ impl NavState {
         });
         ui.separator();
 
-        let max_depth = self.max_depth;
-        let visible_indices: Vec<usize> = self
-            .outline
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| h.level <= max_depth)
-            .map(|(i, _)| i)
-            .collect();
+        // Rebuild cached indices only when outline or depth changes.
+        let cache_key = (self.outline_seq, self.max_depth);
+        if self.vis_cache_key != cache_key {
+            let max_depth = self.max_depth;
+            self.visible_indices.clear();
+            self.visible_indices.extend(
+                self.outline
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| h.level <= max_depth)
+                    .map(|(i, _)| i),
+            );
+            let min_level = self
+                .visible_indices
+                .iter()
+                .map(|&i| self.outline[i].level)
+                .min()
+                .unwrap_or(1);
+            self.top_positions.clear();
+            self.top_positions.extend(
+                self.visible_indices
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &gi)| self.outline[gi].level == min_level)
+                    .map(|(pos, _)| pos),
+            );
+            self.vis_cache_key = cache_key;
+        }
 
-        let min_level = visible_indices
+        let min_level = self
+            .visible_indices
             .iter()
             .map(|&i| self.outline[i].level)
             .min()
             .unwrap_or(1);
 
+        let source = Arc::clone(&self.outline_source);
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                if visible_indices.is_empty() {
+                if self.visible_indices.is_empty() {
                     ui.weak("No headings found.");
                     return;
                 }
                 let result = render_entries(
                     ui,
-                    &self.outline,
-                    &visible_indices,
-                    min_level,
-                    self.expanded_pos,
-                    self.active_index,
+                    &RenderContext {
+                        outline: &self.outline,
+                        visible: &self.visible_indices,
+                        top_positions: &self.top_positions,
+                        min_level,
+                        expanded_pos: self.expanded_pos,
+                        active_index: self.active_index,
+                        source: &source,
+                    },
                 );
                 if let Some(action) = result {
                     self.pending_scroll = Some(NavScrollTarget::ByteOffset(action.byte_offset));
@@ -236,34 +278,35 @@ struct RowStyle {
     is_expanded: bool,
 }
 
-fn render_entries(
-    ui: &mut egui::Ui,
-    outline: &[HeadingEntry],
-    visible: &[usize],
+/// All data needed to render the heading list (avoids too-many-arguments).
+struct RenderContext<'a> {
+    outline: &'a [HeadingEntry],
+    visible: &'a [usize],
+    top_positions: &'a [usize],
     min_level: u8,
     expanded_pos: Option<usize>,
     active_index: Option<usize>,
-) -> Option<ClickAction> {
-    let top_positions: Vec<usize> = visible
-        .iter()
-        .enumerate()
-        .filter(|&(_, &gi)| outline[gi].level == min_level)
-        .map(|(pos, _)| pos)
-        .collect();
+    source: &'a str,
+}
 
+fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickAction> {
     let mut result = None;
 
     // Render orphan entries before the first top-level heading (if any).
-    let first_top_vis = top_positions.first().copied().unwrap_or(visible.len());
-    for &gi in &visible[..first_top_vis] {
-        let h = &outline[gi];
+    let first_top_vis = cx
+        .top_positions
+        .first()
+        .copied()
+        .unwrap_or(cx.visible.len());
+    for &gi in &cx.visible[..first_top_vis] {
+        let h = &cx.outline[gi];
         let style = RowStyle {
-            indent: (h.level.saturating_sub(min_level)) as f32 * NAV_INDENT_PX,
-            is_active: active_index == Some(gi),
+            indent: (h.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+            is_active: cx.active_index == Some(gi),
             has_children: false,
             is_expanded: false,
         };
-        if render_heading_row(ui, h, &style).clicked() {
+        if render_heading_row(ui, h, &style, cx.source).clicked() {
             result = Some(ClickAction {
                 byte_offset: h.byte_offset,
                 toggle_pos: None,
@@ -271,25 +314,26 @@ fn render_entries(
         }
     }
 
-    for (rank, &vis_pos) in top_positions.iter().enumerate() {
-        let gi = visible[vis_pos];
-        let heading = &outline[gi];
-        let is_expanded = expanded_pos == Some(rank);
+    for (rank, &vis_pos) in cx.top_positions.iter().enumerate() {
+        let gi = cx.visible[vis_pos];
+        let heading = &cx.outline[gi];
+        let is_expanded = cx.expanded_pos == Some(rank);
 
-        let next_vis = top_positions
+        let next_vis = cx
+            .top_positions
             .get(rank + 1)
             .copied()
-            .unwrap_or(visible.len());
+            .unwrap_or(cx.visible.len());
         let has_children = next_vis > vis_pos + 1;
 
         let style = RowStyle {
-            indent: (heading.level.saturating_sub(min_level)) as f32 * NAV_INDENT_PX,
-            is_active: active_index == Some(gi),
+            indent: (heading.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+            is_active: cx.active_index == Some(gi),
             has_children,
             is_expanded,
         };
 
-        if render_heading_row(ui, heading, &style).clicked() {
+        if render_heading_row(ui, heading, &style, cx.source).clicked() {
             result = Some(ClickAction {
                 byte_offset: heading.byte_offset,
                 toggle_pos: if has_children { Some(rank) } else { None },
@@ -297,15 +341,15 @@ fn render_entries(
         }
 
         if is_expanded && has_children {
-            for &child_vis in &visible[vis_pos + 1..next_vis] {
-                let child = &outline[child_vis];
+            for &child_vis in &cx.visible[vis_pos + 1..next_vis] {
+                let child = &cx.outline[child_vis];
                 let child_style = RowStyle {
-                    indent: (child.level.saturating_sub(min_level)) as f32 * NAV_INDENT_PX,
-                    is_active: active_index == Some(child_vis),
+                    indent: (child.level.saturating_sub(cx.min_level)) as f32 * NAV_INDENT_PX,
+                    is_active: cx.active_index == Some(child_vis),
                     has_children: false,
                     is_expanded: false,
                 };
-                if render_heading_row(ui, child, &child_style).clicked() {
+                if render_heading_row(ui, child, &child_style, cx.source).clicked() {
                     result = Some(ClickAction {
                         byte_offset: child.byte_offset,
                         toggle_pos: None,
@@ -322,6 +366,7 @@ fn render_heading_row(
     ui: &mut egui::Ui,
     heading: &HeadingEntry,
     style: &RowStyle,
+    source: &str,
 ) -> egui::Response {
     ui.horizontal(|ui| {
         ui.add_space(style.indent);
@@ -333,7 +378,8 @@ fn render_heading_row(
             ui.label(egui::RichText::new("·").small().weak());
         }
 
-        let text = egui::RichText::new(&heading.label).small();
+        let label = heading.label(source);
+        let text = egui::RichText::new(label).small();
         let text = if style.is_active { text.strong() } else { text };
 
         ui.add(
@@ -354,21 +400,24 @@ mod tests {
             visible: true,
             ..NavState::default()
         };
-        state.refresh_outline(md, 1);
+        let source = Arc::new(md.to_owned());
+        state.refresh_outline(&source, 1);
         state
     }
 
     #[test]
     fn refresh_outline_caches_by_edit_seq() {
         let mut state = NavState::default();
-        state.refresh_outline("# A\n## B\n", 1);
+        let s1 = Arc::new("# A\n## B\n".to_owned());
+        state.refresh_outline(&s1, 1);
         assert_eq!(state.outline.len(), 2);
 
         state.outline.clear();
-        state.refresh_outline("# A\n## B\n### C\n", 1);
+        let s2 = Arc::new("# A\n## B\n### C\n".to_owned());
+        state.refresh_outline(&s2, 1);
         assert!(state.outline.is_empty(), "should not have rebuilt");
 
-        state.refresh_outline("# A\n## B\n### C\n", 2);
+        state.refresh_outline(&s2, 2);
         assert_eq!(state.outline.len(), 3);
     }
 
@@ -376,7 +425,8 @@ mod tests {
     fn refresh_outline_resets_accordion() {
         let mut state = make_state("# A\n## B\n");
         state.expanded_pos = Some(0);
-        state.refresh_outline("# A\n## B\n### C\n", 2);
+        let s = Arc::new("# A\n## B\n### C\n".to_owned());
+        state.refresh_outline(&s, 2);
         assert_eq!(state.expanded_pos, None);
     }
 
@@ -450,26 +500,19 @@ mod tests {
 
     #[test]
     fn preview_scroll_round_trip() {
-        let outline = vec![
-            HeadingEntry {
-                level: 1,
-                label: "A".into(),
-                byte_offset: 0,
-            },
-            HeadingEntry {
-                level: 2,
-                label: "B".into(),
-                byte_offset: 500,
-            },
-            HeadingEntry {
-                level: 2,
-                label: "C".into(),
-                byte_offset: 1000,
-            },
-        ];
-        let y = preview_byte_to_scroll_y(&outline, 500);
+        // Use extract_headings to build entries with valid byte ranges.
+        let md = "x".repeat(500)
+            + "\n# A\n"
+            + &"y".repeat(500)
+            + "\n## B\n"
+            + &"z".repeat(500)
+            + "\n## C\n";
+        let outline = nav_outline::extract_headings(&md);
+        assert!(outline.len() >= 2);
+        let mid_offset = outline[1].byte_offset;
+        let y = preview_byte_to_scroll_y(&outline, mid_offset);
         let byte = preview_scroll_y_to_byte(&outline, y);
-        assert_eq!(byte, 500);
+        assert_eq!(byte, mid_offset);
     }
 
     #[test]
