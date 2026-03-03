@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-eframe = { version = "0.31", default-features = false, features = [
+eframe = { version = "0.33", default-features = false, features = [
   "glow",
 ] }
 egui_commonmark = { version = "0.20.0", default-features = false, features = ["pulldown_cmark", "load-images"] }
@@ -22,7 +22,7 @@ notify = { version = "8.0.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.31", default-features = false, features = [
+eframe = { version = "0.33", default-features = false, features = [
   "glow",
   "wayland",
   "x11",
