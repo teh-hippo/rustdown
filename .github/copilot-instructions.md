@@ -33,3 +33,19 @@
 - eframe dependency versions must stay aligned: eframe 0.31 pairs with egui_commonmark 0.20. Upgrading one requires upgrading the other. On Linux, both `wayland` and `x11` eframe features are enabled.
 - CI runs with `--locked`, so `Cargo.lock` must be committed and up to date after any dependency change.
 - The release workflow triggers on tag pushes matching `v*`. Tags containing `-` (e.g. `v0.3.0-alpha.1`) are marked as pre-releases.
+
+## Releasing a new version
+
+1. **Bump the version** in `Cargo.toml` (`[workspace.package] version`).
+2. **Regenerate the lockfile**: `cargo generate-lockfile` (needed because CI uses `--locked`).
+3. **Validate locally**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings && cargo test --workspace --locked`
+4. **Commit and push**: `git add -A && git commit -m "chore: bump to vX.Y.Z" && git push origin main`
+5. **Tag and push**: `git tag vX.Y.Z && git push origin vX.Y.Z`
+6. **Wait for CI**: The tag push triggers both the CI workflow and the Release workflow. The release workflow builds Linux and Windows binaries, creates a versioned GitHub Release, and updates the `latest` release (used by mise). Monitor with `gh run list --limit 5`.
+7. **Update mise lockfile**: The `latest` GitHub Release now points to the new tag, but `~/.config/mise/mise.lock` caches old asset IDs and checksums. Fix it:
+   - Remove the stale rustdown entry from `~/.config/mise/mise.lock`.
+   - Get new checksums: `curl -sL "https://github.com/teh-hippo/rustdown/releases/download/vX.Y.Z/rustdown-linux-x86_64.tar.gz.sha256"` (and the windows `.zip.sha256`).
+   - Get new asset IDs: `gh api repos/teh-hippo/rustdown/releases/tags/vX.Y.Z --jq '.assets[] | "\(.id) \(.name)"'`
+   - Re-add the entry to `mise.lock` with the correct checksums and asset IDs.
+8. **Install in WSL**: `mise install "github:teh-hippo/rustdown" --force && rustdown --version`
+9. **Install in Windows**: `powershell.exe -NoProfile -Command 'mise install "github:teh-hippo/rustdown" --force'`
