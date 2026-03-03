@@ -1401,6 +1401,19 @@ impl eframe::App for RustdownApp {
             self.search.last_replace_count = Some(replaced);
         }
 
+        self.show_content_panels(ctx);
+
+        self.show_dialogs(ctx);
+        self.show_disk_conflict_dialog(ctx);
+        self.update_viewport_title(ctx);
+    }
+}
+
+impl RustdownApp {
+    /// Render the nav panel, side-by-side preview panel, central panel, and
+    /// process any pending nav-scroll actions.  Extracted so the debug harness
+    /// can reuse the same layout sequence.
+    fn show_content_panels(&mut self, ctx: &egui::Context) {
         let panel_frame = egui::Frame::none()
             .fill(ctx.style().visuals.panel_fill)
             .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
@@ -1429,18 +1442,11 @@ impl eframe::App for RustdownApp {
                 Mode::Preview => self.show_preview(ui),
             });
 
-        // Process nav panel scroll requests and sync active heading.
         if self.nav.visible {
             self.process_nav_scroll(ctx);
         }
-
-        self.show_dialogs(ctx);
-        self.show_disk_conflict_dialog(ctx);
-        self.update_viewport_title(ctx);
     }
-}
 
-impl RustdownApp {
     fn clear_disk_watcher(&mut self) {
         self.disk_watcher = None;
         self.disk_watch_root = None;
@@ -2062,15 +2068,11 @@ impl RustdownApp {
     fn process_nav_scroll(&mut self, ctx: &egui::Context) {
         use nav_panel::NavScrollTarget;
 
-        let editor_scroll_id = egui::Id::new("editor").with("editor_scroll");
-        let preview_scroll_id = egui::Id::new("preview_markdown").with("_scroll_area");
+        let editor_id = nav_panel::editor_scroll_id();
+        let preview_id = nav_panel::preview_scroll_id();
 
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
-        let scroll_area_id = if uses_editor {
-            editor_scroll_id
-        } else {
-            preview_scroll_id
-        };
+        let scroll_area_id = if uses_editor { editor_id } else { preview_id };
 
         // Execute pending scroll from nav panel.
         if let Some(target) = self.nav.pending_scroll.take() {
@@ -2084,9 +2086,9 @@ impl RustdownApp {
                 }
                 NavScrollTarget::ByteOffset(byte_offset) => {
                     if uses_editor {
-                        self.scroll_editor_to_byte(ctx, editor_scroll_id, byte_offset);
+                        self.scroll_editor_to_byte(ctx, editor_id, byte_offset);
                     } else {
-                        self.scroll_preview_to_byte(ctx, preview_scroll_id, byte_offset);
+                        self.scroll_preview_to_byte(ctx, preview_id, byte_offset);
                     }
                 }
             }
@@ -2100,12 +2102,13 @@ impl RustdownApp {
                     self.nav.update_active_from_position(pos);
                 }
             } else {
+                // For preview we don't have galley row data, so use the
+                // heading byte offsets directly: pick the last heading whose
+                // proportional position ≤ the current scroll fraction.
+                // This avoids needing content_height (which is private).
                 let text_len = self.doc.text.len();
                 if text_len > 0 {
-                    // Approximate: use ratio of scroll offset to content height.
-                    let ratio = y / (y + 1.0); // rough estimate, refined below
-                    let byte_pos = ((ratio * text_len as f32) as usize).min(text_len);
-                    self.nav.update_active_from_position(byte_pos);
+                    self.nav.update_active_from_scroll_ratio(y);
                 }
             }
         }
@@ -2129,12 +2132,17 @@ impl RustdownApp {
         if text_len == 0 {
             return;
         }
-        let ratio = byte_offset as f32 / text_len as f32;
         if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
-            // Estimate content height from current scroll offset + viewport.
-            // This is approximate; will be refined if needed.
-            let content_height = state.offset.y + 800.0; // fallback
-            let target_y = ratio * content_height;
+            // Use the same linear mapping as update_active_from_scroll_ratio
+            // but in reverse: byte_offset → scroll_y.
+            let max_offset = self
+                .nav
+                .outline
+                .last()
+                .map(|h| h.byte_offset)
+                .unwrap_or(1)
+                .max(1) as f32;
+            let target_y = byte_offset as f32 * (800.0 / max_offset);
             state.offset = egui::vec2(state.offset.x, target_y.max(0.0));
             state.store(ctx, scroll_id);
             ctx.request_repaint();

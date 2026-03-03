@@ -1,15 +1,8 @@
 #![forbid(unsafe_code)]
 //! Debug-only agentic testing harness for the Navigation panel.
 //!
-//! This module is compiled only in debug builds (`#[cfg(debug_assertions)]`).
-//! It provides a headless test pipeline that:
-//!   - Creates a headless `egui::Context`
-//!   - Loads a markdown document
-//!   - Opens the Navigation panel
-//!   - Renders frames and programmatically navigates headings
-//!   - Asserts that scroll state and active-heading tracking work
-//!
-//! Invoked via `--diagnostics-nav <file.md>`.
+//! Compiled only in debug builds (`#[cfg(debug_assertions)]`).
+//! Provides a headless test pipeline invoked via `--diagnostics-nav <file.md>`.
 
 use std::{io, path::Path, sync::Arc, time::Instant};
 
@@ -17,44 +10,16 @@ use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 
 use crate::{
-    Document, DocumentStats, Mode, PANEL_EDGE_PADDING, RustdownApp, configure_single_font,
-    configure_ui_style, default_image_uri_scheme, diagnostics_raw_input, disk_io::read_stable_utf8,
+    Document, DocumentStats, Mode, RustdownApp, configure_single_font, configure_ui_style,
+    default_image_uri_scheme, diagnostics_raw_input, disk_io::read_stable_utf8,
     nav_panel::NavScrollTarget,
 };
 
-/// Render one simulated frame: nav panel + editor or preview + scroll processing.
+/// Render one simulated frame using the same layout as the real app.
 fn run_frame(ctx: &egui::Context, app: &mut RustdownApp) {
     let raw = diagnostics_raw_input();
     let _ = ctx.run(raw, |ctx| {
-        if app.nav.visible {
-            app.nav
-                .refresh_outline(app.doc.text.as_str(), app.doc.edit_seq);
-        }
-        app.nav.show(ctx);
-
-        let panel_frame = egui::Frame::none()
-            .fill(ctx.style().visuals.panel_fill)
-            .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
-
-        if app.mode == Mode::SideBySide {
-            egui::SidePanel::right("preview")
-                .resizable(true)
-                .min_width(240.0)
-                .default_width(420.0)
-                .frame(panel_frame)
-                .show(ctx, |ui| app.show_preview(ui));
-        }
-
-        egui::CentralPanel::default()
-            .frame(panel_frame)
-            .show(ctx, |ui| match app.mode {
-                Mode::Edit | Mode::SideBySide => app.show_editor(ui),
-                Mode::Preview => app.show_preview(ui),
-            });
-
-        if app.nav.visible {
-            app.process_nav_scroll(ctx);
-        }
+        app.show_content_panels(ctx);
     });
 }
 
