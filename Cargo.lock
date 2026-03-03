@@ -2641,12 +2641,13 @@ checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustdown"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "eframe",
  "egui_commonmark",
  "image",
  "imara-diff",
+ "memchr",
  "notify",
  "pulldown-cmark",
  "rfd",

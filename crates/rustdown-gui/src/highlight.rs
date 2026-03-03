@@ -4,44 +4,15 @@ use eframe::egui;
 
 use crate::markdown_fence::{FenceState, consume_fence_delimiter};
 
+/// Index into a small, pre-built array of `TextFormat` values so that
+/// section construction only needs a cheap copy of the index, not a
+/// full `TextFormat::clone()` for the common batched-run path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RunKind {
+enum FmtIdx {
     Base,
+    Weak,
     InlineCode,
     Heading(usize),
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PendingRun {
-    kind: Option<RunKind>,
-    start: usize,
-    end: usize,
-}
-
-fn flush_pending(
-    job: &mut egui::text::LayoutJob,
-    source: &str,
-    pending: &mut PendingRun,
-    base: &egui::TextFormat,
-    inline_code: &egui::TextFormat,
-    heading_formats: &[egui::TextFormat; 6],
-) {
-    let Some(kind) = pending.kind else {
-        return;
-    };
-    if pending.start >= pending.end || pending.end > source.len() {
-        pending.kind = None;
-        return;
-    }
-
-    let format = match kind {
-        RunKind::Base => base.clone(),
-        RunKind::InlineCode => inline_code.clone(),
-        RunKind::Heading(level) => heading_formats[level - 1].clone(),
-    };
-
-    job.append(&source[pending.start..pending.end], 0.0, format);
-    pending.kind = None;
 }
 
 fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) -> egui::Color32 {
@@ -73,6 +44,38 @@ fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) -> egu
     palette[level.saturating_sub(1).min(palette.len() - 1)]
 }
 
+/// Resolve a `FmtIdx` to a cloned `TextFormat`.
+fn resolve_format(
+    idx: FmtIdx,
+    base: &egui::TextFormat,
+    weak: &egui::TextFormat,
+    inline_code: &egui::TextFormat,
+    heading_formats: &[egui::TextFormat; 6],
+) -> egui::TextFormat {
+    match idx {
+        FmtIdx::Base => base.clone(),
+        FmtIdx::Weak => weak.clone(),
+        FmtIdx::InlineCode => inline_code.clone(),
+        FmtIdx::Heading(level) => heading_formats[level - 1].clone(),
+    }
+}
+
+/// Push a section directly into the job using pre-set byte ranges.
+/// Avoids the per-append string concatenation of `LayoutJob::append`.
+fn push_section(
+    job: &mut egui::text::LayoutJob,
+    range: std::ops::Range<usize>,
+    format: egui::TextFormat,
+) {
+    if range.start < range.end {
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: 0.0,
+            byte_range: range,
+            format,
+        });
+    }
+}
+
 #[must_use]
 pub(crate) fn markdown_layout_job(
     style: &egui::Style,
@@ -80,10 +83,13 @@ pub(crate) fn markdown_layout_job(
     source: &str,
     heading_color_mode: bool,
 ) -> egui::text::LayoutJob {
+    // Set the text once; all sections reference byte ranges into it.
     let mut job = egui::text::LayoutJob {
-        text: String::with_capacity(source.len()),
+        text: source.to_owned(),
+        sections: Vec::with_capacity(source.len() / 40 + 8),
         ..Default::default()
     };
+
     let base_font = egui::TextStyle::Body.resolve(style);
     let code_font = egui::TextStyle::Monospace.resolve(style);
     let base = egui::TextFormat::simple(base_font.clone(), visuals.text_color());
@@ -100,43 +106,50 @@ pub(crate) fn markdown_layout_job(
     inline_code.font_id = code_font;
     inline_code.background = visuals.faint_bg_color;
 
+    // Pending run: consecutive lines with the same format are batched into
+    // a single section to minimize section count.
+    let mut pending_fmt: Option<FmtIdx> = None;
+    let mut pending_start: usize = 0;
+    let mut pending_end: usize = 0;
+
+    let flush =
+        |job: &mut egui::text::LayoutJob, fmt: &Option<FmtIdx>, start: usize, end: usize| {
+            if let Some(idx) = *fmt {
+                let format = resolve_format(idx, &base, &weak, &inline_code, &heading_formats);
+                push_section(job, start..end, format);
+            }
+        };
+
     let mut in_fence: Option<FenceState> = None;
+    let bytes = source.as_bytes();
     let mut offset = 0usize;
-    let mut pending = PendingRun::default();
-    for line in source.split_inclusive('\n') {
+
+    while offset < bytes.len() {
         let line_start = offset;
-        let line_end = line_start + line.len();
+        let line_end =
+            memchr::memchr(b'\n', &bytes[offset..]).map_or(bytes.len(), |pos| offset + pos + 1);
+        let line = &source[line_start..line_end];
         offset = line_end;
 
         if consume_fence_delimiter(line, &mut in_fence) {
-            flush_pending(
+            flush(&mut job, &pending_fmt, pending_start, pending_end);
+            pending_fmt = None;
+            push_section(
                 &mut job,
-                source,
-                &mut pending,
-                &base,
-                &inline_code,
-                &heading_formats,
+                line_start..line_end,
+                resolve_format(FmtIdx::Weak, &base, &weak, &inline_code, &heading_formats),
             );
-            job.append(line, 0.0, weak.clone());
             continue;
         }
         if in_fence.is_some() {
-            let kind = RunKind::InlineCode;
-            match pending.kind {
-                Some(existing) if existing == kind => pending.end = line_end,
-                _ => {
-                    flush_pending(
-                        &mut job,
-                        source,
-                        &mut pending,
-                        &base,
-                        &inline_code,
-                        &heading_formats,
-                    );
-                    pending.kind = Some(kind);
-                    pending.start = line_start;
-                    pending.end = line_end;
-                }
+            let kind = FmtIdx::InlineCode;
+            if pending_fmt == Some(kind) {
+                pending_end = line_end;
+            } else {
+                flush(&mut job, &pending_fmt, pending_start, pending_end);
+                pending_fmt = Some(kind);
+                pending_start = line_start;
+                pending_end = line_end;
             }
             continue;
         }
@@ -144,86 +157,75 @@ pub(crate) fn markdown_layout_job(
         let trimmed = line.trim_start();
         let level = trimmed.bytes().take_while(|b| *b == b'#').count();
         if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
-            let kind = RunKind::Heading(level);
-            match pending.kind {
-                Some(existing) if existing == kind => pending.end = line_end,
-                _ => {
-                    flush_pending(
-                        &mut job,
-                        source,
-                        &mut pending,
-                        &base,
-                        &inline_code,
-                        &heading_formats,
-                    );
-                    pending.kind = Some(kind);
-                    pending.start = line_start;
-                    pending.end = line_end;
-                }
-            }
-            continue;
-        }
-
-        if !line.contains('`') {
-            let kind = RunKind::Base;
-            match pending.kind {
-                Some(existing) if existing == kind => pending.end = line_end,
-                _ => {
-                    flush_pending(
-                        &mut job,
-                        source,
-                        &mut pending,
-                        &base,
-                        &inline_code,
-                        &heading_formats,
-                    );
-                    pending.kind = Some(kind);
-                    pending.start = line_start;
-                    pending.end = line_end;
-                }
-            }
-            continue;
-        }
-
-        flush_pending(
-            &mut job,
-            source,
-            &mut pending,
-            &base,
-            &inline_code,
-            &heading_formats,
-        );
-        let mut rest = line;
-        while let Some(start) = rest.find('`') {
-            let (before, after_tick) = rest.split_at(start);
-            job.append(before, 0.0, base.clone());
-            let after_tick = &after_tick[1..];
-            if let Some(end) = after_tick.find('`') {
-                let (code, after_code) = after_tick.split_at(end);
-                job.append("`", 0.0, weak.clone());
-                job.append(code, 0.0, inline_code.clone());
-                job.append("`", 0.0, weak.clone());
-                rest = &after_code[1..];
+            let kind = FmtIdx::Heading(level);
+            if pending_fmt == Some(kind) {
+                pending_end = line_end;
             } else {
-                job.append("`", 0.0, weak.clone());
-                job.append(after_tick, 0.0, base.clone());
-                rest = "";
-                break;
+                flush(&mut job, &pending_fmt, pending_start, pending_end);
+                pending_fmt = Some(kind);
+                pending_start = line_start;
+                pending_end = line_end;
+            }
+            continue;
+        }
+
+        if memchr::memchr(b'`', line.as_bytes()).is_none() {
+            let kind = FmtIdx::Base;
+            if pending_fmt == Some(kind) {
+                pending_end = line_end;
+            } else {
+                flush(&mut job, &pending_fmt, pending_start, pending_end);
+                pending_fmt = Some(kind);
+                pending_start = line_start;
+                pending_end = line_end;
+            }
+            continue;
+        }
+
+        // Line contains inline code - emit individual sections for each fragment.
+        flush(&mut job, &pending_fmt, pending_start, pending_end);
+        pending_fmt = None;
+
+        let mut pos = line_start;
+        let line_bytes = line.as_bytes();
+        let mut i = 0;
+        while let Some(tick_rel) = memchr::memchr(b'`', &line_bytes[i..]) {
+            let tick_i = i + tick_rel;
+            // Flush text before backtick.
+            if pos < line_start + tick_i {
+                push_section(&mut job, pos..line_start + tick_i, base.clone());
+            }
+            // Find closing backtick.
+            if let Some(close) = memchr::memchr(b'`', &line_bytes[tick_i + 1..]) {
+                let tick_start = line_start + tick_i;
+                let code_start = tick_start + 1;
+                let code_end = code_start + close;
+                let tick_end = code_end + 1;
+                push_section(&mut job, tick_start..code_start, weak.clone());
+                push_section(&mut job, code_start..code_end, inline_code.clone());
+                push_section(&mut job, code_end..tick_end, weak.clone());
+                pos = tick_end;
+                i = tick_i + 1 + close + 1;
+            } else {
+                // Unmatched backtick.
+                push_section(
+                    &mut job,
+                    line_start + tick_i..line_start + tick_i + 1,
+                    weak.clone(),
+                );
+                if line_start + tick_i + 1 < line_end {
+                    push_section(&mut job, line_start + tick_i + 1..line_end, base.clone());
+                }
+                pos = line_end;
+                i = line_bytes.len();
             }
         }
-        if !rest.is_empty() {
-            job.append(rest, 0.0, base.clone());
+        if pos < line_end {
+            push_section(&mut job, pos..line_end, base.clone());
         }
     }
 
-    flush_pending(
-        &mut job,
-        source,
-        &mut pending,
-        &base,
-        &inline_code,
-        &heading_formats,
-    );
+    flush(&mut job, &pending_fmt, pending_start, pending_end);
     job
 }
 

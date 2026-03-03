@@ -858,8 +858,8 @@ struct EditorGalleyCache {
     zoom_factor_bits: u32,
     heading_color_mode: bool,
     galley: Arc<egui::Galley>,
-    /// Pre-computed `(row_y, row_start_byte)` for O(log n) scroll ↔ byte mapping.
-    row_byte_offsets: Vec<(f32, usize)>,
+    /// Pre-computed `(row_y, row_start_byte)` for O(log n) scroll-to-byte mapping.
+    row_byte_offsets: Vec<(f32, u32)>,
 }
 
 struct TrackedTextBuffer<'a, 'b> {
@@ -974,7 +974,7 @@ impl DocumentStats {
 }
 
 fn bytecount_newlines(text: &str) -> usize {
-    text.as_bytes().iter().filter(|&&b| b == b'\n').count()
+    memchr::memchr_iter(b'\n', text.as_bytes()).count()
 }
 
 impl Default for DocumentStats {
@@ -1014,6 +1014,9 @@ impl SearchState {
 fn find_match_count(haystack: &str, needle: &str) -> usize {
     if needle.is_empty() {
         return 0;
+    }
+    if needle.len() == 1 {
+        return memchr::memchr_iter(needle.as_bytes()[0], haystack.as_bytes()).count();
     }
     haystack.match_indices(needle).count()
 }
@@ -1116,12 +1119,12 @@ fn char_index_to_byte(text: &str, char_index: usize) -> usize {
 
 /// Build a `(row_y, row_start_byte)` table from galley rows.
 /// Computed once per galley rebuild; enables O(log n) scroll ↔ byte lookups.
-fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, usize)> {
+fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> {
     let mut result = Vec::with_capacity(galley.rows.len());
     let mut char_count = 0usize;
     for row in &galley.rows {
         let byte_offset = char_index_to_byte(text, char_count);
-        result.push((row.rect.min.y, byte_offset));
+        result.push((row.rect.min.y, byte_offset as u32));
         char_count += row.glyphs.len();
         if row.ends_with_newline {
             char_count += 1;
@@ -2087,8 +2090,8 @@ impl RustdownApp {
         if rows.is_empty() {
             return Some(0.0);
         }
-        // Find the last row whose start byte ≤ byte_offset.
-        let idx = rows.partition_point(|(_, b)| *b <= byte_offset);
+        let offset = byte_offset as u32;
+        let idx = rows.partition_point(|(_, b)| *b <= offset);
         let idx = idx.saturating_sub(1);
         Some(rows[idx].0)
     }
@@ -2104,7 +2107,7 @@ impl RustdownApp {
         // Find the last row whose y ≤ the scroll position.
         let idx = rows.partition_point(|(row_y, _)| *row_y <= y);
         let idx = idx.saturating_sub(1);
-        Some(rows[idx].1)
+        Some(rows[idx].1 as usize)
     }
 
     fn request_action(&mut self, action: PendingAction) {
