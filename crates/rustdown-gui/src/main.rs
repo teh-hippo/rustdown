@@ -853,10 +853,14 @@ impl Default for Document {
 
 #[derive(Clone)]
 struct EditorGalleyCache {
-    seq: u64,
+    /// Content key: only changes when text or color mode changes.
+    content_seq: u64,
+    content_color_mode: bool,
+    /// Layout key: changes when wrap width or zoom changes.
     wrap_width_bits: u32,
     zoom_factor_bits: u32,
-    heading_color_mode: bool,
+    /// Cached highlight output (survives zoom/resize, only invalidated by text changes).
+    layout_job: egui::text::LayoutJob,
     galley: Arc<egui::Galley>,
     /// Pre-computed `(row_y, row_start_byte)` for O(log n) scroll-to-byte mapping.
     row_byte_offsets: Vec<(f32, u32)>,
@@ -1018,7 +1022,7 @@ fn find_match_count(haystack: &str, needle: &str) -> usize {
     if needle.len() == 1 {
         return memchr::memchr_iter(needle.as_bytes()[0], haystack.as_bytes()).count();
     }
-    haystack.match_indices(needle).count()
+    memchr::memmem::find_iter(haystack.as_bytes(), needle.as_bytes()).count()
 }
 
 #[must_use]
@@ -1134,6 +1138,27 @@ fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> 
         }
     }
     result
+}
+
+fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    let offset = byte_offset as u32;
+    let idx = rows
+        .partition_point(|(_, b)| *b <= offset)
+        .saturating_sub(1);
+    rows[idx].0
+}
+
+fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let idx = rows
+        .partition_point(|(row_y, _)| *row_y <= y)
+        .saturating_sub(1);
+    rows[idx].1 as usize
 }
 
 impl eframe::App for RustdownApp {
@@ -1927,6 +1952,7 @@ impl RustdownApp {
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
         let heading_color_mode = self.heading_color_mode;
+        let nav_visible = self.nav.visible;
         let (changed, next_seq) = {
             let seq = Cell::new(self.doc.edit_seq);
             let Document {
@@ -1948,29 +1974,49 @@ impl RustdownApp {
                 let wrap_width_bits = wrap_width.to_bits();
                 let zoom_factor_bits = ui.ctx().zoom_factor().to_bits();
 
+                // Full cache hit: text, color, zoom, and wrap width all match.
                 if let Some(cache) = editor_galley_cache.as_ref()
-                    && cache.seq == seq
+                    && cache.content_seq == seq
+                    && cache.content_color_mode == heading_color_mode
                     && cache.wrap_width_bits == wrap_width_bits
                     && cache.zoom_factor_bits == zoom_factor_bits
-                    && cache.heading_color_mode == heading_color_mode
                 {
                     return cache.galley.clone();
                 }
 
-                let mut job = highlight::markdown_layout_job(
-                    ui.style(),
-                    ui.visuals(),
-                    string,
-                    heading_color_mode,
-                );
-                job.wrap.max_width = wrap_width;
+                // Partial cache hit: text unchanged but zoom/wrap changed.
+                // Reuse the cached LayoutJob (skip O(n) highlight scan).
+                let job = if let Some(cache) = editor_galley_cache.as_ref()
+                    && cache.content_seq == seq
+                    && cache.content_color_mode == heading_color_mode
+                {
+                    let mut job = cache.layout_job.clone();
+                    job.wrap.max_width = wrap_width;
+                    job
+                } else {
+                    let mut job = highlight::markdown_layout_job(
+                        ui.style(),
+                        ui.visuals(),
+                        string,
+                        heading_color_mode,
+                    );
+                    job.wrap.max_width = wrap_width;
+                    job
+                };
+
+                let layout_job_copy = job.clone();
                 let galley = ui.fonts(|fonts| fonts.layout_job(job));
-                let row_byte_offsets = build_row_byte_offsets(&galley, string);
+                let row_byte_offsets = if nav_visible {
+                    build_row_byte_offsets(&galley, string)
+                } else {
+                    Vec::new()
+                };
                 *editor_galley_cache = Some(EditorGalleyCache {
-                    seq,
+                    content_seq: seq,
+                    content_color_mode: heading_color_mode,
                     wrap_width_bits,
                     zoom_factor_bits,
-                    heading_color_mode,
+                    layout_job: layout_job_copy,
                     galley: galley.clone(),
                     row_byte_offsets,
                 });
@@ -2049,6 +2095,9 @@ impl RustdownApp {
             return;
         };
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
+        if uses_editor {
+            self.ensure_row_byte_offsets();
+        }
         let target_y = match target {
             NavScrollTarget::Top => Some(0.0_f32),
             NavScrollTarget::ByteOffset(byte_offset) => {
@@ -2070,6 +2119,9 @@ impl RustdownApp {
     /// nav panel.  Must run *after* the scroll areas render.
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
+        if uses_editor {
+            self.ensure_row_byte_offsets();
+        }
         let scroll_area_id = if uses_editor {
             nav_panel::editor_scroll_id()
         } else {
@@ -2091,28 +2143,22 @@ impl RustdownApp {
     /// O(log n) binary search instead of O(n) char scan.
     fn editor_byte_to_y(&self, byte_offset: usize) -> Option<f32> {
         let cache = self.doc.editor_galley_cache.as_ref()?;
-        let rows = &cache.row_byte_offsets;
-        if rows.is_empty() {
-            return Some(0.0);
-        }
-        let offset = byte_offset as u32;
-        let idx = rows.partition_point(|(_, b)| *b <= offset);
-        let idx = idx.saturating_sub(1);
-        Some(rows[idx].0)
+        Some(row_byte_offset_to_y(&cache.row_byte_offsets, byte_offset))
     }
 
     /// Map a Y scroll position to a byte offset using the cached row byte
     /// offsets.  O(log n) binary search.
     fn editor_y_to_byte(&self, y: f32) -> Option<usize> {
         let cache = self.doc.editor_galley_cache.as_ref()?;
-        let rows = &cache.row_byte_offsets;
-        if rows.is_empty() {
-            return Some(0);
+        Some(row_y_to_byte_offset(&cache.row_byte_offsets, y))
+    }
+
+    fn ensure_row_byte_offsets(&mut self) {
+        if let Some(cache) = self.doc.editor_galley_cache.as_mut()
+            && cache.row_byte_offsets.is_empty()
+        {
+            cache.row_byte_offsets = build_row_byte_offsets(&cache.galley, self.doc.text.as_str());
         }
-        // Find the last row whose y ≤ the scroll position.
-        let idx = rows.partition_point(|(row_y, _)| *row_y <= y);
-        let idx = idx.saturating_sub(1);
-        Some(rows[idx].1 as usize)
     }
 
     fn request_action(&mut self, action: PendingAction) {
