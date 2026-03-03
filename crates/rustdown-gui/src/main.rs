@@ -1171,6 +1171,19 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
     clamped_zoom_factor(current_zoom * factor)
 }
 
+/// Count the number of UTF-8 characters in the first `byte_len` bytes of `text`.
+fn bytecount_to_chars(text: &str, byte_len: usize) -> usize {
+    text.get(..byte_len).map(|s| s.chars().count()).unwrap_or(0)
+}
+
+/// Convert a character index to a byte offset in `text`.
+fn char_index_to_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
+}
+
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
@@ -2101,15 +2114,8 @@ impl RustdownApp {
                 if let Some(pos) = self.editor_y_to_byte(y) {
                     self.nav.update_active_from_position(pos);
                 }
-            } else {
-                // For preview we don't have galley row data, so use the
-                // heading byte offsets directly: pick the last heading whose
-                // proportional position ≤ the current scroll fraction.
-                // This avoids needing content_height (which is private).
-                let text_len = self.doc.text.len();
-                if text_len > 0 {
-                    self.nav.update_active_from_scroll_ratio(y);
-                }
+            } else if !self.doc.text.is_empty() {
+                self.nav.update_active_from_scroll_y(y);
             }
         }
     }
@@ -2128,22 +2134,12 @@ impl RustdownApp {
 
     /// Scroll the preview to the position corresponding to `byte_offset`.
     fn scroll_preview_to_byte(&self, ctx: &egui::Context, scroll_id: egui::Id, byte_offset: usize) {
-        let text_len = self.doc.text.len();
-        if text_len == 0 {
+        if self.doc.text.is_empty() {
             return;
         }
         if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
-            // Use the same linear mapping as update_active_from_scroll_ratio
-            // but in reverse: byte_offset → scroll_y.
-            let max_offset = self
-                .nav
-                .outline
-                .last()
-                .map(|h| h.byte_offset)
-                .unwrap_or(1)
-                .max(1) as f32;
-            let target_y = byte_offset as f32 * (800.0 / max_offset);
-            state.offset = egui::vec2(state.offset.x, target_y.max(0.0));
+            let target_y = nav_panel::preview_byte_to_scroll_y(&self.nav.outline, byte_offset);
+            state.offset = egui::vec2(state.offset.x, target_y);
             state.store(ctx, scroll_id);
             ctx.request_repaint();
         }
@@ -2153,10 +2149,8 @@ impl RustdownApp {
     fn editor_byte_to_y(&self, byte_offset: usize) -> Option<f32> {
         let galley = &self.doc.editor_galley_cache.as_ref()?.galley;
         let text = self.doc.text.as_str();
-        let char_index = text
-            .get(..byte_offset.min(text.len()))
-            .map(|s| s.chars().count())
-            .unwrap_or(0);
+        let clamped = byte_offset.min(text.len());
+        let char_index = bytecount_to_chars(text, clamped);
         let ccursor = egui::text::CCursor::new(char_index);
         let rect = galley.pos_from_ccursor(ccursor);
         Some(rect.min.y)
@@ -2166,17 +2160,10 @@ impl RustdownApp {
     fn editor_y_to_byte(&self, y: f32) -> Option<usize> {
         let galley = &self.doc.editor_galley_cache.as_ref()?.galley;
         let text = self.doc.text.as_str();
-        // Walk rows to find the one at this y.
         let mut char_count = 0usize;
         for row in &galley.rows {
             if row.rect.min.y > y {
-                // Convert char_count to byte offset.
-                return Some(
-                    text.char_indices()
-                        .nth(char_count)
-                        .map(|(i, _)| i)
-                        .unwrap_or(text.len()),
-                );
+                return Some(char_index_to_byte(text, char_count));
             }
             char_count += row.glyphs.len();
             if row.ends_with_newline {

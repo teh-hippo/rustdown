@@ -24,7 +24,6 @@ pub struct NavState {
     /// Maximum heading depth to display (1..=6, default 4).
     pub max_depth: u8,
     /// Which top-level (min-level) heading *position* is expanded (accordion).
-    /// `None` means nothing expanded.
     expanded_pos: Option<usize>,
     /// The heading index the user is currently scrolled to.
     pub active_index: Option<usize>,
@@ -50,6 +49,13 @@ const NAV_PANEL_MIN_WIDTH: f32 = 140.0;
 const NAV_PANEL_DEFAULT_WIDTH: f32 = 220.0;
 const NAV_INDENT_PX: f32 = 12.0;
 
+/// Empirical scale factor mapping scroll-y pixels to source bytes in preview
+/// mode.  The exact value does not matter — the mapping only needs to be
+/// monotonically increasing so the highlighted heading advances as the user
+/// scrolls.  Both `preview_byte_to_scroll_y` and `preview_scroll_y_to_byte`
+/// use this constant to stay consistent.
+const PREVIEW_SCROLL_SCALE_PX: f32 = 800.0;
+
 /// Compute the scroll-area [`egui::Id`] used by the code editor.
 pub fn editor_scroll_id() -> egui::Id {
     egui::Id::new("editor").with("editor_scroll")
@@ -58,6 +64,26 @@ pub fn editor_scroll_id() -> egui::Id {
 /// Compute the scroll-area [`egui::Id`] used by the preview pane.
 pub fn preview_scroll_id() -> egui::Id {
     egui::Id::new("preview_markdown").with("_scroll_area")
+}
+
+/// Convert `byte_offset` to an estimated preview scroll-y value.
+/// Returns `0.0` when the outline is empty or all headings are at offset 0.
+pub fn preview_byte_to_scroll_y(outline: &[HeadingEntry], byte_offset: usize) -> f32 {
+    let max_offset = match outline.last() {
+        Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
+        _ => return 0.0,
+    };
+    (byte_offset as f32 * (PREVIEW_SCROLL_SCALE_PX / max_offset)).max(0.0)
+}
+
+/// Convert a preview scroll-y value to an estimated byte offset.
+/// Returns `0` when the outline is empty.
+fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
+    let max_offset = match outline.last() {
+        Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
+        _ => return 0,
+    };
+    (scroll_y * (max_offset / PREVIEW_SCROLL_SCALE_PX)).max(0.0) as usize
 }
 
 impl NavState {
@@ -77,27 +103,13 @@ impl NavState {
             nav_outline::active_heading_index(&self.outline, self.max_depth, byte_position);
     }
 
-    /// Update `active_index` for preview mode where we only have a scroll-y
-    /// offset and no galley.  We keep the last heading whose offset is ≤ a
-    /// position proportional to `scroll_y`.  When `scroll_y` is 0 the first
-    /// heading wins; larger values advance through the list.
-    pub fn update_active_from_scroll_ratio(&mut self, scroll_y: f32) {
+    /// Update `active_index` for preview mode using a scroll-y offset.
+    pub fn update_active_from_scroll_y(&mut self, scroll_y: f32) {
         if self.outline.is_empty() {
             self.active_index = None;
             return;
         }
-        let max_offset = self
-            .outline
-            .last()
-            .map(|h| h.byte_offset)
-            .unwrap_or(1)
-            .max(1) as f32;
-        // Map scroll_y linearly into the heading byte-offset space.
-        // The constant is an empirical scale factor (pixels per source-byte
-        // in typical rendered markdown).  It does not need to be precise —
-        // the mapping only needs to be monotonically increasing so the
-        // active heading advances as the user scrolls.
-        let estimated_byte = (scroll_y * (max_offset / 800.0)).max(0.0) as usize;
+        let estimated_byte = preview_scroll_y_to_byte(&self.outline, scroll_y);
         self.active_index =
             nav_outline::active_heading_index(&self.outline, self.max_depth, estimated_byte);
     }
@@ -113,9 +125,9 @@ impl NavState {
     }
 
     /// Show the navigation panel.
-    pub fn show(&mut self, ctx: &egui::Context) -> bool {
+    pub fn show(&mut self, ctx: &egui::Context) {
         if !self.visible {
-            return false;
+            return;
         }
 
         let panel_frame = egui::Frame::none()
@@ -128,8 +140,6 @@ impl NavState {
             .default_width(NAV_PANEL_DEFAULT_WIDTH)
             .frame(panel_frame)
             .show(ctx, |ui| self.panel_contents(ui));
-
-        true
     }
 
     fn panel_contents(&mut self, ui: &mut egui::Ui) {
@@ -147,7 +157,6 @@ impl NavState {
         });
         ui.separator();
 
-        // Build a lightweight index of visible entries (indices only, no cloning).
         let max_depth = self.max_depth;
         let visible_indices: Vec<usize> = self
             .outline
@@ -213,14 +222,11 @@ impl NavState {
 
 // --- Pure rendering functions (no &mut self) ---
 
-/// Returned when a heading row is clicked.
 struct ClickAction {
     byte_offset: usize,
-    /// If set, toggle the accordion at this top-level position.
     toggle_pos: Option<usize>,
 }
 
-/// Visual state for a single heading row.
 struct RowStyle {
     indent: f32,
     is_active: bool,
@@ -228,8 +234,6 @@ struct RowStyle {
     is_expanded: bool,
 }
 
-/// Render the heading list.  Returns a [`ClickAction`] if the user clicked a
-/// heading, otherwise `None`.
 fn render_entries(
     ui: &mut egui::Ui,
     outline: &[HeadingEntry],
@@ -238,7 +242,6 @@ fn render_entries(
     expanded_pos: Option<usize>,
     active_index: Option<usize>,
 ) -> Option<ClickAction> {
-    // Identify which visible-index positions are top-level.
     let top_positions: Vec<usize> = visible
         .iter()
         .enumerate()
@@ -248,12 +251,29 @@ fn render_entries(
 
     let mut result = None;
 
+    // Render orphan entries before the first top-level heading (if any).
+    let first_top_vis = top_positions.first().copied().unwrap_or(visible.len());
+    for &gi in &visible[..first_top_vis] {
+        let h = &outline[gi];
+        let style = RowStyle {
+            indent: (h.level.saturating_sub(min_level)) as f32 * NAV_INDENT_PX,
+            is_active: active_index == Some(gi),
+            has_children: false,
+            is_expanded: false,
+        };
+        if render_heading_row(ui, h, &style).clicked() {
+            result = Some(ClickAction {
+                byte_offset: h.byte_offset,
+                toggle_pos: None,
+            });
+        }
+    }
+
     for (rank, &vis_pos) in top_positions.iter().enumerate() {
         let gi = visible[vis_pos];
         let heading = &outline[gi];
         let is_expanded = expanded_pos == Some(rank);
 
-        // Children span from vis_pos+1 to the next top-level entry.
         let next_vis = top_positions
             .get(rank + 1)
             .copied()
@@ -289,25 +309,6 @@ fn render_entries(
                         toggle_pos: None,
                     });
                 }
-            }
-        }
-    }
-
-    // Orphan entries before the first top-level heading.
-    if let Some(&first_top_vis) = top_positions.first() {
-        for &gi in &visible[..first_top_vis] {
-            let h = &outline[gi];
-            let style = RowStyle {
-                indent: (h.level.saturating_sub(min_level)) as f32 * NAV_INDENT_PX,
-                is_active: active_index == Some(gi),
-                has_children: false,
-                is_expanded: false,
-            };
-            if render_heading_row(ui, h, &style).clicked() {
-                result = Some(ClickAction {
-                    byte_offset: h.byte_offset,
-                    toggle_pos: None,
-                });
             }
         }
     }
@@ -361,12 +362,10 @@ mod tests {
         state.refresh_outline("# A\n## B\n", 1);
         assert_eq!(state.outline.len(), 2);
 
-        // Same seq → no rebuild.
         state.outline.clear();
         state.refresh_outline("# A\n## B\n### C\n", 1);
         assert!(state.outline.is_empty(), "should not have rebuilt");
 
-        // New seq → rebuild.
         state.refresh_outline("# A\n## B\n### C\n", 2);
         assert_eq!(state.outline.len(), 3);
     }
@@ -426,11 +425,9 @@ mod tests {
     #[test]
     fn update_active_respects_max_depth() {
         let mut state = make_state("# A\n\n#### D\n\n## B\n");
-        // #### D is at index 1
         let d_offset = state.outline[1].byte_offset;
         state.max_depth = 2;
         state.update_active_from_position(d_offset);
-        // Should skip #### D (level 4 > max_depth 2) and return # A
         assert_eq!(state.active_index, Some(0));
     }
 
@@ -447,5 +444,48 @@ mod tests {
             ..NavState::default()
         };
         assert_eq!(state.pending_scroll, Some(NavScrollTarget::ByteOffset(42)));
+    }
+
+    #[test]
+    fn preview_scroll_round_trip() {
+        let outline = vec![
+            HeadingEntry {
+                level: 1,
+                label: "A".into(),
+                byte_offset: 0,
+            },
+            HeadingEntry {
+                level: 2,
+                label: "B".into(),
+                byte_offset: 500,
+            },
+            HeadingEntry {
+                level: 2,
+                label: "C".into(),
+                byte_offset: 1000,
+            },
+        ];
+        let y = preview_byte_to_scroll_y(&outline, 500);
+        let byte = preview_scroll_y_to_byte(&outline, y);
+        assert_eq!(byte, 500);
+    }
+
+    #[test]
+    fn preview_scroll_empty_outline() {
+        assert_eq!(preview_byte_to_scroll_y(&[], 100), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&[], 100.0), 0);
+    }
+
+    #[test]
+    fn update_active_from_scroll_y_advances() {
+        let mut state = make_state("# A\n\ntext\n\n## B\n\nmore\n\n### C\n");
+        state.update_active_from_scroll_y(0.0);
+        let first = state.active_index;
+        let last_offset = state.outline.last().map(|h| h.byte_offset).unwrap_or(0);
+        let big_y = preview_byte_to_scroll_y(&state.outline, last_offset);
+        state.update_active_from_scroll_y(big_y);
+        let last = state.active_index;
+        // Scrolling further should advance to a later (or equal) heading.
+        assert!(last >= first);
     }
 }

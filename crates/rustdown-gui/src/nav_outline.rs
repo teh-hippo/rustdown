@@ -54,12 +54,6 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
     entries
 }
 
-/// Return only entries whose level ≤ `max_depth`.
-#[cfg(test)]
-pub fn filter_by_max_depth(entries: &[HeadingEntry], max_depth: u8) -> Vec<&HeadingEntry> {
-    entries.iter().filter(|e| e.level <= max_depth).collect()
-}
-
 /// Find the index of the heading that is "active" given a byte position.
 ///
 /// Returns the index of the last heading whose `byte_offset` ≤ `position`,
@@ -139,24 +133,6 @@ mod tests {
         let md = "Just a paragraph.\n\nAnother one.\n";
         let headings = extract_headings(md);
         assert!(headings.is_empty());
-    }
-
-    #[test]
-    fn filter_by_max_depth_h2() {
-        let md = "# A\n\n## B\n\n### C\n\n#### D\n";
-        let headings = extract_headings(md);
-        let filtered = filter_by_max_depth(&headings, 2);
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].label, "A");
-        assert_eq!(filtered[1].label, "B");
-    }
-
-    #[test]
-    fn filter_by_max_depth_all() {
-        let md = "# A\n\n## B\n\n### C\n";
-        let headings = extract_headings(md);
-        let filtered = filter_by_max_depth(&headings, 6);
-        assert_eq!(filtered.len(), 3);
     }
 
     #[test]
