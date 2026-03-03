@@ -1,66 +1,89 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2d2d2d"/>
+      <stop offset="0%" stop-color="#2b2b2b"/>
       <stop offset="100%" stop-color="#1a1a1a"/>
     </linearGradient>
-    <linearGradient id="rust" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#FF6B35"/>
-      <stop offset="100%" stop-color="#CE4A1E"/>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F06830"/>
+      <stop offset="100%" stop-color="#D04818"/>
     </linearGradient>
   </defs>
 
   <!-- Rounded square background -->
   <rect width="512" height="512" rx="80" ry="80" fill="url(#bg)"/>
 
-  <!-- Crab body (simplified, stylized) -->
-  <ellipse cx="256" cy="280" rx="120" ry="85" fill="url(#rust)" opacity="0.95"/>
-
-  <!-- Crab claws - left -->
-  <path d="M136 240 Q100 200 80 220 Q60 240 90 260 Q105 270 136 260 Z" fill="url(#rust)" opacity="0.9"/>
-  <path d="M80 220 Q65 200 50 215 Q45 230 60 240" fill="none" stroke="#CE4A1E" stroke-width="8" stroke-linecap="round"/>
-
-  <!-- Crab claws - right -->
-  <path d="M376 240 Q412 200 432 220 Q452 240 422 260 Q407 270 376 260 Z" fill="url(#rust)" opacity="0.9"/>
-  <path d="M432 220 Q447 200 462 215 Q467 230 452 240" fill="none" stroke="#CE4A1E" stroke-width="8" stroke-linecap="round"/>
-
-  <!-- Crab legs - left side -->
-  <line x1="160" y1="310" x2="100" y2="360" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-  <line x1="150" y1="330" x2="85" y2="370" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-  <line x1="145" y1="350" x2="80" y2="380" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-
-  <!-- Crab legs - right side -->
-  <line x1="352" y1="310" x2="412" y2="360" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-  <line x1="362" y1="330" x2="427" y2="370" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-  <line x1="367" y1="350" x2="432" y2="380" stroke="#CE4A1E" stroke-width="7" stroke-linecap="round"/>
-
-  <!-- Crab eyes -->
-  <circle cx="220" cy="240" r="16" fill="#1a1a1a"/>
-  <circle cx="292" cy="240" r="16" fill="#1a1a1a"/>
-  <circle cx="224" cy="236" r="6" fill="#ffffff" opacity="0.8"/>
-  <circle cx="296" cy="236" r="6" fill="#ffffff" opacity="0.8"/>
-
-  <!-- Markdown "M" on the crab body -->
-  <path d="M210 290 L210 320 L232 305 L256 320 L256 290" fill="none" stroke="#1a1a1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M268 320 L268 290 L292 290" fill="none" stroke="#1a1a1a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="268" y1="305" x2="286" y2="305" stroke="#1a1a1a" stroke-width="7" stroke-linecap="round"/>
-
-  <!-- Down arrow (markdown icon element) -->
-  <path d="M300 310 L310 325 L320 310" fill="none" stroke="#1a1a1a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-
-  <!-- Gear teeth around body (Rust cog motif) -->
-  <g fill="none" stroke="#FF6B35" stroke-width="3" opacity="0.4">
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(0,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(30,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(60,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(90,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(120,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(150,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(180,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(210,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(240,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(270,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(300,256,280)"/>
-    <rect x="246" y="185" width="20" height="12" rx="2" transform="rotate(330,256,280)"/>
+  <!-- Document page - slightly tilted, held by crab -->
+  <g transform="translate(256,290)">
+    <rect x="-80" y="-120" width="160" height="200" rx="8" fill="#f0ede8" stroke="#d0ccc5" stroke-width="2"/>
+    <!-- Markdown lines on the page -->
+    <rect x="-58" y="-96" width="50" height="8" rx="2" fill="#888"/>
+    <rect x="-58" y="-78" width="100" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="-66" width="90" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="-54" width="95" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="-36" width="40" height="7" rx="2" fill="#888"/>
+    <rect x="-58" y="-20" width="80" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="-8" width="100" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="4" width="70" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="22" width="35" height="7" rx="2" fill="#888"/>
+    <rect x="-58" y="38" width="105" height="5" rx="1.5" fill="#bbb"/>
+    <rect x="-58" y="50" width="85" height="5" rx="1.5" fill="#bbb"/>
+    <!-- Dog-ear fold -->
+    <path d="M52 -120 L80 -120 L80 -92 Z" fill="#d8d4ce"/>
   </g>
+
+  <!-- Crab body - sitting on top of the document -->
+  <ellipse cx="256" cy="155" rx="120" ry="58" fill="url(#shell)"/>
+  <!-- Shell texture lines -->
+  <ellipse cx="256" cy="145" rx="85" ry="32" fill="none" stroke="#F88050" stroke-width="2" opacity="0.5"/>
+  <ellipse cx="256" cy="152" rx="55" ry="18" fill="none" stroke="#F88050" stroke-width="1.5" opacity="0.35"/>
+
+  <!-- Left claw gripping the document edge -->
+  <path d="M140 190 Q108 170 95 185 Q82 200 100 215 L120 220 Q135 210 140 200 Z"
+        fill="#E05828"/>
+  <!-- Left claw pincer -->
+  <path d="M95 185 Q78 170 72 180 Q68 192 82 198"
+        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <path d="M95 185 Q88 168 96 160 Q106 156 110 168"
+        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <!-- Left arm connecting body to claw -->
+  <path d="M155 195 Q148 200 140 198" stroke="#D05020" stroke-width="14" stroke-linecap="round" fill="none"/>
+
+  <!-- Right claw gripping the document edge -->
+  <path d="M372 190 Q404 170 417 185 Q430 200 412 215 L392 220 Q377 210 372 200 Z"
+        fill="#E05828"/>
+  <!-- Right claw pincer -->
+  <path d="M417 185 Q434 170 440 180 Q444 192 430 198"
+        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <path d="M417 185 Q424 168 416 160 Q406 156 402 168"
+        fill="none" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+  <!-- Right arm connecting body to claw -->
+  <path d="M357 195 Q364 200 372 198" stroke="#D05020" stroke-width="14" stroke-linecap="round" fill="none"/>
+
+  <!-- Legs - left side, tucked behind document -->
+  <line x1="165" y1="185" x2="115" y2="230" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
+  <line x1="155" y1="195" x2="100" y2="245" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
+  <line x1="148" y1="205" x2="95" y2="260" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Legs - right side -->
+  <line x1="347" y1="185" x2="397" y2="230" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
+  <line x1="357" y1="195" x2="412" y2="245" stroke="#C04818" stroke-width="6" stroke-linecap="round"/>
+  <line x1="364" y1="205" x2="417" y2="260" stroke="#C04818" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Eye stalks -->
+  <ellipse cx="215" cy="105" rx="7" ry="16" fill="#E05828"/>
+  <ellipse cx="297" cy="105" rx="7" ry="16" fill="#E05828"/>
+
+  <!-- Eyeballs -->
+  <circle cx="215" cy="92" r="17" fill="white"/>
+  <circle cx="297" cy="92" r="17" fill="white"/>
+  <!-- Pupils - looking slightly down at the document -->
+  <circle cx="218" cy="95" r="9" fill="#1a1a1a"/>
+  <circle cx="300" cy="95" r="9" fill="#1a1a1a"/>
+  <!-- Eye shine -->
+  <circle cx="222" cy="91" r="4" fill="white" opacity="0.9"/>
+  <circle cx="304" cy="91" r="4" fill="white" opacity="0.9"/>
+
+  <!-- Happy little mouth -->
+  <path d="M242 175 Q256 186 270 175" fill="none" stroke="#8B2500" stroke-width="3" stroke-linecap="round"/>
 </svg>
