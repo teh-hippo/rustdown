@@ -1,4 +1,3 @@
-#![forbid(unsafe_code)]
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
@@ -213,7 +212,29 @@ fn app_version() -> &'static str {
         .unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+/// On WSL, smithay-clipboard connects via Wayland and panics with
+/// "Broken pipe (os error 32)" during window resize.  Clearing
+/// WAYLAND_DISPLAY forces the clipboard backend to X11 (arboard),
+/// which avoids the crash while keeping clipboard fully functional.
+/// See <https://github.com/emilk/egui/issues/3805>.
+#[cfg(target_os = "linux")]
+fn apply_wsl_workarounds() {
+    if let Ok(ver) = std::fs::read_to_string("/proc/version")
+        && ver.to_ascii_lowercase().contains("microsoft")
+    {
+        // SAFETY: called at the top of main() before any threads are
+        // spawned, so there is no concurrent access to the environment.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+    }
+}
+
 fn main() -> eframe::Result {
+    #[cfg(target_os = "linux")]
+    apply_wsl_workarounds();
+
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.print_version {
         println!("{}", app_version());
