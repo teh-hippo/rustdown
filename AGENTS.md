@@ -19,6 +19,7 @@ cargo run -p rustdown
 
 ## Conventions
 - Prefer simple, explicit code.
-- No `unsafe` (enforced).
+- No `unsafe` (enforced). The single exception is the WSL workaround in `apply_wsl_workarounds()`.
 - Keep allocations/cloning minimal; favor borrowing.
 - Avoid `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` in non-test code (enforced via workspace clippy lints).
+- CI runs with `--locked`; keep `Cargo.lock` committed and up to date.

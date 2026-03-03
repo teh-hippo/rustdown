@@ -21,11 +21,15 @@
   - `disk_io.rs` provides stable UTF-8 reads (`read_stable_utf8`), revision metadata (`disk_revision`), and atomic writes.
   - `live_merge.rs` performs 3-way merges for dirty buffers and returns clean or conflicted outcomes.
   - Conflicted "keep mine" flow can write a `.rustdown-merge*.md` sidecar via `next_merge_sidecar_path`.
+- Navigation panel (`nav_panel.rs`) provides a table-of-contents sidebar driven by heading extraction (`nav_outline.rs` via `pulldown_cmark::Parser`); headings are stored as byte offsets to avoid allocations.
 - Fenced-code parsing logic is shared in `markdown_fence.rs` and reused by both formatter and highlighter.
 
 ## Key conventions
 - Keep the app native-first: avoid webview/wasm assumptions in new code paths.
-- Workspace lint policy is strict (`unsafe_code` denied; warnings denied; no `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` outside tests).
+- Workspace lint policy is strict (`unsafe_code` denied; warnings denied; no `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` outside tests). The single `#[allow(unsafe_code)]` exception is the WSL workaround in `apply_wsl_workarounds()` (clearing `WAYLAND_DISPLAY` before threads spawn to avoid a smithay-clipboard crash).
 - Prefer low-allocation edits: document text is stored as `Arc<String>` and mutated via `Arc::make_mut`; when text changes, keep `edit_seq`, dirty flags, and stats/preview invalidation in sync.
 - Preserve formatter semantics in `format.rs`: only `.editorconfig` keys `trim_trailing_whitespace`, `insert_final_newline`, and `end_of_line` are honored, with fenced block content intentionally preserved.
 - If merge/conflict behavior changes, keep `live_merge.rs` tests and `main.rs` conflict-choice tests aligned; both conflict-marker and ours-wins outputs are intentional.
+- eframe dependency versions must stay aligned: eframe 0.31 pairs with egui_commonmark 0.20. Upgrading one requires upgrading the other. On Linux, both `wayland` and `x11` eframe features are enabled.
+- CI runs with `--locked`, so `Cargo.lock` must be committed and up to date after any dependency change.
+- The release workflow triggers on tag pushes matching `v*`. Tags containing `-` (e.g. `v0.3.0-alpha.1`) are marked as pre-releases.
