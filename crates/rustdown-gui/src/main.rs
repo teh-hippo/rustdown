@@ -44,7 +44,6 @@ const STATS_RECALC_DEBOUNCE: Duration = Duration::from_millis(120);
 const ZOOM_STEP: f32 = 0.1;
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
-const READING_SPEED_WPM: usize = 200;
 const DEFAULT_BODY_BUTTON_FONT_SIZE: f32 = 19.0;
 const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 18.0;
 const DEFAULT_SMALL_FONT_SIZE: f32 = 13.0;
@@ -327,12 +326,6 @@ fn run_open_pipeline_diagnostics(
     let stats = DocumentStats::from_text(std::hint::black_box(text.as_str()));
     let stats_ms = stats_start.elapsed();
 
-    let html_start = Instant::now();
-    let html = std::hint::black_box(markdown_to_html_document(std::hint::black_box(
-        text.as_str(),
-    )));
-    let html_ms = html_start.elapsed();
-
     let cache_start = Instant::now();
     let md_cache = std::hint::black_box(CommonMarkCache::default());
     let cache_ms = cache_start.elapsed();
@@ -454,11 +447,6 @@ fn run_open_pipeline_diagnostics(
             app.doc.text.as_str(),
         )));
     });
-    let html_loop = measure_iterations(diagnostics_iterations, || {
-        std::hint::black_box(markdown_to_html_document(std::hint::black_box(
-            app.doc.text.as_str(),
-        )));
-    });
     let highlight_job_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(highlight::markdown_layout_job(
             style.as_ref(),
@@ -551,15 +539,10 @@ fn run_open_pipeline_diagnostics(
     metric!("disk_len", disk_rev.len);
     metric!("text_bytes", app.doc.text.len());
     metric!("base_text_bytes", app.doc.base_text.len());
-    println!(
-        "stats_words={} stats_chars={} stats_lines={}",
-        stats.words, stats.chars, stats.lines
-    );
+    metric!("stats_lines", stats.lines);
     metric!("t_read_ms", read_ms.as_millis());
     metric!("t_clone_base_ms", clone_ms.as_millis());
     metric!("t_stats_ms", stats_ms.as_millis());
-    metric!("t_html_ms", html_ms.as_millis());
-    metric!("html_bytes", html.len());
     metric!("t_md_cache_ms", cache_ms.as_millis());
     metric!("t_egui_setup_ms", egui_ms.as_millis());
     metric!("t_highlight_job_ms", highlight_job_ms.as_millis());
@@ -574,7 +557,6 @@ fn run_open_pipeline_diagnostics(
     metric!("diag_edit_iterations", edit_iterations);
     metric!("diag_frame_iterations", frame_iterations);
     avg_metric!("t_stats_loop_avg_us", stats_loop, diagnostics_iterations);
-    avg_metric!("t_html_loop_avg_us", html_loop, diagnostics_iterations);
     avg_metric!(
         "t_highlight_job_loop_avg_us",
         highlight_job_loop,
@@ -701,6 +683,10 @@ fn configure_ui_style(ctx: &egui::Context) {
         if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
             font_id.size = DEFAULT_SMALL_FONT_SIZE;
         }
+        // Visible column separators in markdown tables rendered by egui_commonmark.
+        // The Grid widget uses the noninteractive stroke for cell dividers when
+        // striped mode is enabled, so a stronger stroke produces visible lines.
+        style.visuals.widgets.noninteractive.bg_stroke.width = 1.0;
     });
 }
 
@@ -738,13 +724,6 @@ fn markdown_file_dialog() -> rfd::FileDialog {
 }
 
 #[must_use]
-fn html_file_dialog(suggested_name: &str) -> rfd::FileDialog {
-    rfd::FileDialog::new()
-        .add_filter("HTML", &["html"])
-        .set_file_name(suggested_name)
-}
-
-#[must_use]
 fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -757,14 +736,6 @@ fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
         .into_iter()
         .find(|path| is_markdown_path(path))
         .map(Path::to_path_buf)
-}
-
-#[must_use]
-fn suggested_html_file_name(path: Option<&Path>) -> String {
-    path.and_then(|path| path.file_stem())
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .map_or_else(|| "document.html".to_owned(), |stem| format!("{stem}.html"))
 }
 
 #[must_use]
@@ -792,18 +763,6 @@ fn default_image_uri_scheme(path: Option<&Path>) -> String {
         normalized.push('/');
     }
     format!("file://{normalized}")
-}
-
-#[must_use]
-fn markdown_to_html_document(source: &str) -> String {
-    let mut options = pulldown_cmark::Options::empty();
-    options.insert(pulldown_cmark::Options::ENABLE_TABLES);
-    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
-    options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
-    let parser = pulldown_cmark::Parser::new_ext(source, options);
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, parser);
-    html
 }
 
 #[derive(Default)]
@@ -978,75 +937,28 @@ impl Document {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DocumentStats {
-    words: usize,
-    chars: usize,
     lines: usize,
 }
 
 impl DocumentStats {
     #[must_use]
     fn from_text(text: &str) -> Self {
-        if text.is_ascii() {
-            let mut words = 0;
-            let mut lines = 1;
-            let mut in_word = false;
-            for &byte in text.as_bytes() {
-                if byte == b'\n' {
-                    lines += 1;
-                }
-                if byte.is_ascii_whitespace() {
-                    in_word = false;
-                } else if !in_word {
-                    words += 1;
-                    in_word = true;
-                }
-            }
-            return Self {
-                words,
-                chars: text.len(),
-                lines,
-            };
-        }
-
-        let mut words = 0;
-        let mut chars = 0;
-        let mut lines = 1;
-        let mut in_word = false;
-        for ch in text.chars() {
-            chars += 1;
-            if ch == '\n' {
-                lines += 1;
-            }
-            if ch.is_whitespace() {
-                in_word = false;
-            } else if !in_word {
-                words += 1;
-                in_word = true;
-            }
-        }
-        Self {
-            words,
-            chars,
-            lines,
-        }
+        let lines = if text.is_empty() {
+            1
+        } else {
+            1 + bytecount_newlines(text)
+        };
+        Self { lines }
     }
+}
 
-    #[must_use]
-    fn reading_minutes(self) -> usize {
-        if self.words == 0 {
-            return 0;
-        }
-        self.words.div_ceil(READING_SPEED_WPM)
-    }
+fn bytecount_newlines(text: &str) -> usize {
+    text.as_bytes().iter().filter(|&&b| b == b'\n').count()
 }
 
 impl Default for DocumentStats {
     fn default() -> Self {
-        Self {
-            words: 0,
-            chars: 0,
-            lines: 1,
-        }
+        Self { lines: 1 }
     }
 }
 
@@ -1212,7 +1124,6 @@ impl eframe::App for RustdownApp {
             search,
             replace_all_mode,
             format_doc,
-            export_html,
             zoom_in,
             zoom_out,
             zoom_delta,
@@ -1234,7 +1145,6 @@ impl eframe::App for RustdownApp {
                 cmd && !i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::F),
                 cmd && i.modifiers.shift && !i.modifiers.alt && i.key_pressed(egui::Key::F),
                 cmd && i.modifiers.alt && !i.modifiers.shift && i.key_pressed(egui::Key::F),
-                cmd && i.key_pressed(egui::Key::E),
                 cmd && i.key_pressed(egui::Key::Equals),
                 cmd && i.key_pressed(egui::Key::Minus),
                 i.zoom_delta(),
@@ -1267,9 +1177,6 @@ impl eframe::App for RustdownApp {
             }
             if format_doc {
                 self.format_document();
-            }
-            if export_html {
-                let _ = self.export_html();
             }
             if zoom_in {
                 self.adjust_zoom(ctx, ZOOM_STEP);
@@ -1304,15 +1211,13 @@ impl eframe::App for RustdownApp {
 
                 ui.separator();
                 if ui
-                    .toggle_value(&mut self.heading_color_mode, "Color headings (exp)")
+                    .toggle_value(&mut self.heading_color_mode, "Color")
                     .changed()
                 {
                     self.doc.editor_galley_cache = None;
+                    self.doc.md_cache.clear_scrollable();
                 }
                 ui.separator();
-                if ui.button("Export HTML").clicked() {
-                    let _ = self.export_html();
-                }
                 if ui.button("Format").clicked() {
                     self.format_document();
                 }
@@ -1324,13 +1229,7 @@ impl eframe::App for RustdownApp {
                 let stats = self.doc.stats();
 
                 ui.separator();
-                ui.label(format!(
-                    "{} words · {} chars · {} lines · {} min read",
-                    stats.words,
-                    stats.chars,
-                    stats.lines,
-                    stats.reading_minutes()
-                ));
+                ui.label(format!("{} lines", stats.lines));
 
                 if self.doc.dirty {
                     ui.separator();
@@ -1440,9 +1339,9 @@ impl RustdownApp {
     /// process any pending nav-scroll actions.  Extracted so the debug harness
     /// can reuse the same layout sequence.
     fn show_content_panels(&mut self, ctx: &egui::Context) {
-        let panel_frame = egui::Frame::none()
+        let panel_frame = egui::Frame::new()
             .fill(ctx.style().visuals.panel_fill)
-            .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
+            .inner_margin(PANEL_EDGE_PADDING as i8);
 
         // Resolve any pending nav target to a y-pixel value *before* the
         // scroll areas render, so the smooth-scroll request is consumed on
@@ -1915,16 +1814,10 @@ impl RustdownApp {
     }
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
-        let mode = match self.mode {
-            Mode::Preview => " (Preview)",
-            Mode::SideBySide => " (Side-by-side)",
-            Mode::Edit => "",
-        };
         let title = format!(
-            "rustdown — {}{}{}",
+            "rustdown - {}{}",
             self.doc.title(),
             if self.doc.dirty { "*" } else { "" },
-            mode
         );
         if self.last_viewport_title == title {
             return;
@@ -2092,6 +1985,7 @@ impl RustdownApp {
             self.doc.md_cache.clear_scrollable();
             self.doc.preview_dirty = false;
         }
+
         CommonMarkViewer::new()
             .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
             .show_scrollable(
@@ -2267,24 +2161,6 @@ impl RustdownApp {
             return Some((path, false));
         }
         markdown_file_dialog().save_file().map(|path| (path, true))
-    }
-
-    fn export_html(&mut self) -> bool {
-        let suggested_name = suggested_html_file_name(self.doc.path.as_deref());
-        let Some(path) = html_file_dialog(suggested_name.as_str()).save_file() else {
-            return false;
-        };
-        let html = markdown_to_html_document(self.doc.text.as_str());
-        match fs::write(path, html) {
-            Ok(()) => {
-                self.error = None;
-                true
-            }
-            Err(err) => {
-                self.error = Some(format!("Export failed: {err}"));
-                false
-            }
-        }
     }
 
     fn save_doc(&mut self, save_as: bool) -> bool {
@@ -2713,26 +2589,20 @@ mod tests {
     #[test]
     fn document_stats_cover_empty_populated_and_default_document() {
         let stats = DocumentStats::from_text("one two\nthree");
-        assert_eq!(stats.words, 3);
-        assert_eq!(stats.chars, 13);
         assert_eq!(stats.lines, 2);
-        assert_eq!(stats.reading_minutes(), 1);
 
         let unicode_stats = DocumentStats::from_text("héllo 世界\n🙂");
-        assert_eq!(unicode_stats.words, 3);
-        assert_eq!(unicode_stats.chars, 10);
         assert_eq!(unicode_stats.lines, 2);
 
         let empty_stats = DocumentStats::from_text("");
         assert_eq!(empty_stats, DocumentStats::default());
-        assert_eq!(empty_stats.reading_minutes(), 0);
 
         let doc = Document::default();
         assert_eq!(doc.stats(), DocumentStats::from_text(""));
     }
 
     #[test]
-    fn markdown_path_helpers_cover_detection_selection_and_html_name() {
+    fn markdown_path_helpers_cover_detection_and_selection() {
         assert!(is_markdown_path(Path::new("note.md")));
         assert!(is_markdown_path(Path::new("README.Markdown")));
         assert!(!is_markdown_path(Path::new("notes.txt")));
@@ -2746,11 +2616,6 @@ mod tests {
             first_markdown_path(files),
             Some(PathBuf::from("chapter.markdown"))
         );
-        assert_eq!(
-            suggested_html_file_name(Some(Path::new("/tmp/readme.md"))),
-            "readme.html"
-        );
-        assert_eq!(suggested_html_file_name(None), "document.html");
     }
 
     #[test]

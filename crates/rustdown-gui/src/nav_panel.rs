@@ -66,7 +66,7 @@ const NAV_PANEL_DEFAULT_WIDTH: f32 = 220.0;
 const NAV_INDENT_PX: f32 = 12.0;
 
 /// Empirical scale factor mapping scroll-y pixels to source bytes in preview
-/// mode.  The exact value does not matter — the mapping only needs to be
+/// mode.  The exact value does not matter - the mapping only needs to be
 /// monotonically increasing so the highlighted heading advances as the user
 /// scrolls.  Both `preview_byte_to_scroll_y` and `preview_scroll_y_to_byte`
 /// use this constant to stay consistent.
@@ -148,9 +148,9 @@ impl NavState {
             return;
         }
 
-        let panel_frame = egui::Frame::none()
+        let panel_frame = egui::Frame::new()
             .fill(ctx.style().visuals.panel_fill)
-            .inner_margin(egui::Margin::same(6.0));
+            .inner_margin(6);
 
         egui::SidePanel::right("navigation")
             .resizable(true)

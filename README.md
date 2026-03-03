@@ -1,10 +1,14 @@
 # rustdown
 
-A highly performant, minimalist Markdown editor written in Rust with a **native UI** (no webviews, no wasm/web build).
+<p align="center">
+  <img src="assets/icon.svg" alt="rustdown logo" width="128" height="128">
+</p>
+
+A fast, minimalist Markdown editor written in Rust with a native UI.
 
 ## Status
 Early, but functional:
-- Native GUI editor with Edit/Preview/Side-by-side modes, native markdown preview (lists/task lists/quotes/tables/code/strike), lightweight syntax highlighting, drag-and-drop markdown open, live writing stats, HTML export, and Open/Save/Save As + unsaved-changes confirmation.
+- Native GUI editor with Edit/Preview/Side-by-side modes, markdown preview (lists/task lists/quotes/tables/code/strike), syntax highlighting, drag-and-drop open, line count, navigation panel, and Open/Save/Save As with unsaved-changes confirmation.
 
 ## Quickstart
 
@@ -51,19 +55,19 @@ On Linux it checks:
 `/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf`.
 
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
-- Cmd/Ctrl+O: Open…
+- Cmd/Ctrl+O: Open
 - Cmd/Ctrl+S: Save
-- Cmd/Ctrl+Shift+S: Save As…
+- Cmd/Ctrl+Shift+S: Save As
 - Cmd/Ctrl+N: New document
 - Cmd/Ctrl+F: Find
 - Cmd/Ctrl+Shift+F: Find + Replace all
 - Cmd/Ctrl+Alt+F: Format document
-- Cmd/Ctrl+E: Export HTML…
 - Cmd/Ctrl+Enter: Cycle Edit/Preview/Side-by-side
+- Cmd/Ctrl+Shift+T: Toggle navigation panel
 - Cmd/Ctrl++: Increase font size
 - Cmd/Ctrl+-: Decrease font size
 - Ctrl/Cmd + mouse wheel (or pinch gesture): Zoom text
-- Experimental: toggle **Color headings (exp)** in the status bar for thematic heading colors in the editor
+- Toggle **Color** in the status bar for thematic heading colors in the editor
   
 Tip: the mode indicator in the bottom bar is clickable.
 Tip: you can also drag and drop `.md`/`.markdown` files into the window to open them.
@@ -75,7 +79,7 @@ Formatting is intentionally simple; if a `.editorconfig` file is present, rustdo
 
 | Platform | Architecture | Status |
 |----------|-------------|--------|
-| Linux | x86_64 | ✅ Built + tested in CI |
-| Windows | x86_64 | ✅ Built + tested in CI |
+| Linux | x86_64 | Built and tested in CI |
+| Windows | x86_64 | Built and tested in CI |
 
 Pre-built binaries are available on the [Releases](https://github.com/teh-hippo/rustdown/releases) page.
