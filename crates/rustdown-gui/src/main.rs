@@ -29,6 +29,9 @@ mod markdown_fence;
 mod nav_outline;
 mod nav_panel;
 
+#[cfg(debug_assertions)]
+mod nav_debug;
+
 use disk_io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
 };
@@ -104,6 +107,8 @@ enum DiagnosticsMode {
     #[default]
     Off,
     OpenPipeline,
+    #[cfg(debug_assertions)]
+    NavPipeline,
 }
 
 #[must_use]
@@ -141,6 +146,11 @@ where
             }
             if arg == "--diagnostics-open" || arg == "--diag-open" {
                 diagnostics = DiagnosticsMode::OpenPipeline;
+                continue;
+            }
+            #[cfg(debug_assertions)]
+            if arg == "--diagnostics-nav" || arg == "--diag-nav" {
+                diagnostics = DiagnosticsMode::NavPipeline;
                 continue;
             }
             if let Some(value) = arg
@@ -226,6 +236,13 @@ fn main() -> eframe::Result {
                 eprintln!("Diagnostics failed: {err}");
                 break;
             }
+        }
+        return Ok(());
+    }
+    #[cfg(debug_assertions)]
+    if launch_options.diagnostics == DiagnosticsMode::NavPipeline {
+        if let Err(err) = nav_debug::run_nav_diagnostics(launch_options.path.as_deref()) {
+            eprintln!("Nav diagnostics failed: {err}");
         }
         return Ok(());
     }
@@ -2628,6 +2645,19 @@ mod tests {
         for (flag, expected) in run_cases {
             let options = parse(&[flag, "README.md"]);
             assert_eq!(options.diagnostics_runs, expected);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let options = parse(&["--diagnostics-nav", "README.md"]);
+            assert_eq!(options.diagnostics, DiagnosticsMode::NavPipeline);
+            assert_eq!(
+                options.path.as_deref(),
+                Some(PathBuf::from("README.md")).as_deref()
+            );
+
+            let options = parse(&["--diag-nav", "README.md"]);
+            assert_eq!(options.diagnostics, DiagnosticsMode::NavPipeline);
         }
     }
 
