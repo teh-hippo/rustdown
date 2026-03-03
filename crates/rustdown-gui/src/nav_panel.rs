@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use eframe::egui;
 
 use crate::nav_outline::{self, HeadingEntry};

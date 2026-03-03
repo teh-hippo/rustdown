@@ -1,4 +1,3 @@
-#![forbid(unsafe_code)]
 //! Debug-only agentic testing harness for the Navigation panel.
 //!
 //! Compiled only in debug builds (`#[cfg(debug_assertions)]`).

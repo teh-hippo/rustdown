@@ -1431,8 +1431,11 @@ impl RustdownApp {
             .fill(ctx.style().visuals.panel_fill)
             .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
 
-        // Navigation panel: refresh outline and render before other right
-        // panels so egui places it rightmost.
+        // Resolve any pending nav target to a y-pixel value *before* the
+        // scroll areas render, so the smooth-scroll request is consumed on
+        // this same frame (no 1-frame delay).
+        self.resolve_nav_scroll_target(ctx);
+
         if self.nav.visible {
             self.nav
                 .refresh_outline(self.doc.text.as_str(), self.doc.edit_seq);
@@ -1455,8 +1458,9 @@ impl RustdownApp {
                 Mode::Preview => self.show_preview(ui),
             });
 
+        // Sync the active heading highlight from the current scroll position.
         if self.nav.visible {
-            self.process_nav_scroll(ctx);
+            self.sync_nav_active_heading(ctx);
         }
     }
 
@@ -2095,39 +2099,41 @@ impl RustdownApp {
         }
     }
 
-    /// Handle pending navigation scroll requests and sync active heading
-    /// based on the current scroll position.
-    fn process_nav_scroll(&mut self, ctx: &egui::Context) {
+    /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
+    /// store it in `pending_scroll_y`.  Must run *before* the scroll areas
+    /// render so the target is consumed on the same frame.
+    fn resolve_nav_scroll_target(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.nav.pending_scroll.take() else {
+            return;
+        };
         use nav_panel::NavScrollTarget;
-
-        let editor_id = nav_panel::editor_scroll_id();
-        let preview_id = nav_panel::preview_scroll_id();
-
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
-        let scroll_area_id = if uses_editor { editor_id } else { preview_id };
-
-        // Resolve pending nav target to a concrete y-pixel value.  The actual
-        // smooth-scroll call happens inside the scroll-area closure on the
-        // *next* frame (see show_editor / show_preview wrappers).
-        if let Some(target) = self.nav.pending_scroll.take() {
-            let target_y = match target {
-                NavScrollTarget::Top => Some(0.0_f32),
-                NavScrollTarget::ByteOffset(byte_offset) => {
-                    if uses_editor {
-                        self.editor_byte_to_y(byte_offset)
-                    } else {
-                        Some(nav_panel::preview_byte_to_scroll_y(
-                            &self.nav.outline,
-                            byte_offset,
-                        ))
-                    }
+        let target_y = match target {
+            NavScrollTarget::Top => Some(0.0_f32),
+            NavScrollTarget::ByteOffset(byte_offset) => {
+                if uses_editor {
+                    self.editor_byte_to_y(byte_offset)
+                } else {
+                    Some(nav_panel::preview_byte_to_scroll_y(
+                        &self.nav.outline,
+                        byte_offset,
+                    ))
                 }
-            };
-            self.nav.pending_scroll_y = target_y;
-            ctx.request_repaint();
-        }
+            }
+        };
+        self.nav.pending_scroll_y = target_y;
+        ctx.request_repaint();
+    }
 
-        // Sync active heading from current scroll position.
+    /// Read the current scroll offset and update the active heading in the
+    /// nav panel.  Must run *after* the scroll areas render.
+    fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
+        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
+        let scroll_area_id = if uses_editor {
+            nav_panel::editor_scroll_id()
+        } else {
+            nav_panel::preview_scroll_id()
+        };
         if let Some(state) = egui::scroll_area::State::load(ctx, scroll_area_id) {
             let y = state.offset.y;
             if uses_editor {

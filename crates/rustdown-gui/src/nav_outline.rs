@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A single heading extracted from a Markdown document.
