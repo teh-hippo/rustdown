@@ -29,6 +29,9 @@ pub struct NavState {
     pub active_index: Option<usize>,
     /// Pending scroll request for the host to execute.
     pub pending_scroll: Option<NavScrollTarget>,
+    /// Resolved scroll-y target (pixels) to be consumed inside the scroll
+    /// area closure on the next frame for smooth animation.
+    pub pending_scroll_y: Option<f32>,
 }
 
 impl Default for NavState {
@@ -41,6 +44,7 @@ impl Default for NavState {
             expanded_pos: None,
             active_index: None,
             pending_scroll: None,
+            pending_scroll_y: None,
         }
     }
 }

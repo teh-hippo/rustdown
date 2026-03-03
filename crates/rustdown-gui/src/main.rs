@@ -2038,11 +2038,19 @@ impl RustdownApp {
             };
 
             let editor_size = ui.available_size();
+            let nav_scroll_y = &mut self.nav.pending_scroll_y;
             let response = egui::ScrollArea::both()
                 .id_salt("editor_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    ui.add_sized(editor_size, editor.layouter(&mut layouter))
+                    let r = ui.add_sized(editor_size, editor.layouter(&mut layouter));
+                    // Consume any pending smooth-scroll target from the nav panel.
+                    if let Some(y) = nav_scroll_y.take() {
+                        let target =
+                            egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0));
+                        ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                    }
+                    r
                 })
                 .inner;
             (response.changed(), seq.get())
@@ -2074,6 +2082,17 @@ impl RustdownApp {
                 &mut self.doc.md_cache,
                 self.doc.text.as_str(),
             );
+
+        // Consume any pending nav-scroll target.  We cannot inject into
+        // show_scrollable's internal ScrollArea, so apply directly.
+        if let Some(y) = self.nav.pending_scroll_y.take() {
+            let scroll_id = nav_panel::preview_scroll_id();
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
+                state.offset = egui::vec2(state.offset.x, y);
+                state.store(ui.ctx(), scroll_id);
+                ui.ctx().request_repaint();
+            }
+        }
     }
 
     /// Handle pending navigation scroll requests and sync active heading
@@ -2087,24 +2106,25 @@ impl RustdownApp {
         let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
         let scroll_area_id = if uses_editor { editor_id } else { preview_id };
 
-        // Execute pending scroll from nav panel.
+        // Resolve pending nav target to a concrete y-pixel value.  The actual
+        // smooth-scroll call happens inside the scroll-area closure on the
+        // *next* frame (see show_editor / show_preview wrappers).
         if let Some(target) = self.nav.pending_scroll.take() {
-            match target {
-                NavScrollTarget::Top => {
-                    if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_area_id) {
-                        state.offset = egui::vec2(state.offset.x, 0.0);
-                        state.store(ctx, scroll_area_id);
-                        ctx.request_repaint();
-                    }
-                }
+            let target_y = match target {
+                NavScrollTarget::Top => Some(0.0_f32),
                 NavScrollTarget::ByteOffset(byte_offset) => {
                     if uses_editor {
-                        self.scroll_editor_to_byte(ctx, editor_id, byte_offset);
+                        self.editor_byte_to_y(byte_offset)
                     } else {
-                        self.scroll_preview_to_byte(ctx, preview_id, byte_offset);
+                        Some(nav_panel::preview_byte_to_scroll_y(
+                            &self.nav.outline,
+                            byte_offset,
+                        ))
                     }
                 }
-            }
+            };
+            self.nav.pending_scroll_y = target_y;
+            ctx.request_repaint();
         }
 
         // Sync active heading from current scroll position.
@@ -2117,31 +2137,6 @@ impl RustdownApp {
             } else if !self.doc.text.is_empty() {
                 self.nav.update_active_from_scroll_y(y);
             }
-        }
-    }
-
-    /// Scroll the editor to the vertical position corresponding to `byte_offset`.
-    fn scroll_editor_to_byte(&self, ctx: &egui::Context, scroll_id: egui::Id, byte_offset: usize) {
-        let target_y = self.editor_byte_to_y(byte_offset);
-        if let (Some(y), Some(mut state)) =
-            (target_y, egui::scroll_area::State::load(ctx, scroll_id))
-        {
-            state.offset = egui::vec2(state.offset.x, y);
-            state.store(ctx, scroll_id);
-            ctx.request_repaint();
-        }
-    }
-
-    /// Scroll the preview to the position corresponding to `byte_offset`.
-    fn scroll_preview_to_byte(&self, ctx: &egui::Context, scroll_id: egui::Id, byte_offset: usize) {
-        if self.doc.text.is_empty() {
-            return;
-        }
-        if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
-            let target_y = nav_panel::preview_byte_to_scroll_y(&self.nav.outline, byte_offset);
-            state.offset = egui::vec2(state.offset.x, target_y);
-            state.store(ctx, scroll_id);
-            ctx.request_repaint();
         }
     }
 
