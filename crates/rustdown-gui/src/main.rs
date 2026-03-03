@@ -26,6 +26,8 @@ mod format;
 mod highlight;
 mod live_merge;
 mod markdown_fence;
+mod nav_outline;
+mod nav_panel;
 
 use disk_io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
@@ -792,6 +794,7 @@ struct RustdownApp {
     doc: Document,
     mode: Mode,
     search: SearchState,
+    nav: nav_panel::NavState,
     error: Option<String>,
     pending_action: Option<PendingAction>,
     last_viewport_title: String,
@@ -1171,6 +1174,7 @@ impl eframe::App for RustdownApp {
             zoom_out,
             zoom_delta,
             escape,
+            toggle_nav,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
@@ -1192,6 +1196,7 @@ impl eframe::App for RustdownApp {
                 cmd && i.key_pressed(egui::Key::Minus),
                 i.zoom_delta(),
                 i.key_pressed(egui::Key::Escape),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::T),
             )
         });
 
@@ -1235,6 +1240,9 @@ impl eframe::App for RustdownApp {
             if escape && self.search.visible {
                 self.close_search();
             }
+            if toggle_nav {
+                self.nav.visible = !self.nav.visible;
+            }
         }
 
         let mut run_replace_all = false;
@@ -1265,6 +1273,7 @@ impl eframe::App for RustdownApp {
                 if ui.button("Format").clicked() {
                     self.format_document();
                 }
+                ui.toggle_value(&mut self.nav.visible, "Nav");
 
                 ui.separator();
 
@@ -1378,6 +1387,15 @@ impl eframe::App for RustdownApp {
         let panel_frame = egui::Frame::none()
             .fill(ctx.style().visuals.panel_fill)
             .inner_margin(egui::Margin::same(PANEL_EDGE_PADDING));
+
+        // Navigation panel: refresh outline and render before other right
+        // panels so egui places it rightmost.
+        if self.nav.visible {
+            self.nav
+                .refresh_outline(self.doc.text.as_str(), self.doc.edit_seq);
+        }
+        self.nav.show(ctx);
+
         if self.mode == Mode::SideBySide {
             egui::SidePanel::right("preview")
                 .resizable(true)
@@ -1393,6 +1411,11 @@ impl eframe::App for RustdownApp {
                 Mode::Edit | Mode::SideBySide => self.show_editor(ui),
                 Mode::Preview => self.show_preview(ui),
             });
+
+        // Process nav panel scroll requests and sync active heading.
+        if self.nav.visible {
+            self.process_nav_scroll(ctx);
+        }
 
         self.show_dialogs(ctx);
         self.show_disk_conflict_dialog(ctx);
@@ -1980,6 +2003,7 @@ impl RustdownApp {
 
             let editor_size = ui.available_size();
             let response = egui::ScrollArea::both()
+                .id_salt("editor_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.add_sized(editor_size, editor.layouter(&mut layouter))
@@ -2014,6 +2038,127 @@ impl RustdownApp {
                 &mut self.doc.md_cache,
                 self.doc.text.as_str(),
             );
+    }
+
+    /// Handle pending navigation scroll requests and sync active heading
+    /// based on the current scroll position.
+    fn process_nav_scroll(&mut self, ctx: &egui::Context) {
+        use nav_panel::NavScrollTarget;
+
+        let editor_scroll_id = egui::Id::new("editor").with("editor_scroll");
+        let preview_scroll_id = egui::Id::new("preview_markdown").with("_scroll_area");
+
+        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
+        let scroll_area_id = if uses_editor {
+            editor_scroll_id
+        } else {
+            preview_scroll_id
+        };
+
+        // Execute pending scroll from nav panel.
+        if let Some(target) = self.nav.pending_scroll.take() {
+            match target {
+                NavScrollTarget::Top => {
+                    if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_area_id) {
+                        state.offset = egui::vec2(state.offset.x, 0.0);
+                        state.store(ctx, scroll_area_id);
+                        ctx.request_repaint();
+                    }
+                }
+                NavScrollTarget::ByteOffset(byte_offset) => {
+                    if uses_editor {
+                        self.scroll_editor_to_byte(ctx, editor_scroll_id, byte_offset);
+                    } else {
+                        self.scroll_preview_to_byte(ctx, preview_scroll_id, byte_offset);
+                    }
+                }
+            }
+        }
+
+        // Sync active heading from current scroll position.
+        if let Some(state) = egui::scroll_area::State::load(ctx, scroll_area_id) {
+            let y = state.offset.y;
+            if uses_editor {
+                if let Some(pos) = self.editor_y_to_byte(y) {
+                    self.nav.update_active_from_position(pos);
+                }
+            } else {
+                let text_len = self.doc.text.len();
+                if text_len > 0 {
+                    // Approximate: use ratio of scroll offset to content height.
+                    let ratio = y / (y + 1.0); // rough estimate, refined below
+                    let byte_pos = ((ratio * text_len as f32) as usize).min(text_len);
+                    self.nav.update_active_from_position(byte_pos);
+                }
+            }
+        }
+    }
+
+    /// Scroll the editor to the vertical position corresponding to `byte_offset`.
+    fn scroll_editor_to_byte(&self, ctx: &egui::Context, scroll_id: egui::Id, byte_offset: usize) {
+        let target_y = self.editor_byte_to_y(byte_offset);
+        if let (Some(y), Some(mut state)) =
+            (target_y, egui::scroll_area::State::load(ctx, scroll_id))
+        {
+            state.offset = egui::vec2(state.offset.x, y);
+            state.store(ctx, scroll_id);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Scroll the preview to the position corresponding to `byte_offset`.
+    fn scroll_preview_to_byte(&self, ctx: &egui::Context, scroll_id: egui::Id, byte_offset: usize) {
+        let text_len = self.doc.text.len();
+        if text_len == 0 {
+            return;
+        }
+        let ratio = byte_offset as f32 / text_len as f32;
+        if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
+            // Estimate content height from current scroll offset + viewport.
+            // This is approximate; will be refined if needed.
+            let content_height = state.offset.y + 800.0; // fallback
+            let target_y = ratio * content_height;
+            state.offset = egui::vec2(state.offset.x, target_y.max(0.0));
+            state.store(ctx, scroll_id);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Map a byte offset to a Y position using the cached editor galley.
+    fn editor_byte_to_y(&self, byte_offset: usize) -> Option<f32> {
+        let galley = &self.doc.editor_galley_cache.as_ref()?.galley;
+        let text = self.doc.text.as_str();
+        let char_index = text
+            .get(..byte_offset.min(text.len()))
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
+        let ccursor = egui::text::CCursor::new(char_index);
+        let rect = galley.pos_from_ccursor(ccursor);
+        Some(rect.min.y)
+    }
+
+    /// Map a Y scroll position to an approximate byte offset using the galley.
+    fn editor_y_to_byte(&self, y: f32) -> Option<usize> {
+        let galley = &self.doc.editor_galley_cache.as_ref()?.galley;
+        let text = self.doc.text.as_str();
+        // Walk rows to find the one at this y.
+        let mut char_count = 0usize;
+        for row in &galley.rows {
+            if row.rect.min.y > y {
+                // Convert char_count to byte offset.
+                return Some(
+                    text.char_indices()
+                        .nth(char_count)
+                        .map(|(i, _)| i)
+                        .unwrap_or(text.len()),
+                );
+            }
+            char_count += row.glyphs.len();
+            if row.ends_with_newline {
+                char_count += 1;
+            }
+        }
+        Some(text.len())
     }
 
     fn request_action(&mut self, action: PendingAction) {
