@@ -3,7 +3,7 @@ use eframe::egui;
 use crate::nav_outline::{self, HeadingEntry};
 
 /// What the nav panel wants the host to scroll to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum NavScrollTarget {
     /// Jump to a heading at this byte offset in the source text.
     ByteOffset(usize),
@@ -24,7 +24,7 @@ pub struct NavState {
     /// Which top-level (min-level) heading *position* is expanded (accordion).
     expanded_pos: Option<usize>,
     /// The heading index the user is currently scrolled to.
-    pub active_index: Option<usize>,
+    active_index: Option<usize>,
     /// Pending scroll request for the host to execute.
     pub pending_scroll: Option<NavScrollTarget>,
     /// Resolved scroll-y target (pixels) to be consumed inside the scroll
