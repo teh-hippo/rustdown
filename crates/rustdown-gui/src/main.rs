@@ -257,14 +257,15 @@ fn x11_keyboard_lib_available() -> bool {
 }
 
 fn main() -> eframe::Result {
-    #[cfg(target_os = "linux")]
-    apply_wsl_workarounds();
-
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.print_version {
         println!("{}", app_version());
         return Ok(());
     }
+
+    #[cfg(target_os = "linux")]
+    apply_wsl_workarounds();
+
     if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
         for run in 0..launch_options.diagnostics_runs {
             if launch_options.diagnostics_runs > 1 {
