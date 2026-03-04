@@ -99,7 +99,6 @@ pub fn preview_byte_to_scroll_y(
 
 /// Convert a preview scroll-y value to an estimated byte offset.
 /// Returns `0` when the outline is empty.
-#[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

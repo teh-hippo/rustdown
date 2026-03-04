@@ -26,6 +26,8 @@ pub struct MarkdownCache {
     height_body_size: f32,
     /// The wrap width used when heights were estimated.
     height_wrap_width: f32,
+    /// Last rendered scroll-y offset (set by `show_scrollable`).
+    pub last_scroll_y: f32,
 }
 
 impl MarkdownCache {
@@ -40,6 +42,7 @@ impl MarkdownCache {
         self.total_height = 0.0;
         self.height_body_size = 0.0;
         self.height_wrap_width = 0.0;
+        self.last_scroll_y = 0.0;
     }
 
     pub fn ensure_parsed(&mut self, source: &str) {
@@ -142,6 +145,9 @@ impl MarkdownViewer {
         }
 
         scroll_area.show_viewport(ui, |ui, viewport| {
+            // Record current scroll offset for external sync.
+            cache.last_scroll_y = viewport.min.y;
+
             // Allocate total height so scroll thumb is correct.
             ui.set_min_height(cache.total_height);
 

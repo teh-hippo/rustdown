@@ -1176,15 +1176,19 @@ impl RustdownApp {
     }
 
     /// Determine the current scroll position as a byte offset in the source
-    /// text.  Only reliable in editor modes (scroll state isn't accessible for
-    /// preview pane).
+    /// text.  Works in both editor and preview modes.
     fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
-        if !self.uses_editor() {
-            return None;
+        if self.uses_editor() {
+            self.ensure_row_byte_offsets();
+            let state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())?;
+            self.editor_y_to_byte(state.offset.y)
+        } else {
+            Some(nav_panel::preview_scroll_y_to_byte(
+                &self.nav.outline,
+                self.doc.preview_cache.last_scroll_y,
+                self.doc.preview_cache.total_height,
+            ))
         }
-        self.ensure_row_byte_offsets();
-        let state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())?;
-        self.editor_y_to_byte(state.offset.y)
     }
 
     #[allow(clippy::unused_self)]
@@ -1443,15 +1447,21 @@ impl RustdownApp {
     /// Read the current scroll offset and update the active heading in the
     /// nav panel.  Must run *after* the scroll areas render.
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
-        // Only works in editor modes where we can read the scroll area state
-        // via a known ID.  Preview mode scroll state isn't accessible externally.
-        if !self.uses_editor() {
-            return;
-        }
-        self.ensure_row_byte_offsets();
-        if let Some(state) = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
-            && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
-        {
+        if self.uses_editor() {
+            self.ensure_row_byte_offsets();
+            if let Some(state) =
+                egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
+                && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
+            {
+                self.nav.update_active_from_position(byte_pos);
+            }
+        } else {
+            // Preview mode: convert cached scroll-y to byte offset via outline.
+            let byte_pos = nav_panel::preview_scroll_y_to_byte(
+                &self.nav.outline,
+                self.doc.preview_cache.last_scroll_y,
+                self.doc.preview_cache.total_height,
+            );
             self.nav.update_active_from_position(byte_pos);
         }
     }
