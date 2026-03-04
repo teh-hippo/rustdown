@@ -533,6 +533,88 @@ This is block 10 of 10. **End of scroll test blocks.**
 
 ---
 
+## Edge Cases — Rendering Stress
+
+### Triple-Digit Numbered Lists
+
+97. Item ninety-seven
+98. Item ninety-eight
+99. Item ninety-nine
+100. Item one hundred — the number column must be wide enough
+101. Item one hundred and one
+102. Item one hundred and two
+
+### Task Lists
+
+- [x] Completed task with a checkmark
+- [ ] Incomplete task with an empty box
+- [x] Another done item
+- [ ] Still to do
+  - [x] Nested completed sub-task
+  - [ ] Nested incomplete
+
+### Deeply Nested Blockquotes
+
+> Level 1
+> > Level 2
+> > > Level 3 — content should still be readable and not squished
+> > > > Level 4 — testing proportional margins at depth
+> > > >
+> > > > Still at level 4. This should wrap properly even with reduced width.
+
+### Adjacent Tables
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+| X | Y | Z |
+|---|---|---|
+| a | b | c |
+
+### Table Immediately After Paragraph
+This is a paragraph followed immediately by a table with no blank line separation.
+| Col | Val |
+|-----|-----|
+| one | two |
+
+### Single-Cell Table
+
+| Solo |
+|------|
+| Only |
+
+### Code Block With Very Long Lines
+
+```
+This is a line that is intentionally made extremely long to test horizontal scrolling in code blocks. It should not wrap by default but instead provide a horizontal scrollbar so the user can scroll to see the full content of the line without it being clipped or overlapping other elements.
+Short line.
+Another very long line here to ensure the scrollbar appears consistently and remains functional across multiple long lines within the same fenced code block.
+```
+
+### Empty Code Block
+
+```
+```
+
+### Inline Formatting Stress
+
+This sentence has **bold**, *italic*, ***bold-italic***, `code`, ~~strikethrough~~, [link](https://example.com), and **`bold code`** all in one line.
+
+**Everything bold**: this paragraph is entirely bold formatted, which should not affect line spacing or paragraph alignment compared to normal text.
+
+### Images Side-by-Side Test
+
+![Tiny](tiny.png) Inline text after tiny image.
+
+![Small](small.png)
+
+Text between images.
+
+![Missing](nonexistent.png)
+
+---
+
 ## Final Section
 
 If you've scrolled this far, the document rendering is working well!
