@@ -48,6 +48,8 @@ pub struct MarkdownStyle {
     pub link_color: Option<egui::Color32>,
     /// Horizontal rule colour.
     pub hr_color: Option<egui::Color32>,
+    /// Base URI for resolving relative image paths (e.g. `"file:///path/to/dir/"`).
+    pub image_base_uri: String,
 }
 
 impl MarkdownStyle {
@@ -66,6 +68,7 @@ impl MarkdownStyle {
             blockquote_bar: Some(visuals.weak_text_color()),
             link_color: Some(link),
             hr_color: Some(visuals.weak_text_color()),
+            image_base_uri: String::new(),
         }
     }
 

@@ -269,6 +269,7 @@ fn main() -> eframe::Result {
         "rustdown",
         options,
         Box::new(move |cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             ui_style::configure_fonts(&cc.egui_ctx).map_err(std::io::Error::other)?;
             ui_style::configure_style(&cc.egui_ctx);
             Ok(Box::new(app))
@@ -1406,11 +1407,12 @@ impl RustdownApp {
             self.doc.preview_dirty = false;
         }
 
-        let style = if self.heading_color_mode {
+        let mut style = if self.heading_color_mode {
             MarkdownStyle::colored(ui.visuals())
         } else {
             MarkdownStyle::from_visuals(ui.visuals())
         };
+        style.image_base_uri = self.doc.image_uri_scheme.clone();
 
         // Consume any pending nav-scroll target and pass it directly to the
         // ScrollArea, avoiding the ID-mismatch problem with external state lookup.

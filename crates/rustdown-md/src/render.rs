@@ -282,7 +282,7 @@ fn estimate_block_height(
                 .sum();
             body_size.mul_add(0.4, hdr + rows_h)
         }
-        Block::Image { .. } => body_size * 1.8,
+        Block::Image { .. } => body_size * 10.0, // Rough estimate for actual image height
     }
 }
 
@@ -364,36 +364,37 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
         }
 
         Block::Image { url, alt } => {
-            let link_color = style
-                .link_color
-                .unwrap_or_else(|| ui.visuals().hyperlink_color);
-            let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
-            let label_text = if alt.is_empty() {
-                format!("\u{1F5BC} {url}")
-            } else {
-                format!("\u{1F5BC} {alt}")
-            };
-            egui::Frame::NONE
-                .fill(bg)
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(label_text)
-                            .color(link_color)
-                            .italics(),
-                    );
-                    if !alt.is_empty() {
-                        ui.label(
-                            egui::RichText::new(url)
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
-                });
-            ui.add_space(body_size * 0.3);
+            render_image(ui, url, alt, style, body_size);
         }
     }
+}
+
+fn render_image(
+    ui: &mut egui::Ui,
+    url: &str,
+    alt: &str,
+    style: &MarkdownStyle,
+    body_size: f32,
+) {
+    // Resolve relative URLs against the configured base URI.
+    let resolved = if url.contains("://") || style.image_base_uri.is_empty() {
+        url.to_owned()
+    } else {
+        format!("{}{url}", style.image_base_uri)
+    };
+
+    let max_width = ui.available_width();
+    let image = egui::Image::new(&resolved)
+        .max_width(max_width)
+        .corner_radius(4.0);
+
+    let response = ui.add(image);
+
+    // Show alt text (or URL) on hover.
+    let hover_text = if alt.is_empty() { url } else { alt };
+    response.on_hover_text(hover_text);
+
+    ui.add_space(body_size * 0.3);
 }
 
 fn render_heading(
