@@ -177,21 +177,21 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
         v
     };
     blocks.reserve(events.len() / 4 + 4);
-    let mut fmt_stack = Vec::with_capacity(4);
+    let mut fmt = InlineState::new();
     let mut i = 0;
     while i < events.len() {
-        i += parse_block(&events[i..], blocks, &mut fmt_stack);
+        i += parse_block(&events[i..], blocks, &mut fmt);
     }
 }
 
 fn parse_block(
     events: &[Event<'_>],
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     match &events[0] {
-        Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt_buf),
-        Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt_buf),
+        Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt),
+        Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
         Event::Start(Tag::CodeBlock(kind)) => {
             let lang = match kind {
                 pulldown_cmark::CodeBlockKind::Fenced(l) => l.to_string(),
@@ -199,9 +199,9 @@ fn parse_block(
             };
             parse_code_block(events, lang, blocks)
         }
-        Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, blocks, fmt_buf),
-        Event::Start(Tag::List(start)) => parse_list(events, *start, blocks, fmt_buf),
-        Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks, fmt_buf),
+        Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, blocks, fmt),
+        Event::Start(Tag::List(start)) => parse_list(events, *start, blocks, fmt),
+        Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks, fmt),
         Event::Start(Tag::Image {
             dest_url, title, ..
         }) => {
@@ -231,12 +231,12 @@ fn parse_heading(
     events: &[Event<'_>],
     level: HeadingLevel,
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     let lvl = heading_level_to_u8(level);
     let mut styled = StyledText::default();
     let mut consumed = 1;
-    fmt_buf.clear();
+    fmt.clear();
     while consumed < events.len() {
         match &events[consumed] {
             Event::End(TagEnd::Heading(_)) => {
@@ -244,7 +244,7 @@ fn parse_heading(
                 break;
             }
             ev => {
-                consume_inline(ev, &mut styled, fmt_buf);
+                consume_inline(ev, &mut styled, fmt);
                 consumed += 1;
             }
         }
@@ -259,7 +259,7 @@ fn parse_heading(
 fn parse_paragraph(
     events: &[Event<'_>],
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     // Check if this paragraph is a standalone image (the only inline content
     // inside the paragraph is a single Image tag). If so, emit Block::Image
@@ -270,7 +270,7 @@ fn parse_paragraph(
 
     let mut styled = StyledText::default();
     let mut consumed = 1;
-    fmt_buf.clear();
+    fmt.clear();
     while consumed < events.len() {
         match &events[consumed] {
             Event::End(TagEnd::Paragraph) => {
@@ -278,7 +278,7 @@ fn parse_paragraph(
                 break;
             }
             ev => {
-                consume_inline(ev, &mut styled, fmt_buf);
+                consume_inline(ev, &mut styled, fmt);
                 consumed += 1;
             }
         }
@@ -370,7 +370,7 @@ fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Blo
 fn parse_blockquote(
     events: &[Event<'_>],
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     let mut inner = Vec::new();
     let mut consumed = 1;
@@ -379,7 +379,7 @@ fn parse_blockquote(
             consumed += 1;
             break;
         }
-        let n = parse_block(&events[consumed..], &mut inner, fmt_buf);
+        let n = parse_block(&events[consumed..], &mut inner, fmt);
         consumed += n;
     }
     blocks.push(Block::Quote(inner));
@@ -390,7 +390,7 @@ fn parse_list(
     events: &[Event<'_>],
     start: Option<u64>,
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     let mut items = Vec::new();
     let mut consumed = 1;
@@ -404,7 +404,7 @@ fn parse_list(
                 consumed += 1;
                 let mut item_text = StyledText::default();
                 let mut children = Vec::new();
-                fmt_buf.clear();
+                fmt.clear();
                 let mut checked: Option<bool> = None;
                 while consumed < events.len() {
                     match &events[consumed] {
@@ -419,7 +419,7 @@ fn parse_list(
                             consumed += 1; // skip paragraph close in list item
                         }
                         Event::Start(Tag::List(_)) => {
-                            let n = parse_block(&events[consumed..], &mut children, fmt_buf);
+                            let n = parse_block(&events[consumed..], &mut children, fmt);
                             consumed += n;
                         }
                         Event::TaskListMarker(is_checked) => {
@@ -427,7 +427,7 @@ fn parse_list(
                             consumed += 1;
                         }
                         ev => {
-                            consume_inline(ev, &mut item_text, fmt_buf);
+                            consume_inline(ev, &mut item_text, fmt);
                             consumed += 1;
                         }
                     }
@@ -453,7 +453,7 @@ fn parse_table(
     events: &[Event<'_>],
     aligns: &[pulldown_cmark::Alignment],
     blocks: &mut Vec<Block>,
-    fmt_buf: &mut Vec<InlineFlag>,
+    fmt: &mut InlineState,
 ) -> usize {
     let alignments: Vec<Alignment> = aligns
         .iter()
@@ -471,7 +471,7 @@ fn parse_table(
     let mut in_head = false;
     let mut current_row: Vec<StyledText> = Vec::with_capacity(num_cols);
     let mut current_cell = StyledText::default();
-    fmt_buf.clear();
+    fmt.clear();
     let mut consumed = 1;
 
     while consumed < events.len() {
@@ -503,7 +503,7 @@ fn parse_table(
             }
             Event::Start(Tag::TableCell) => {
                 current_cell = StyledText::default();
-                fmt_buf.clear();
+                fmt.clear();
                 consumed += 1;
             }
             Event::End(TagEnd::TableCell) => {
@@ -511,7 +511,7 @@ fn parse_table(
                 consumed += 1;
             }
             ev => {
-                consume_inline(ev, &mut current_cell, fmt_buf);
+                consume_inline(ev, &mut current_cell, fmt);
                 consumed += 1;
             }
         }
@@ -534,69 +534,119 @@ enum InlineFlag {
     Link(Rc<str>),
 }
 
-fn consume_inline(event: &Event<'_>, styled: &mut StyledText, fmt_stack: &mut Vec<InlineFlag>) {
+/// Maintains the inline formatting stack and a cached `SpanStyle` that
+/// is updated incrementally on push/pop, making style queries O(1).
+struct InlineState {
+    stack: Vec<InlineFlag>,
+    /// Cached flags bitfield (strong | emphasis | strikethrough).
+    cached_flags: u8,
+    /// Cached link URL (last link on stack, or None).
+    cached_link: Option<Rc<str>>,
+}
+
+impl InlineState {
+    fn new() -> Self {
+        Self {
+            stack: Vec::with_capacity(4),
+            cached_flags: 0,
+            cached_link: None,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.stack.clear();
+        self.cached_flags = 0;
+        self.cached_link = None;
+    }
+
+    /// Current `SpanStyle` — O(1), no stack traversal.
+    fn style(&self) -> SpanStyle {
+        SpanStyle {
+            flags: self.cached_flags,
+            link: self.cached_link.clone(),
+        }
+    }
+
+    /// Current `SpanStyle` with the code flag set.
+    fn style_with_code(&self) -> SpanStyle {
+        SpanStyle {
+            flags: self.cached_flags | FLAG_CODE,
+            link: self.cached_link.clone(),
+        }
+    }
+
+    fn push(&mut self, flag: InlineFlag) {
+        match &flag {
+            InlineFlag::Strong => self.cached_flags |= FLAG_STRONG,
+            InlineFlag::Emphasis => self.cached_flags |= FLAG_EMPHASIS,
+            InlineFlag::Strikethrough => self.cached_flags |= FLAG_STRIKETHROUGH,
+            InlineFlag::Link(url) => self.cached_link = Some(Rc::clone(url)),
+        }
+        self.stack.push(flag);
+    }
+
+    fn pop(&mut self, flag: &InlineFlag) {
+        if let Some(pos) = self.stack.iter().rposition(|k| k == flag) {
+            self.stack.swap_remove(pos);
+            self.rebuild_cache();
+        }
+    }
+
+    fn pop_link(&mut self) {
+        if let Some(pos) = self
+            .stack
+            .iter()
+            .rposition(|k| matches!(k, InlineFlag::Link(_)))
+        {
+            self.stack.swap_remove(pos);
+            self.rebuild_cache();
+        }
+    }
+
+    /// Rebuild cached flags from the stack (only needed on pop).
+    fn rebuild_cache(&mut self) {
+        self.cached_flags = 0;
+        self.cached_link = None;
+        for flag in &self.stack {
+            match flag {
+                InlineFlag::Strong => self.cached_flags |= FLAG_STRONG,
+                InlineFlag::Emphasis => self.cached_flags |= FLAG_EMPHASIS,
+                InlineFlag::Strikethrough => self.cached_flags |= FLAG_STRIKETHROUGH,
+                InlineFlag::Link(url) => self.cached_link = Some(Rc::clone(url)),
+            }
+        }
+    }
+}
+
+fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut InlineState) {
     match event {
         Event::Text(t) => {
-            let style = build_span_style(fmt_stack);
+            let style = state.style();
             styled.push_text(t, style);
         }
         Event::Code(c) => {
-            let mut style = build_span_style(fmt_stack);
-            style.set_code();
+            let style = state.style_with_code();
             styled.push_text(c, style);
         }
         Event::SoftBreak => {
-            let style = build_span_style(fmt_stack);
+            let style = state.style();
             styled.push_text(" ", style);
         }
         Event::HardBreak => {
-            let style = build_span_style(fmt_stack);
+            let style = state.style();
             styled.push_text("\n", style);
         }
-        Event::Start(Tag::Strong) => fmt_stack.push(InlineFlag::Strong),
-        Event::End(TagEnd::Strong) => {
-            pop_flag(fmt_stack, &InlineFlag::Strong);
-        }
-        Event::Start(Tag::Emphasis) => fmt_stack.push(InlineFlag::Emphasis),
-        Event::End(TagEnd::Emphasis) => {
-            pop_flag(fmt_stack, &InlineFlag::Emphasis);
-        }
-        Event::Start(Tag::Strikethrough) => fmt_stack.push(InlineFlag::Strikethrough),
-        Event::End(TagEnd::Strikethrough) => {
-            pop_flag(fmt_stack, &InlineFlag::Strikethrough);
-        }
+        Event::Start(Tag::Strong) => state.push(InlineFlag::Strong),
+        Event::End(TagEnd::Strong) => state.pop(&InlineFlag::Strong),
+        Event::Start(Tag::Emphasis) => state.push(InlineFlag::Emphasis),
+        Event::End(TagEnd::Emphasis) => state.pop(&InlineFlag::Emphasis),
+        Event::Start(Tag::Strikethrough) => state.push(InlineFlag::Strikethrough),
+        Event::End(TagEnd::Strikethrough) => state.pop(&InlineFlag::Strikethrough),
         Event::Start(Tag::Link { dest_url, .. }) => {
-            fmt_stack.push(InlineFlag::Link(Rc::from(dest_url.as_ref())));
+            state.push(InlineFlag::Link(Rc::from(dest_url.as_ref())));
         }
-        Event::End(TagEnd::Link) => {
-            if let Some(pos) = fmt_stack
-                .iter()
-                .rposition(|k| matches!(k, InlineFlag::Link(_)))
-            {
-                fmt_stack.swap_remove(pos);
-            }
-        }
+        Event::End(TagEnd::Link) => state.pop_link(),
         _ => {}
-    }
-}
-
-/// Build a composite `SpanStyle` from the full formatting stack.
-fn build_span_style(fmt_stack: &[InlineFlag]) -> SpanStyle {
-    let mut style = SpanStyle::plain();
-    for flag in fmt_stack {
-        match flag {
-            InlineFlag::Strong => style.set_strong(),
-            InlineFlag::Emphasis => style.set_emphasis(),
-            InlineFlag::Strikethrough => style.set_strikethrough(),
-            InlineFlag::Link(url) => style.link = Some(url.clone()),
-        }
-    }
-    style
-}
-
-fn pop_flag(fmt_stack: &mut Vec<InlineFlag>, flag: &InlineFlag) {
-    if let Some(pos) = fmt_stack.iter().rposition(|k| k == flag) {
-        fmt_stack.swap_remove(pos);
     }
 }
 
