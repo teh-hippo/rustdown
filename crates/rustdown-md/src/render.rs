@@ -729,16 +729,26 @@ fn render_unordered_list(
         1 => "\u{25E6}",
         _ => "\u{25AA}",
     };
-    let indent_px = 20.0 * (indent as f32 + 1.0);
+    let indent_px = 16.0 * indent as f32;
+    let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
     for item in items {
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
-            match item.checked {
-                Some(true) => ui.label("\u{2611}"),
-                Some(false) => ui.label("\u{2610}"),
-                None => ui.label(bullet),
+            let bullet_text = match item.checked {
+                Some(true) => "\u{2611}",
+                Some(false) => "\u{2610}",
+                None => bullet,
             };
+            // Fixed-width bullet column aligned to body text.
+            ui.allocate_ui_with_layout(
+                egui::vec2(body_size * 1.2, body_size),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.label(bullet_text);
+                },
+            );
+            ui.add_space(4.0);
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
             });
@@ -757,23 +767,33 @@ fn render_ordered_list(
     style: &MarkdownStyle,
     indent: usize,
 ) {
-    let indent_px = 20.0 * (indent as f32 + 1.0);
+    let indent_px = 16.0 * indent as f32;
+    let body_size = ui.text_style_height(&egui::TextStyle::Body);
     let mut num_buf = String::with_capacity(8);
 
     for (i, item) in items.iter().enumerate() {
         let num = start + i as u64;
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
-            match item.checked {
-                Some(true) => ui.label("\u{2611}"),
-                Some(false) => ui.label("\u{2610}"),
-                None => {
-                    use std::fmt::Write;
-                    num_buf.clear();
-                    let _ = write!(num_buf, "{num}.");
-                    ui.label(&*num_buf)
-                }
-            };
+            // Fixed-width number column, right-aligned for neat stacking.
+            let num_width = body_size * 2.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(num_width, body_size),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    match item.checked {
+                        Some(true) => ui.label("\u{2611}"),
+                        Some(false) => ui.label("\u{2610}"),
+                        None => {
+                            use std::fmt::Write;
+                            num_buf.clear();
+                            let _ = write!(num_buf, "{num}.");
+                            ui.label(&*num_buf)
+                        }
+                    };
+                },
+            );
+            ui.add_space(4.0);
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
             });
