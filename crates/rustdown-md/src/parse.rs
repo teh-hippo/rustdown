@@ -1027,4 +1027,88 @@ mod tests {
             other => panic!("expected unordered list, got {other:?}"),
         }
     }
+
+    /// Verify that all bytes in styled text are covered by spans (no gaps).
+    fn assert_spans_cover_text(st: &StyledText) {
+        if st.text.is_empty() {
+            assert!(st.spans.is_empty(), "empty text should have no spans");
+            return;
+        }
+        assert!(!st.spans.is_empty(), "non-empty text should have spans");
+        assert_eq!(st.spans[0].start, 0, "first span should start at 0");
+        for window in st.spans.windows(2) {
+            assert_eq!(
+                window[0].end, window[1].start,
+                "spans should be contiguous: {:?} then {:?}",
+                window[0], window[1]
+            );
+        }
+        assert_eq!(
+            st.spans.last().map(|s| s.end),
+            Some(st.text.len()),
+            "last span should end at text length"
+        );
+    }
+
+    #[test]
+    fn spans_cover_all_paragraph_bytes() {
+        let cases = [
+            "Hello world",
+            "Hello **bold** world",
+            "**bold** *italic* ~~strike~~ `code`",
+            "A [link](https://x.com) here",
+            "**bold *bold-italic* bold**",
+            "Mixed **bold** and *italic* with `code` and [link](url)",
+        ];
+        for md in &cases {
+            let blocks = parse_markdown(md);
+            for block in &blocks {
+                if let Block::Paragraph(st) = block {
+                    assert_spans_cover_text(st);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spans_cover_all_heading_bytes() {
+        let md = "# Simple\n## **Bold** heading\n### `Code` in heading";
+        let blocks = parse_markdown(md);
+        for block in &blocks {
+            if let Block::Heading { text, .. } = block {
+                assert_spans_cover_text(text);
+            }
+        }
+    }
+
+    #[test]
+    fn spans_cover_list_item_bytes() {
+        let md = "- Item with **bold**\n- Item with `code`\n- [Link](url) item";
+        let blocks = parse_markdown(md);
+        for block in &blocks {
+            if let Block::UnorderedList(items) = block {
+                for item in items {
+                    assert_spans_cover_text(&item.content);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spans_cover_table_cell_bytes() {
+        let md = "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |";
+        let blocks = parse_markdown(md);
+        for block in &blocks {
+            if let Block::Table { header, rows, .. } = block {
+                for cell in header {
+                    assert_spans_cover_text(cell);
+                }
+                for row in rows {
+                    for cell in row {
+                        assert_spans_cover_text(cell);
+                    }
+                }
+            }
+        }
+    }
 }
