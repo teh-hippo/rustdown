@@ -816,7 +816,9 @@ fn render_table(
 ) {
     let num_cols = header.len().max(1);
     let available = ui.available_width();
-    let col_width = (available / num_cols as f32).max(40.0);
+    // Subtract grid spacing so total column width fits within available area.
+    let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
+    let col_width = ((available - spacing) / num_cols as f32).max(40.0);
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
     egui::Grid::new(ui.next_auto_id())
