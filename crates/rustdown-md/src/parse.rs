@@ -60,39 +60,88 @@ pub(crate) struct StyledText {
     pub(crate) spans: Vec<Span>,
 }
 
+/// Inline formatting flags that can be combined (e.g., bold + italic).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SpanStyle {
+    /// Bitfield: bit 0 = strong, 1 = emphasis, 2 = strikethrough, 3 = code.
+    flags: u8,
+    pub(crate) link: Option<String>,
+}
+
+const FLAG_STRONG: u8 = 1;
+const FLAG_EMPHASIS: u8 = 2;
+const FLAG_STRIKETHROUGH: u8 = 4;
+const FLAG_CODE: u8 = 8;
+
+impl SpanStyle {
+    pub(crate) const fn plain() -> Self {
+        Self {
+            flags: 0,
+            link: None,
+        }
+    }
+
+    pub(crate) const fn strong(&self) -> bool {
+        self.flags & FLAG_STRONG != 0
+    }
+
+    pub(crate) const fn set_strong(&mut self) {
+        self.flags |= FLAG_STRONG;
+    }
+
+    pub(crate) const fn emphasis(&self) -> bool {
+        self.flags & FLAG_EMPHASIS != 0
+    }
+
+    pub(crate) const fn set_emphasis(&mut self) {
+        self.flags |= FLAG_EMPHASIS;
+    }
+
+    pub(crate) const fn strikethrough(&self) -> bool {
+        self.flags & FLAG_STRIKETHROUGH != 0
+    }
+
+    pub(crate) const fn set_strikethrough(&mut self) {
+        self.flags |= FLAG_STRIKETHROUGH;
+    }
+
+    pub(crate) const fn code(&self) -> bool {
+        self.flags & FLAG_CODE != 0
+    }
+
+    pub(crate) const fn set_code(&mut self) {
+        self.flags |= FLAG_CODE;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn is_plain(&self) -> bool {
+        self.flags == 0 && self.link.is_none()
+    }
+}
+
 /// An inline formatting span within a `StyledText`.
 #[derive(Clone, Debug)]
 pub(crate) struct Span {
     pub(crate) start: usize,
     pub(crate) end: usize,
-    pub(crate) kind: SpanKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SpanKind {
-    Plain,
-    Strong,
-    Emphasis,
-    Strikethrough,
-    Code,
-    Link(String),
+    pub(crate) style: SpanStyle,
 }
 
 impl StyledText {
-    fn push_text(&mut self, s: &str, kind: SpanKind) {
+    fn push_text(&mut self, s: &str, style: SpanStyle) {
         let start = self.text.len();
         self.text.push_str(s);
         let end = self.text.len();
         if start < end {
-            // Merge adjacent spans of the same kind.
+            // Merge adjacent spans of the same style.
             if let Some(last) = self.spans.last_mut()
                 && last.end == start
-                && last.kind == kind
+                && last.style == style
             {
                 last.end = end;
                 return;
             }
-            self.spans.push(Span { start, end, kind });
+            self.spans.push(Span { start, end, style });
         }
     }
 }
@@ -161,7 +210,7 @@ fn parse_heading(events: &[Event<'_>], level: HeadingLevel, blocks: &mut Vec<Blo
     let lvl = heading_level_to_u8(level);
     let mut styled = StyledText::default();
     let mut consumed = 1;
-    let mut fmt_stack: Vec<SpanKind> = Vec::new();
+    let mut fmt_stack: Vec<InlineFlag> = Vec::new();
     while consumed < events.len() {
         match &events[consumed] {
             Event::End(TagEnd::Heading(_)) => {
@@ -184,7 +233,7 @@ fn parse_heading(events: &[Event<'_>], level: HeadingLevel, blocks: &mut Vec<Blo
 fn parse_paragraph(events: &[Event<'_>], blocks: &mut Vec<Block>) -> usize {
     let mut styled = StyledText::default();
     let mut consumed = 1;
-    let mut fmt_stack: Vec<SpanKind> = Vec::new();
+    let mut fmt_stack: Vec<InlineFlag> = Vec::new();
     while consumed < events.len() {
         match &events[consumed] {
             Event::End(TagEnd::Paragraph) => {
@@ -249,7 +298,7 @@ fn parse_list(events: &[Event<'_>], start: Option<u64>, blocks: &mut Vec<Block>)
                 consumed += 1;
                 let mut item_text = StyledText::default();
                 let mut children = Vec::new();
-                let mut fmt_stack: Vec<SpanKind> = Vec::new();
+                let mut fmt_stack: Vec<InlineFlag> = Vec::new();
                 while consumed < events.len() {
                     match &events[consumed] {
                         Event::End(TagEnd::Item) => {
@@ -308,7 +357,7 @@ fn parse_table(
     let mut in_head = false;
     let mut current_row: Vec<StyledText> = Vec::new();
     let mut current_cell = StyledText::default();
-    let mut fmt_stack: Vec<SpanKind> = Vec::new();
+    let mut fmt_stack: Vec<InlineFlag> = Vec::new();
     let mut consumed = 1;
 
     while consumed < events.len() {
@@ -362,43 +411,53 @@ fn parse_table(
     consumed
 }
 
-fn consume_inline(event: &Event<'_>, styled: &mut StyledText, fmt_stack: &mut Vec<SpanKind>) {
+/// Formatting flag for the inline stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InlineFlag {
+    Strong,
+    Emphasis,
+    Strikethrough,
+    Link(String),
+}
+
+fn consume_inline(event: &Event<'_>, styled: &mut StyledText, fmt_stack: &mut Vec<InlineFlag>) {
     match event {
         Event::Text(t) => {
-            let kind = current_span_kind(fmt_stack);
-            styled.push_text(t, kind);
+            let style = build_span_style(fmt_stack);
+            styled.push_text(t, style);
         }
         Event::Code(c) => {
-            styled.push_text(c, SpanKind::Code);
+            let mut style = build_span_style(fmt_stack);
+            style.set_code();
+            styled.push_text(c, style);
         }
         Event::SoftBreak => {
-            let kind = current_span_kind(fmt_stack);
-            styled.push_text(" ", kind);
+            let style = build_span_style(fmt_stack);
+            styled.push_text(" ", style);
         }
         Event::HardBreak => {
-            let kind = current_span_kind(fmt_stack);
-            styled.push_text("\n", kind);
+            let style = build_span_style(fmt_stack);
+            styled.push_text("\n", style);
         }
-        Event::Start(Tag::Strong) => fmt_stack.push(SpanKind::Strong),
+        Event::Start(Tag::Strong) => fmt_stack.push(InlineFlag::Strong),
         Event::End(TagEnd::Strong) => {
-            pop_kind(fmt_stack, &SpanKind::Strong);
+            pop_flag(fmt_stack, &InlineFlag::Strong);
         }
-        Event::Start(Tag::Emphasis) => fmt_stack.push(SpanKind::Emphasis),
+        Event::Start(Tag::Emphasis) => fmt_stack.push(InlineFlag::Emphasis),
         Event::End(TagEnd::Emphasis) => {
-            pop_kind(fmt_stack, &SpanKind::Emphasis);
+            pop_flag(fmt_stack, &InlineFlag::Emphasis);
         }
-        Event::Start(Tag::Strikethrough) => fmt_stack.push(SpanKind::Strikethrough),
+        Event::Start(Tag::Strikethrough) => fmt_stack.push(InlineFlag::Strikethrough),
         Event::End(TagEnd::Strikethrough) => {
-            pop_kind(fmt_stack, &SpanKind::Strikethrough);
+            pop_flag(fmt_stack, &InlineFlag::Strikethrough);
         }
         Event::Start(Tag::Link { dest_url, .. }) => {
-            fmt_stack.push(SpanKind::Link(dest_url.to_string()));
+            fmt_stack.push(InlineFlag::Link(dest_url.to_string()));
         }
         Event::End(TagEnd::Link) => {
-            // Pop the most recent Link entry.
             if let Some(pos) = fmt_stack
                 .iter()
-                .rposition(|k| matches!(k, SpanKind::Link(_)))
+                .rposition(|k| matches!(k, InlineFlag::Link(_)))
             {
                 fmt_stack.remove(pos);
             }
@@ -407,12 +466,22 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, fmt_stack: &mut Ve
     }
 }
 
-fn current_span_kind(fmt_stack: &[SpanKind]) -> SpanKind {
-    fmt_stack.last().cloned().unwrap_or(SpanKind::Plain)
+/// Build a composite `SpanStyle` from the full formatting stack.
+fn build_span_style(fmt_stack: &[InlineFlag]) -> SpanStyle {
+    let mut style = SpanStyle::plain();
+    for flag in fmt_stack {
+        match flag {
+            InlineFlag::Strong => style.set_strong(),
+            InlineFlag::Emphasis => style.set_emphasis(),
+            InlineFlag::Strikethrough => style.set_strikethrough(),
+            InlineFlag::Link(url) => style.link = Some(url.clone()),
+        }
+    }
+    style
 }
 
-fn pop_kind(fmt_stack: &mut Vec<SpanKind>, kind: &SpanKind) {
-    if let Some(pos) = fmt_stack.iter().rposition(|k| k == kind) {
+fn pop_flag(fmt_stack: &mut Vec<InlineFlag>, flag: &InlineFlag) {
+    if let Some(pos) = fmt_stack.iter().rposition(|k| k == flag) {
         fmt_stack.remove(pos);
     }
 }
@@ -454,8 +523,8 @@ mod tests {
         match &blocks[0] {
             Block::Paragraph(st) => {
                 assert_eq!(st.text, "Hello world and italic");
-                assert!(st.spans.iter().any(|s| s.kind == SpanKind::Strong));
-                assert!(st.spans.iter().any(|s| s.kind == SpanKind::Emphasis));
+                assert!(st.spans.iter().any(|s| s.style.strong()));
+                assert!(st.spans.iter().any(|s| s.style.emphasis()));
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
@@ -538,7 +607,7 @@ mod tests {
         let blocks = parse_markdown("Use `code` here");
         match &blocks[0] {
             Block::Paragraph(st) => {
-                assert!(st.spans.iter().any(|s| s.kind == SpanKind::Code));
+                assert!(st.spans.iter().any(|s| s.style.code()));
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
@@ -549,9 +618,11 @@ mod tests {
         let blocks = parse_markdown("[link](https://example.com)");
         match &blocks[0] {
             Block::Paragraph(st) => {
-                assert!(st.spans.iter().any(
-                    |s| matches!(&s.kind, SpanKind::Link(url) if url == "https://example.com")
-                ));
+                assert!(
+                    st.spans.iter().any(
+                        |s| matches!(&s.style.link, Some(url) if url == "https://example.com")
+                    )
+                );
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
@@ -575,8 +646,8 @@ mod tests {
     #[test]
     fn styled_text_merges_adjacent() {
         let mut st = StyledText::default();
-        st.push_text("hello", SpanKind::Plain);
-        st.push_text(" world", SpanKind::Plain);
+        st.push_text("hello", SpanStyle::plain());
+        st.push_text(" world", SpanStyle::plain());
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.spans[0].end, 11);
     }
@@ -689,11 +760,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Paragraph(st) => {
-                let link_count = st
-                    .spans
-                    .iter()
-                    .filter(|s| matches!(&s.kind, SpanKind::Link(_)))
-                    .count();
+                let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
                 assert!(
                     link_count >= 2,
                     "expected at least 2 links, got {link_count}"
@@ -710,7 +777,7 @@ mod tests {
         match &blocks[0] {
             Block::Paragraph(st) => {
                 assert!(
-                    st.spans.iter().any(|s| s.kind == SpanKind::Strikethrough),
+                    st.spans.iter().any(|s| s.style.strikethrough()),
                     "expected a strikethrough span"
                 );
             }
