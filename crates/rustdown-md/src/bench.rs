@@ -431,4 +431,192 @@ mod tests {
             elapsed_unicode / iters
         );
     }
+
+    // ── Scaling benchmarks (1MB+) ──────────────────────────────────
+
+    #[test]
+    fn bench_parse_1mb_mixed() {
+        let doc = stress::large_mixed_doc(1024);
+        let kb = doc.len() / 1024;
+        let per_iter = bench(&format!("parse_{kb}kb_mixed"), 5, || {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(100),
+            "parse {kb}KB too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_parse_2mb_mixed() {
+        let doc = stress::large_mixed_doc(2048);
+        let kb = doc.len() / 1024;
+        let per_iter = bench(&format!("parse_{kb}kb_mixed"), 3, || {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(250),
+            "parse {kb}KB too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_height_estimation_1mb() {
+        let doc = stress::large_mixed_doc(1024);
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+
+        let per_iter = bench("height_est_1mb", 50, || {
+            cache.heights.clear();
+            cache.ensure_heights(14.0, 600.0, &style);
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(5),
+            "height estimation 1MB too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_full_pipeline_100kb() {
+        let doc = stress::large_mixed_doc(100);
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+
+        // Simulate full pipeline: parse + heights + viewport lookup.
+        let per_iter = bench("full_pipeline_100kb", 50, || {
+            cache.clear();
+            cache.ensure_parsed(&doc);
+            cache.ensure_heights(14.0, 600.0, &style);
+            // Simulate viewport lookup at 10 positions.
+            let total_h = cache.total_height;
+            for i in 0..10_u32 {
+                let vis_top = total_h * (i as f32 / 10.0);
+                let vis_bottom = vis_top + 800.0;
+                let _first = match cache.cum_y.binary_search_by(|y| {
+                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+                std::hint::black_box(vis_bottom);
+            }
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(10),
+            "full pipeline 100KB too slow: {per_iter:?}"
+        );
+    }
+
+    // ── Specialized content benchmarks ─────────────────────────────
+
+    #[test]
+    fn bench_parse_task_list_100kb() {
+        let doc = stress::task_list_doc(100);
+        let kb = doc.len() / 1024;
+        let per_iter = bench(&format!("parse_{kb}kb_tasklist"), 50, || {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(15),
+            "parse {kb}KB task list too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_parse_emoji_100kb() {
+        let doc = stress::emoji_heavy_doc(100);
+        let kb = doc.len() / 1024;
+        let per_iter = bench(&format!("parse_{kb}kb_emoji"), 50, || {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(15),
+            "parse {kb}KB emoji too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_parse_table_100kb() {
+        let doc = stress::table_heavy_doc(100);
+        let kb = doc.len() / 1024;
+        let per_iter = bench(&format!("parse_{kb}kb_table"), 50, || {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        });
+        assert_perf!(
+            per_iter < Duration::from_millis(15),
+            "parse {kb}KB table too slow: {per_iter:?}"
+        );
+    }
+
+    #[test]
+    fn bench_cache_rapid_scroll_simulation() {
+        // Simulate rapid scrolling: same text, many viewport queries.
+        let doc = stress::large_mixed_doc(200);
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 600.0, &style);
+
+        let total_h = cache.total_height;
+        let n_blocks = cache.blocks.len();
+
+        // 100 frames of rapid scrolling (ensure_parsed noop + 5 viewport lookups each).
+        let per_iter = bench("rapid_scroll_200kb", 100, || {
+            // Re-check cache (should be noop).
+            cache.ensure_parsed(&doc);
+            cache.ensure_heights(14.0, 600.0, &style);
+
+            // 5 viewport positions per frame.
+            for step in 0..5_u32 {
+                let frac = step as f32 / 5.0;
+                let vis_top = total_h * frac;
+                let vis_bottom = vis_top + 800.0;
+                let first = match cache.cum_y.binary_search_by(|y| {
+                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    Ok(i) => i,
+                    Err(i) => i.saturating_sub(1),
+                };
+                let mut idx = first;
+                while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
+                    idx += 1;
+                }
+                std::hint::black_box((first, idx));
+            }
+        });
+        // At 60fps, we have 16.6ms per frame. This should be <1ms.
+        assert_perf!(
+            per_iter < Duration::from_millis(1),
+            "rapid scroll too slow: {per_iter:?}"
+        );
+    }
+
+    // ── Scaling linearity check ────────────────────────────────────
+
+    #[test]
+    fn parse_scales_linearly() {
+        let doc_100 = stress::large_mixed_doc(100);
+        let doc_500 = stress::large_mixed_doc(500);
+
+        let t100 = bench("linear_100kb", 20, || {
+            std::hint::black_box(parse_markdown(&doc_100));
+        });
+        let t500 = bench("linear_500kb", 5, || {
+            std::hint::black_box(parse_markdown(&doc_500));
+        });
+
+        // 500KB should take less than 8x the 100KB time (allowing for overhead).
+        let ratio = t500.as_nanos() as f64 / t100.as_nanos() as f64;
+        eprintln!("500KB/100KB ratio: {ratio:.1}x (ideal: 5.0x)");
+        assert_perf!(
+            ratio < 8.0,
+            "non-linear scaling: {ratio:.1}x (500KB={t500:?}, 100KB={t100:?})"
+        );
+    }
 }

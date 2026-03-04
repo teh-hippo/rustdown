@@ -254,3 +254,88 @@ pub fn minimal_docs() -> Vec<(&'static str, String)> {
         ("bom_prefix", "\u{FEFF}# BOM Heading".to_owned()),
     ]
 }
+
+/// Task-list-heavy document.
+pub fn task_list_doc(target_kb: usize) -> String {
+    let target_bytes = target_kb * 1024;
+    let mut doc = String::with_capacity(target_bytes + 1024);
+    let mut section = 0_u32;
+    while doc.len() < target_bytes {
+        section += 1;
+        let _ = write!(doc, "## Sprint {section}\n\n");
+        for i in 0..20 {
+            let checked = if i % 3 == 0 { "x" } else { " " };
+            let _ = writeln!(
+                doc,
+                "- [{checked}] Task {section}.{i}: implement feature **{i}**"
+            );
+        }
+        doc.push('\n');
+    }
+    doc
+}
+
+/// Emoji-sequence-heavy document for ZWJ / flag stress.
+pub fn emoji_heavy_doc(target_kb: usize) -> String {
+    let target_bytes = target_kb * 1024;
+    let mut doc = String::with_capacity(target_bytes + 1024);
+    let emojis = [
+        "👨‍👩‍👧‍👦",
+        "👩‍💻",
+        "🏳️‍🌈",
+        "👨‍🍳",
+        "👩‍🔬",
+        "🧑‍🤝‍🧑",
+        "👋🏻",
+        "👋🏼",
+        "👋🏽",
+        "👋🏾",
+        "👋🏿",
+        "🇦🇺",
+        "🇺🇸",
+        "🇬🇧",
+        "🇩🇪",
+        "🇫🇷",
+        "🇯🇵",
+        "♠️",
+        "♥️",
+        "♦️",
+        "♣️",
+        "⚡",
+        "🔥",
+        "💀",
+    ];
+    let mut idx = 0_usize;
+    while doc.len() < target_bytes {
+        let _ = writeln!(doc, "# Emoji Block {idx}\n");
+        for chunk in emojis.chunks(6) {
+            let line: String = chunk.join(" ");
+            let _ = writeln!(doc, "{line} **bold** *italic* `code`");
+        }
+        let _ = writeln!(doc);
+        idx += 1;
+    }
+    doc
+}
+
+/// Table-heavy document.
+pub fn table_heavy_doc(target_kb: usize) -> String {
+    let target_bytes = target_kb * 1024;
+    let mut doc = String::with_capacity(target_bytes + 1024);
+    let mut table_idx = 0_u32;
+    while doc.len() < target_bytes {
+        table_idx += 1;
+        let _ = writeln!(doc, "## Table {table_idx}\n");
+        let _ = writeln!(doc, "| Name | Value | Status | Notes |");
+        let _ = writeln!(doc, "|:-----|------:|:------:|-------|");
+        for row in 0..20 {
+            let _ = writeln!(
+                doc,
+                "| Item {row} | {val} | ✅ | Some **notes** here |",
+                val = row * 42
+            );
+        }
+        doc.push('\n');
+    }
+    doc
+}
