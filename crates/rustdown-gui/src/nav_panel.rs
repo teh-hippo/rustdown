@@ -157,7 +157,9 @@ impl NavState {
     fn expanded_hash(&self) -> u64 {
         let mut h: u64 = self.expanded.len() as u64;
         for &idx in &self.expanded {
-            h = h.wrapping_add(idx as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+            h = h
+                .wrapping_add(idx as u64)
+                .wrapping_mul(0x517c_c1b7_2722_0a95);
         }
         h
     }

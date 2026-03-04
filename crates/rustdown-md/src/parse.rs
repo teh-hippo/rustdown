@@ -184,11 +184,7 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
     }
 }
 
-fn parse_block(
-    events: &[Event<'_>],
-    blocks: &mut Vec<Block>,
-    fmt: &mut InlineState,
-) -> usize {
+fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
     match &events[0] {
         Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt),
         Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
@@ -256,11 +252,7 @@ fn parse_heading(
     consumed
 }
 
-fn parse_paragraph(
-    events: &[Event<'_>],
-    blocks: &mut Vec<Block>,
-    fmt: &mut InlineState,
-) -> usize {
+fn parse_paragraph(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
     // Check if this paragraph is a standalone image (the only inline content
     // inside the paragraph is a single Image tag). If so, emit Block::Image
     // instead of a paragraph containing alt text.
@@ -367,11 +359,7 @@ fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Blo
     consumed
 }
 
-fn parse_blockquote(
-    events: &[Event<'_>],
-    blocks: &mut Vec<Block>,
-    fmt: &mut InlineState,
-) -> usize {
+fn parse_blockquote(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
     let mut inner = Vec::new();
     let mut consumed = 1;
     while consumed < events.len() {
@@ -754,7 +742,11 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Table(table) => {
-                let TableData { header, rows, alignments } = table.as_ref();
+                let TableData {
+                    header,
+                    rows,
+                    alignments,
+                } = table.as_ref();
                 assert_eq!(header.len(), 2);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(alignments.len(), 2);

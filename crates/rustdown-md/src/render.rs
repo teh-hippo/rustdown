@@ -80,18 +80,16 @@ impl MarkdownCache {
         }
         self.height_body_size = body_size;
         self.height_wrap_width = wrap_width;
+        let n = self.blocks.len();
         self.heights.clear();
-        self.heights.reserve(self.blocks.len());
-        for block in &self.blocks {
-            self.heights
-                .push(estimate_block_height(block, body_size, wrap_width, style));
-        }
-        // Build cumulative offsets.
+        self.heights.reserve(n);
         self.cum_y.clear();
-        self.cum_y.reserve(self.blocks.len());
+        self.cum_y.reserve(n);
         let mut acc = 0.0_f32;
-        for h in &self.heights {
+        for block in &self.blocks {
             self.cum_y.push(acc);
+            let h = estimate_block_height(block, body_size, wrap_width, style);
+            self.heights.push(h);
             acc += h;
         }
         self.total_height = acc;
@@ -257,13 +255,15 @@ fn estimate_block_height(
             let hdr = if table.header.is_empty() {
                 0.0
             } else {
-                table.header
+                table
+                    .header
                     .iter()
                     .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
                     .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap_or(base_row_h)
             };
-            let rows_h: f32 = table.rows
+            let rows_h: f32 = table
+                .rows
                 .iter()
                 .map(|row| {
                     row.iter()
