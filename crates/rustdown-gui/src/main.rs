@@ -1179,6 +1179,7 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 }
 
 /// Convert a character index to a byte offset in `text`.
+#[cfg(test)]
 fn char_index_to_byte(text: &str, char_index: usize) -> usize {
     text.char_indices()
         .nth(char_index)
@@ -1187,15 +1188,27 @@ fn char_index_to_byte(text: &str, char_index: usize) -> usize {
 
 /// Build a `(row_y, row_start_byte)` table from galley rows.
 /// Computed once per galley rebuild; enables O(log n) scroll ↔ byte lookups.
+/// Uses a single-pass O(n) char scan instead of O(n²) repeated `.nth()`.
 fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> {
     let mut result = Vec::with_capacity(galley.rows.len());
-    let mut char_count = 0usize;
+    let mut char_iter = text.char_indices().peekable();
+    let mut chars_consumed = 0usize;
+    let mut target_char = 0usize;
+
     for row in &galley.rows {
-        let byte_offset = char_index_to_byte(text, char_count);
+        // Advance the iterator to the target character index.
+        while chars_consumed < target_char {
+            if char_iter.next().is_none() {
+                break;
+            }
+            chars_consumed += 1;
+        }
+        let byte_offset = char_iter.peek().map_or(text.len(), |&(i, _)| i);
         result.push((row.rect().min.y, byte_offset as u32));
-        char_count += row.glyphs.len();
+
+        target_char += row.glyphs.len();
         if row.ends_with_newline {
-            char_count += 1;
+            target_char += 1;
         }
     }
     result
@@ -2186,30 +2199,27 @@ impl RustdownApp {
             self.doc.preview_dirty = false;
         }
 
-        let nav_scroll_y = &mut self.nav.pending_scroll_y;
-        let mode = self.mode;
-        egui::ScrollArea::vertical()
-            .id_salt(egui::Id::new("preview_markdown").with("_scroll_area"))
-            .auto_shrink([false, true])
-            .scroll_source(egui::scroll_area::ScrollSource {
-                scroll_bar: true,
-                drag: false,
-                mouse_wheel: true,
-            })
-            .show(ui, |ui| {
-                CommonMarkViewer::new()
-                    .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
-                    .show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
+        CommonMarkViewer::new()
+            .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
+            .show_scrollable(
+                "preview_markdown",
+                ui,
+                &mut self.doc.md_cache,
+                self.doc.text.as_str(),
+            );
 
-                // Consume any pending nav-scroll target inside the scroll area.
-                if mode == Mode::Preview
-                    && let Some(y) = nav_scroll_y.take()
-                {
-                    let target =
-                        egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0));
-                    ui.scroll_to_rect(target, Some(egui::Align::TOP));
-                }
-            });
+        // Consume any pending nav-scroll target.  show_scrollable owns its
+        // ScrollArea so we apply the offset directly to stored state.
+        if self.mode == Mode::Preview
+            && let Some(y) = self.nav.pending_scroll_y.take()
+        {
+            let scroll_id = nav_panel::preview_scroll_id();
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
+                state.offset = egui::vec2(state.offset.x, y);
+                state.store(ui.ctx(), scroll_id);
+                ui.ctx().request_repaint();
+            }
+        }
     }
 
     /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
