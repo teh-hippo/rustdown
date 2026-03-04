@@ -100,12 +100,15 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
         | Options::ENABLE_TABLES
         | Options::ENABLE_HEADING_ATTRIBUTES;
     let parser = Parser::new_ext(source, opts);
-    let events: Vec<Event<'_>> = parser.collect();
-    parse_events(&events)
-}
-
-fn parse_events(events: &[Event<'_>]) -> Vec<Block> {
-    let mut blocks = Vec::new();
+    // Collect into Vec — required for our indexed recursive descent.
+    // Pre-allocate based on source size heuristic.
+    let events: Vec<Event<'_>> = {
+        let capacity = source.len() / 20 + 16;
+        let mut v = Vec::with_capacity(capacity);
+        v.extend(parser);
+        v
+    };
+    let mut blocks = Vec::with_capacity(events.len() / 4 + 4);
     let mut i = 0;
     while i < events.len() {
         i += parse_block(&events[i..], &mut blocks);
@@ -426,6 +429,7 @@ const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     #[test]
     fn parse_heading_simple() {
@@ -573,5 +577,36 @@ mod tests {
         st.push_text(" world", SpanKind::Plain);
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.spans[0].end, 11);
+    }
+
+    #[test]
+    fn parse_large_document_perf() {
+        // Build a ~50KB document with various block types.
+        let mut doc = String::with_capacity(50_000);
+        for i in 0..200 {
+            write!(doc, "## Heading {i}\n\n").ok();
+            doc.push_str("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ");
+            doc.push_str("Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.\n\n");
+            if i % 5 == 0 {
+                doc.push_str("```rust\nfn example() { /* code */ }\n```\n\n");
+            }
+            if i % 3 == 0 {
+                doc.push_str("- item one\n- item two\n- item three\n\n");
+            }
+        }
+        let start = std::time::Instant::now();
+        let iterations = 100;
+        for _ in 0..iterations {
+            let blocks = parse_markdown(&doc);
+            assert!(!blocks.is_empty());
+        }
+        let elapsed = start.elapsed();
+        let per_iter = elapsed / iterations;
+        // Should complete in < 5ms per parse for ~50KB.
+        assert!(
+            per_iter.as_millis() < 5,
+            "parse too slow: {per_iter:?} per iteration for {}KB",
+            doc.len() / 1024
+        );
     }
 }

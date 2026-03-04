@@ -241,11 +241,14 @@ fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     }
     let avg_char_width = font_size * 0.55;
     let chars_per_line = (wrap_width / avg_char_width).max(1.0);
-    let hard_lines: usize = text.lines().count().max(1);
-    let soft_lines: f32 = text
-        .lines()
-        .map(|line| (line.len() as f32 / chars_per_line).ceil().max(1.0))
-        .sum();
+    // Single pass over lines: count hard lines and estimate soft-wrapped lines.
+    let mut hard_lines = 0_usize;
+    let mut soft_lines = 0.0_f32;
+    for line in text.lines() {
+        hard_lines += 1;
+        soft_lines += (line.len() as f32 / chars_per_line).ceil().max(1.0);
+    }
+    hard_lines = hard_lines.max(1);
     let total = soft_lines.max(hard_lines as f32);
     total * font_size * 1.3
 }
@@ -652,6 +655,7 @@ fn simple_hash(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     #[test]
     fn cache_invalidates_on_text_change() {
@@ -750,5 +754,37 @@ mod tests {
                 "cum_y[{i}] should be sum of previous heights"
             );
         }
+    }
+
+    #[test]
+    fn height_estimation_perf() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+
+        // Build a ~50KB document.
+        let mut doc = String::with_capacity(50_000);
+        for i in 0..200 {
+            write!(doc, "## Heading {i}\n\n").ok();
+            doc.push_str("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ");
+            doc.push_str("Sed do eiusmod tempor incididunt.\n\n");
+            if i % 5 == 0 {
+                doc.push_str("```\ncode block\n```\n\n");
+            }
+        }
+
+        cache.ensure_parsed(&doc);
+        let iterations = 1000;
+        let start = std::time::Instant::now();
+        for _ in 0..iterations {
+            cache.heights.clear();
+            cache.ensure_heights(14.0, 600.0, &style);
+        }
+        let elapsed = start.elapsed();
+        let per_iter = elapsed / iterations;
+        assert!(
+            per_iter.as_micros() < 500,
+            "height estimation too slow: {per_iter:?} for {} blocks",
+            cache.blocks.len()
+        );
     }
 }
