@@ -396,7 +396,7 @@ fn run_open_pipeline_diagnostics(
     let highlight_job_ms = highlight_job_start.elapsed();
 
     let highlight_layout_start = Instant::now();
-    let galley = std::hint::black_box(ctx.fonts(|fonts| fonts.layout_job(job)));
+    let galley = std::hint::black_box(ctx.fonts_mut(|fonts| fonts.layout_job(job)));
     let highlight_layout_ms = highlight_layout_start.elapsed();
 
     let make_document = |image_uri_scheme: String,
@@ -509,7 +509,7 @@ fn run_open_pipeline_diagnostics(
             std::hint::black_box(app.doc.text.as_str()),
             false,
         );
-        let loop_galley = ctx.fonts(|fonts| fonts.layout_job(loop_job));
+        let loop_galley = ctx.fonts_mut(|fonts| fonts.layout_job(loop_job));
         std::hint::black_box(loop_galley.rows.len());
     });
     let search_query = "az";
@@ -930,6 +930,10 @@ impl egui::TextBuffer for TrackedTextBuffer<'_, '_> {
         }
         egui::TextBuffer::delete_char_range(Arc::make_mut(self.text), char_range);
     }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<TrackedTextBuffer<'static, 'static>>()
+    }
 }
 
 #[derive(Debug)]
@@ -1188,7 +1192,7 @@ fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> 
     let mut char_count = 0usize;
     for row in &galley.rows {
         let byte_offset = char_index_to_byte(text, char_count);
-        result.push((row.rect.min.y, byte_offset as u32));
+        result.push((row.rect().min.y, byte_offset as u32));
         char_count += row.glyphs.len();
         if row.ends_with_newline {
             char_count += 1;
@@ -2089,7 +2093,8 @@ impl RustdownApp {
                 .frame(false)
                 .id(egui::Id::new("editor"));
 
-            let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+            let mut layouter = |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let string = text_buf.as_str();
                 let seq = seq.get();
                 let wrap_width_bits = wrap_width.to_bits();
                 let zoom_factor_bits = ui.ctx().zoom_factor().to_bits();
@@ -2125,7 +2130,7 @@ impl RustdownApp {
                 };
 
                 let layout_job_copy = job.clone();
-                let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                 let row_byte_offsets = if nav_visible {
                     build_row_byte_offsets(&galley, string)
                 } else {
@@ -2186,7 +2191,11 @@ impl RustdownApp {
         egui::ScrollArea::vertical()
             .id_salt(egui::Id::new("preview_markdown").with("_scroll_area"))
             .auto_shrink([false, true])
-            .drag_to_scroll(false)
+            .scroll_source(egui::scroll_area::ScrollSource {
+                scroll_bar: true,
+                drag: false,
+                mouse_wheel: true,
+            })
             .show(ui, |ui| {
                 CommonMarkViewer::new()
                     .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
