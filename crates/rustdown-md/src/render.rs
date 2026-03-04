@@ -249,20 +249,20 @@ fn estimate_block_height(
             body_size.mul_add(0.2, item_h)
         }
         Block::ThematicBreak => body_size * 0.8,
-        Block::Table { header, rows, .. } => {
-            let num_cols = header.len().max(1);
+        Block::Table(table) => {
+            let num_cols = table.header.len().max(1);
             let col_width = (wrap_width / num_cols as f32).max(40.0);
             let base_row_h = body_size * 1.6;
-            let hdr = if header.is_empty() {
+            let hdr = if table.header.is_empty() {
                 0.0
             } else {
-                header
+                table.header
                     .iter()
                     .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
                     .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap_or(base_row_h)
             };
-            let rows_h: f32 = rows
+            let rows_h: f32 = table.rows
                 .iter()
                 .map(|row| {
                     row.iter()
@@ -299,29 +299,9 @@ fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     total * font_size * 1.3
 }
 
-/// Fast newline counting via byte scan.
+/// Fast newline counting via memchr.
 fn bytecount_newlines(bytes: &[u8]) -> usize {
-    // Process 8 bytes at a time for throughput.
-    let mut count = 0_usize;
-    let chunks = bytes.chunks_exact(8);
-    let remainder = chunks.remainder();
-    for chunk in chunks {
-        // Safety: chunks_exact guarantees 8 bytes.
-        let word = u64::from_ne_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
-        // SWAR: broadcast 0x0A (newline) to each byte, XOR to find matches,
-        // then use the standard "has zero byte" trick.
-        let xor = word ^ 0x0A0A_0A0A_0A0A_0A0A;
-        let has_zero = (xor.wrapping_sub(0x0101_0101_0101_0101)) & !xor & 0x8080_8080_8080_8080;
-        count += has_zero.count_ones() as usize;
-    }
-    for &b in remainder {
-        if b == b'\n' {
-            count += 1;
-        }
-    }
-    count
+    memchr::memchr_iter(b'\n', bytes).count()
 }
 
 // ── Block rendering ────────────────────────────────────────────────
@@ -371,12 +351,8 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
             render_hr(ui, style, body_size);
         }
 
-        Block::Table {
-            header,
-            alignments,
-            rows,
-        } => {
-            render_table(ui, header, alignments, rows, style);
+        Block::Table(table) => {
+            render_table(ui, &table.header, &table.alignments, &table.rows, style);
             ui.add_space(body_size * 0.4);
         }
 
@@ -621,7 +597,7 @@ fn render_text_with_links(
 
     ui.horizontal_wrapped(|ui| {
         for span in &st.spans {
-            let text = &st.text[span.start..span.end];
+            let text = &st.text[span.start as usize..span.end as usize];
             if let Some(ref url) = span.style.link {
                 // Render as clickable hyperlink.
                 let font = egui::FontId::new(size, egui::FontFamily::Proportional);
@@ -708,7 +684,7 @@ fn build_layout_job(
         }
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,
-            byte_range: span.start..span.end,
+            byte_range: span.start as usize..span.end as usize,
             format,
         });
     }
@@ -909,6 +885,7 @@ pub fn simple_hash(s: &str) -> u64 {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use crate::parse::TableData;
     use std::fmt::Write;
 
     #[test]
@@ -1061,7 +1038,7 @@ mod tests {
     #[test]
     fn estimate_height_table() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let block = Block::Table {
+        let block = Block::Table(Box::new(TableData {
             header: vec![StyledText {
                 text: "Col".to_owned(),
                 spans: vec![],
@@ -1071,7 +1048,7 @@ mod tests {
                 text: "val".to_owned(),
                 spans: vec![],
             }]],
-        };
+        }));
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
         assert!(h > 0.0);
     }
@@ -1360,7 +1337,7 @@ Normal paragraph.
         let (blocks, height) = headless_render(md);
         let table_count = blocks
             .iter()
-            .filter(|b| matches!(b, Block::Table { .. }))
+            .filter(|b| matches!(b, Block::Table(_)))
             .count();
         assert_eq!(table_count, 1);
         assert!(height > 0.0);
@@ -1378,7 +1355,7 @@ Normal paragraph.
         assert_eq!(
             blocks
                 .iter()
-                .filter(|b| matches!(b, Block::Table { .. }))
+                .filter(|b| matches!(b, Block::Table(_)))
                 .count(),
             1
         );
@@ -1396,11 +1373,11 @@ Normal paragraph.
 ";
         let (blocks, _) = headless_render(md);
         match &blocks[0] {
-            Block::Table { rows, .. } => {
-                assert_eq!(rows.len(), 3, "expected 3 data rows");
+            Block::Table(table) => {
+                assert_eq!(table.rows.len(), 3, "expected 3 data rows");
                 // Row 2 should have empty text
                 assert!(
-                    rows[1][0].text.trim().is_empty(),
+                    table.rows[1][0].text.trim().is_empty(),
                     "middle row col 0 should be empty"
                 );
             }
@@ -1416,7 +1393,7 @@ Normal paragraph.
 | `parse`  | `fn()`|
 ";
         let (blocks, _) = headless_render(md);
-        assert!(matches!(&blocks[0], Block::Table { .. }));
+        assert!(matches!(&blocks[0], Block::Table(_)));
     }
 
     #[test]
@@ -1439,10 +1416,10 @@ Normal paragraph.
 ";
         let (blocks, _) = headless_render(md);
         match &blocks[0] {
-            Block::Table { alignments, .. } => {
-                assert_eq!(alignments[0], Alignment::Left);
-                assert_eq!(alignments[1], Alignment::Center);
-                assert_eq!(alignments[2], Alignment::Right);
+            Block::Table(table) => {
+                assert_eq!(table.alignments[0], Alignment::Left);
+                assert_eq!(table.alignments[1], Alignment::Center);
+                assert_eq!(table.alignments[2], Alignment::Right);
             }
             other => panic!("expected Table, got {other:?}"),
         }
@@ -1774,7 +1751,7 @@ Normal paragraph.
         let (blocks, height) = headless_render(&doc);
         let table_count = blocks
             .iter()
-            .filter(|b| matches!(b, Block::Table { .. }))
+            .filter(|b| matches!(b, Block::Table(_)))
             .count();
         assert!(table_count > 0, "table-heavy doc should have tables");
         assert!(height > 0.0);
@@ -1879,7 +1856,7 @@ Normal paragraph.
 
         // Verify key block types are present
         let has_heading = blocks.iter().any(|b| matches!(b, Block::Heading { .. }));
-        let has_table = blocks.iter().any(|b| matches!(b, Block::Table { .. }));
+        let has_table = blocks.iter().any(|b| matches!(b, Block::Table(_)));
         let has_code = blocks.iter().any(|b| matches!(b, Block::Code { .. }));
         let has_list = blocks.iter().any(|b| matches!(b, Block::UnorderedList(_)));
         let has_ordered = blocks

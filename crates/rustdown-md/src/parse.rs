@@ -6,6 +6,9 @@ use std::rc::Rc;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A single renderable block produced by parsing.
+///
+/// Large variants (`Table`) are boxed to keep the enum compact (~56 bytes
+/// instead of ~72), improving cache locality during block iteration.
 #[derive(Clone, Debug)]
 pub enum Block {
     Heading {
@@ -25,15 +28,19 @@ pub enum Block {
         items: Vec<ListItem>,
     },
     ThematicBreak,
-    Table {
-        header: Vec<StyledText>,
-        alignments: Vec<Alignment>,
-        rows: Vec<Vec<StyledText>>,
-    },
+    Table(Box<TableData>),
     Image {
         url: String,
         alt: String,
     },
+}
+
+/// Table block data, boxed inside `Block::Table` to keep enum size down.
+#[derive(Clone, Debug)]
+pub struct TableData {
+    pub header: Vec<StyledText>,
+    pub alignments: Vec<Alignment>,
+    pub rows: Vec<Vec<StyledText>>,
 }
 
 /// Alignment for table columns.
@@ -116,18 +123,21 @@ impl SpanStyle {
 }
 
 /// An inline formatting span within a `StyledText`.
+///
+/// Uses `u32` offsets to keep the struct compact (32 bytes instead of 40).
+/// Documents larger than 4 GiB are unsupported.
 #[derive(Clone, Debug)]
 pub struct Span {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
     pub style: SpanStyle,
 }
 
 impl StyledText {
     fn push_text(&mut self, s: &str, style: SpanStyle) {
-        let start = self.text.len();
+        let start = self.text.len() as u32;
         self.text.push_str(s);
-        let end = self.text.len();
+        let end = self.text.len() as u32;
         if start < end {
             // Merge adjacent spans of the same style.
             if let Some(last) = self.spans.last_mut()
@@ -498,11 +508,11 @@ fn parse_table(
         }
     }
 
-    blocks.push(Block::Table {
+    blocks.push(Block::Table(Box::new(TableData {
         header,
         alignments,
         rows,
-    });
+    })));
     consumed
 }
 
@@ -684,11 +694,8 @@ mod tests {
         let blocks = parse_markdown(md);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
-            Block::Table {
-                header,
-                rows,
-                alignments,
-            } => {
+            Block::Table(table) => {
+                let TableData { header, rows, alignments } = table.as_ref();
                 assert_eq!(header.len(), 2);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(alignments.len(), 2);
@@ -802,7 +809,8 @@ mod tests {
         let blocks = parse_markdown(md);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
-            Block::Table { alignments, .. } => {
+            Block::Table(table) => {
+                let TableData { alignments, .. } = table.as_ref();
                 assert_eq!(alignments.len(), 3);
                 assert_eq!(alignments[0], Alignment::Left);
                 assert_eq!(alignments[1], Alignment::Center);
@@ -818,7 +826,8 @@ mod tests {
         let blocks = parse_markdown(md);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
-            Block::Table { header, rows, .. } => {
+            Block::Table(table) => {
+                let TableData { header, rows, .. } = table.as_ref();
                 assert_eq!(header.len(), 2);
                 assert!(rows.is_empty());
             }
@@ -1040,7 +1049,7 @@ mod tests {
         }
         assert_eq!(
             st.spans.last().map(|s| s.end),
-            Some(st.text.len()),
+            Some(st.text.len() as u32),
             "last span should end at text length"
         );
     }
@@ -1094,7 +1103,8 @@ mod tests {
         let md = "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |";
         let blocks = parse_markdown(md);
         for block in &blocks {
-            if let Block::Table { header, rows, .. } = block {
+            if let Block::Table(table) = block {
+                let TableData { header, rows, .. } = table.as_ref();
                 for cell in header {
                     assert_spans_cover_text(cell);
                 }

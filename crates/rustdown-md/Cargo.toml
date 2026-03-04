@@ -11,4 +11,5 @@ workspace = true
 
 [dependencies]
 egui = "0.33"
+memchr = "2"
 pulldown-cmark = "0.13"

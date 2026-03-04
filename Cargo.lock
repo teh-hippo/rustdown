@@ -2115,6 +2115,7 @@ name = "rustdown-md"
 version = "0.6.0-alpha.5"
 dependencies = [
  "egui",
+ "memchr",
  "pulldown-cmark",
 ]
 
