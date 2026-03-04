@@ -327,21 +327,26 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
             ui.add_space(body_size * 0.4);
         }
 
-        Block::Code { code, .. } => {
+        Block::Code { language, code } => {
             let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
             let available = ui.available_width();
+            if !language.is_empty() {
+                ui.label(egui::RichText::new(language.as_str()).small().weak());
+            }
             egui::Frame::NONE
                 .fill(bg)
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
                     ui.set_min_width(available - 12.0);
-                    let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
-                    ui.label(
-                        egui::RichText::new(code.trim_end())
-                            .font(mono)
-                            .color(ui.visuals().text_color()),
-                    );
+                    egui::ScrollArea::horizontal().show(ui, |ui| {
+                        let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
+                        ui.label(
+                            egui::RichText::new(code.trim_end())
+                                .font(mono)
+                                .color(ui.visuals().text_color()),
+                        );
+                    });
                 });
             ui.add_space(body_size * 0.4);
         }
@@ -653,7 +658,11 @@ fn render_unordered_list(
     for item in items {
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
-            ui.label(bullet);
+            match item.checked {
+                Some(true) => ui.label("\u{2611}"),
+                Some(false) => ui.label("\u{2610}"),
+                None => ui.label(bullet),
+            };
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
             });
@@ -677,7 +686,11 @@ fn render_ordered_list(
         let num = start + i as u64;
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
-            ui.label(format!("{num}."));
+            match item.checked {
+                Some(true) => ui.label("\u{2611}"),
+                Some(false) => ui.label("\u{2610}"),
+                None => ui.label(format!("{num}.")),
+            };
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
             });
@@ -725,15 +738,22 @@ fn render_table_cell(
     ui: &mut egui::Ui,
     cell: &StyledText,
     style: &MarkdownStyle,
-    _align: Alignment, // Table column alignment is not yet applied to cell layout.
+    align: Alignment,
     is_header: bool,
 ) {
-    if is_header {
-        let body_size = ui.text_style_height(&egui::TextStyle::Body);
-        render_styled_text_ex(ui, cell, style, Some(body_size), None);
-    } else {
-        render_styled_text(ui, cell, style);
-    }
+    let layout = match align {
+        Alignment::Right => egui::Layout::right_to_left(egui::Align::TOP),
+        Alignment::Center => egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        Alignment::Left | Alignment::None => egui::Layout::left_to_right(egui::Align::TOP),
+    };
+    ui.with_layout(layout, |ui| {
+        if is_header {
+            let body_size = ui.text_style_height(&egui::TextStyle::Body);
+            render_styled_text_ex(ui, cell, style, Some(body_size), None);
+        } else {
+            render_styled_text(ui, cell, style);
+        }
+    });
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
@@ -919,6 +939,7 @@ mod tests {
                 spans: vec![],
             },
             children: vec![],
+            checked: None,
         }]);
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
         assert!(h > 0.0);
@@ -972,6 +993,7 @@ mod tests {
                     spans: vec![],
                 },
                 children: vec![],
+                checked: None,
             }],
         };
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
@@ -1036,5 +1058,30 @@ mod tests {
             "height estimation too slow: {per_iter:?} for {} blocks",
             cache.blocks.len()
         );
+    }
+
+    #[test]
+    fn estimate_height_with_task_list() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::UnorderedList(vec![
+            ListItem {
+                content: StyledText {
+                    text: "checked".to_owned(),
+                    spans: vec![],
+                },
+                children: vec![],
+                checked: Some(true),
+            },
+            ListItem {
+                content: StyledText {
+                    text: "unchecked".to_owned(),
+                    spans: vec![],
+                },
+                children: vec![],
+                checked: Some(false),
+            },
+        ]);
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
     }
 }

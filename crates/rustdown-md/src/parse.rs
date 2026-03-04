@@ -13,9 +13,6 @@ pub(crate) enum Block {
     Paragraph(StyledText),
     Code {
         /// Language tag from fenced code blocks (e.g. "rust", "python").
-        /// Preserved for future use (syntax highlighting labels, copy-button
-        /// tooltips) even though the renderer does not read it yet.
-        #[allow(dead_code)]
         language: String,
         code: String,
     },
@@ -51,6 +48,8 @@ pub(crate) enum Alignment {
 pub(crate) struct ListItem {
     pub(crate) content: StyledText,
     pub(crate) children: Vec<Block>,
+    /// Task-list checkbox state: `Some(true)` = checked, `Some(false)` = unchecked, `None` = normal item.
+    pub(crate) checked: Option<bool>,
 }
 
 /// Styled text: a string with inline formatting spans.
@@ -148,8 +147,10 @@ impl StyledText {
 
 /// Parse markdown source into blocks.
 pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
-    let opts =
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_HEADING_ATTRIBUTES;
+    let opts = Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(source, opts);
     // Collect into Vec — required for our indexed recursive descent.
     // Pre-allocate based on source size heuristic.
@@ -299,6 +300,7 @@ fn parse_list(events: &[Event<'_>], start: Option<u64>, blocks: &mut Vec<Block>)
                 let mut item_text = StyledText::default();
                 let mut children = Vec::new();
                 let mut fmt_stack: Vec<InlineFlag> = Vec::new();
+                let mut checked: Option<bool> = None;
                 while consumed < events.len() {
                     match &events[consumed] {
                         Event::End(TagEnd::Item) => {
@@ -315,6 +317,10 @@ fn parse_list(events: &[Event<'_>], start: Option<u64>, blocks: &mut Vec<Block>)
                             let n = parse_block(&events[consumed..], &mut children);
                             consumed += n;
                         }
+                        Event::TaskListMarker(is_checked) => {
+                            checked = Some(*is_checked);
+                            consumed += 1;
+                        }
                         ev => {
                             consume_inline(ev, &mut item_text, &mut fmt_stack);
                             consumed += 1;
@@ -324,6 +330,7 @@ fn parse_list(events: &[Event<'_>], start: Option<u64>, blocks: &mut Vec<Block>)
                 items.push(ListItem {
                     content: item_text,
                     children,
+                    checked,
                 });
             }
             _ => consumed += 1,
@@ -857,5 +864,49 @@ mod tests {
             "parse too slow: {per_iter:?} per iteration for {}KB",
             doc.len() / 1024
         );
+    }
+
+    #[test]
+    fn parse_task_list_checked() {
+        let blocks = parse_markdown("- [x] done");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[0].content.text, "done");
+            }
+            other => panic!("expected unordered list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_task_list_unchecked() {
+        let blocks = parse_markdown("- [ ] todo");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].checked, Some(false));
+                assert_eq!(items[0].content.text, "todo");
+            }
+            other => panic!("expected unordered list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_task_list_mixed() {
+        let md = "- [x] checked\n- [ ] unchecked\n- normal\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
+            }
+            other => panic!("expected unordered list, got {other:?}"),
+        }
     }
 }
