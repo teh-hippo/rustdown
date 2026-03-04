@@ -22,12 +22,14 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 mod diagnostics;
 mod disk_io;
+mod document;
 mod format;
 mod highlight;
 mod live_merge;
 mod markdown_fence;
 mod nav_outline;
 mod nav_panel;
+mod search;
 mod ui_style;
 
 #[cfg(debug_assertions)]
@@ -36,7 +38,9 @@ mod nav_debug;
 use disk_io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
 };
+use document::{Document, DocumentStats, EditorGalleyCache, TrackedTextBuffer};
 use live_merge::{Merge3Outcome, merge_three_way};
+use search::{SearchState, find_match_count, replace_all_occurrences};
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
 const DISK_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -348,95 +352,8 @@ struct RustdownApp {
     merge_sidecar_path: Option<PathBuf>,
 }
 
-struct Document {
-    path: Option<PathBuf>,
-    image_uri_scheme: String,
-    text: Arc<String>,
-    base_text: Arc<String>,
-    disk_rev: Option<DiskRevision>,
-    stats: DocumentStats,
-    stats_dirty: bool,
-    preview_dirty: bool,
-    dirty: bool,
-    md_cache: CommonMarkCache,
-    last_edit_at: Option<Instant>,
-    edit_seq: u64,
-    editor_galley_cache: Option<EditorGalleyCache>,
-}
-
-impl Default for Document {
-    fn default() -> Self {
-        let text = Arc::new(String::new());
-        Self {
-            path: None,
-            image_uri_scheme: default_image_uri_scheme(None),
-            text: text.clone(),
-            base_text: text,
-            disk_rev: None,
-            stats: DocumentStats::default(),
-            stats_dirty: false,
-            preview_dirty: false,
-            dirty: false,
-            md_cache: CommonMarkCache::default(),
-            last_edit_at: None,
-            edit_seq: 0,
-            editor_galley_cache: None,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct EditorGalleyCache {
-    /// Content key: only changes when text or color mode changes.
-    content_seq: u64,
-    content_color_mode: bool,
-    /// Layout key: changes when wrap width or zoom changes.
-    wrap_width_bits: u32,
-    zoom_factor_bits: u32,
-    /// Cached highlight output (survives zoom/resize, only invalidated by text changes).
-    layout_job: egui::text::LayoutJob,
-    galley: Arc<egui::Galley>,
-    /// Pre-computed `(row_y, row_start_byte)` for O(log n) scroll-to-byte mapping.
-    row_byte_offsets: Vec<(f32, u32)>,
-}
-
-struct TrackedTextBuffer<'a, 'b> {
-    text: &'a mut Arc<String>,
-    seq: &'b Cell<u64>,
-}
-
-impl egui::TextBuffer for TrackedTextBuffer<'_, '_> {
-    fn is_mutable(&self) -> bool {
-        true
-    }
-
-    fn as_str(&self) -> &str {
-        self.text.as_str()
-    }
-
-    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
-        let inserted = egui::TextBuffer::insert_text(Arc::make_mut(self.text), text, char_index);
-        if inserted != 0 {
-            self.seq.set(self.seq.get().wrapping_add(1));
-        }
-        inserted
-    }
-
-    fn delete_char_range(&mut self, char_range: std::ops::Range<usize>) {
-        if char_range.start < char_range.end {
-            self.seq.set(self.seq.get().wrapping_add(1));
-        }
-        egui::TextBuffer::delete_char_range(Arc::make_mut(self.text), char_range);
-    }
-
-    fn type_id(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<TrackedTextBuffer<'static, 'static>>()
-    }
-}
-
-#[derive(Debug)]
 /// How the document should be flagged after applying disk text.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ReloadKind {
     /// Clean reload from disk: buffer is clean, clear last edit timestamp.
     Clean,
@@ -479,118 +396,6 @@ struct DiskConflict {
     disk_rev: DiskRevision,
     conflict_marked: String,
     ours_wins: String,
-}
-
-impl Document {
-    #[must_use]
-    fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
-        let last = self.last_edit_at?;
-        let since = last.elapsed();
-        debounce.checked_sub(since)
-    }
-
-    #[must_use]
-    fn title(&self) -> Cow<'_, str> {
-        self.path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map_or_else(|| Cow::Borrowed("Untitled"), |name| name.to_string_lossy())
-    }
-
-    #[must_use]
-    fn path_label(&self) -> Cow<'_, str> {
-        self.path
-            .as_ref()
-            .map_or_else(|| Cow::Borrowed("Unsaved"), |path| path.to_string_lossy())
-    }
-
-    #[must_use]
-    const fn stats(&self) -> DocumentStats {
-        self.stats
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DocumentStats {
-    lines: usize,
-}
-
-impl DocumentStats {
-    #[must_use]
-    fn from_text(text: &str) -> Self {
-        let lines = if text.is_empty() {
-            1
-        } else {
-            1 + bytecount_newlines(text)
-        };
-        Self { lines }
-    }
-}
-
-fn bytecount_newlines(text: &str) -> usize {
-    memchr::memchr_iter(b'\n', text.as_bytes()).count()
-}
-
-impl Default for DocumentStats {
-    fn default() -> Self {
-        Self { lines: 1 }
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct SearchState {
-    visible: bool,
-    replace_mode: bool,
-    query: String,
-    replacement: String,
-    last_replace_count: Option<usize>,
-    match_count_query: String,
-    match_count_seq: u64,
-    match_count: usize,
-}
-
-impl SearchState {
-    fn match_count(&mut self, haystack: &str, haystack_seq: u64) -> usize {
-        if self.match_count_seq == haystack_seq && self.match_count_query == self.query {
-            return self.match_count;
-        }
-
-        let count = find_match_count(haystack, self.query.as_str());
-        self.match_count_query.clear();
-        self.match_count_query.push_str(self.query.as_str());
-        self.match_count_seq = haystack_seq;
-        self.match_count = count;
-        count
-    }
-}
-
-#[must_use]
-pub(crate) fn find_match_count(haystack: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    if needle.len() == 1 {
-        return memchr::memchr_iter(needle.as_bytes()[0], haystack.as_bytes()).count();
-    }
-    memchr::memmem::find_iter(haystack.as_bytes(), needle.as_bytes()).count()
-}
-
-#[must_use]
-fn replace_all_occurrences<'a>(
-    haystack: &'a str,
-    needle: &str,
-    replacement: &str,
-) -> (Cow<'a, str>, usize) {
-    if needle.is_empty() || needle == replacement {
-        return (Cow::Borrowed(haystack), 0);
-    }
-
-    let matches = find_match_count(haystack, needle);
-    if matches == 0 {
-        return (Cow::Borrowed(haystack), 0);
-    }
-
-    (Cow::Owned(haystack.replace(needle, replacement)), matches)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2109,6 +1914,7 @@ enum ConflictChoice {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::document::bytecount_newlines;
     use std::{fs, time::SystemTime};
 
     fn parse(args: &[&str]) -> LaunchOptions {
