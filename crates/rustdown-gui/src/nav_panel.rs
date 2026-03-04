@@ -116,7 +116,7 @@ pub fn preview_scroll_y_to_byte(
     if total_height <= 0.0 {
         return 0;
     }
-    (scroll_y / total_height * max_offset).max(0.0) as usize
+    (scroll_y / total_height * max_offset).clamp(0.0, max_offset) as usize
 }
 
 impl NavState {

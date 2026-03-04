@@ -371,11 +371,12 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
 
 fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
     // Resolve relative URLs against the configured base URI.
-    let resolved = if url.contains("://") || style.image_base_uri.is_empty() {
-        url.to_owned()
-    } else {
-        format!("{}{url}", style.image_base_uri)
-    };
+    let resolved =
+        if url.starts_with("//") || url.contains("://") || style.image_base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{}{url}", style.image_base_uri)
+        };
 
     let max_width = ui.available_width();
     let image = egui::Image::new(&resolved)
@@ -2151,8 +2152,7 @@ Normal paragraph.
     fn image_url_absolute_stays_unchanged() {
         let url = "https://example.com/pic.png";
         let base_uri = "";
-        // Logic from render_image: absolute URLs contain "://"
-        let resolved = if url.contains("://") || base_uri.is_empty() {
+        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
             url.to_owned()
         } else {
             format!("{base_uri}{url}")
@@ -2164,7 +2164,7 @@ Normal paragraph.
     fn image_url_relative_with_base_uri() {
         let url = "images/pic.png";
         let base_uri = "file:///home/user/docs/";
-        let resolved = if url.contains("://") || base_uri.is_empty() {
+        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
             url.to_owned()
         } else {
             format!("{base_uri}{url}")
@@ -2176,7 +2176,7 @@ Normal paragraph.
     fn image_url_relative_with_empty_base_uri() {
         let url = "images/pic.png";
         let base_uri = "";
-        let resolved = if url.contains("://") || base_uri.is_empty() {
+        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
             url.to_owned()
         } else {
             format!("{base_uri}{url}")
@@ -2190,12 +2190,24 @@ Normal paragraph.
         // Even with a base URI set, absolute URLs should not be prefixed
         let url = "http://cdn.example.com/img.jpg";
         let base_uri = "file:///local/base/";
-        let resolved = if url.contains("://") || base_uri.is_empty() {
+        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
             url.to_owned()
         } else {
             format!("{base_uri}{url}")
         };
         assert_eq!(resolved, "http://cdn.example.com/img.jpg");
+    }
+
+    #[test]
+    fn image_url_protocol_relative_stays_unchanged() {
+        let url = "//cdn.example.com/image.png";
+        let base_uri = "file:///local/base/";
+        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{base_uri}{url}")
+        };
+        assert_eq!(resolved, "//cdn.example.com/image.png");
     }
 
     #[test]
