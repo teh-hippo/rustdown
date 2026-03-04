@@ -361,12 +361,30 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
             let link_color = style
                 .link_color
                 .unwrap_or_else(|| ui.visuals().hyperlink_color);
-            let label = if alt.is_empty() {
-                format!("[image: {url}]")
+            let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
+            let label_text = if alt.is_empty() {
+                format!("\u{1F5BC} {url}")
             } else {
-                format!("[{alt}]")
+                format!("\u{1F5BC} {alt}")
             };
-            ui.label(egui::RichText::new(label).color(link_color).italics());
+            egui::Frame::NONE
+                .fill(bg)
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(label_text)
+                            .color(link_color)
+                            .italics(),
+                    );
+                    if !alt.is_empty() {
+                        ui.label(
+                            egui::RichText::new(url)
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    }
+                });
             ui.add_space(body_size * 0.3);
         }
     }
@@ -442,12 +460,17 @@ fn render_blockquote(
         .blockquote_bar
         .unwrap_or_else(|| ui.visuals().weak_text_color());
 
+    let bar_width = 3.0;
+    let bar_margin = body_size * 0.4; // space before the bar
+    let content_margin = body_size * 0.6; // space after the bar before content
+    let reserved = bar_margin + bar_width + content_margin;
+
     let rect_before = ui.available_rect_before_wrap();
-    let bar_x = rect_before.min.x + 4.0;
+    let bar_x = rect_before.min.x + bar_margin + bar_width * 0.5;
 
     let inner_response = ui
         .allocate_ui_with_layout(
-            egui::vec2(ui.available_width() - 20.0, 0.0),
+            egui::vec2((ui.available_width() - reserved).max(0.0), 0.0),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
                 ui.indent("bq", |ui| {
@@ -461,7 +484,7 @@ fn render_blockquote(
     let bar_bottom = inner_response.rect.max.y;
     ui.painter().line_segment(
         [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
-        egui::Stroke::new(3.0, bar_color),
+        egui::Stroke::new(bar_width, bar_color),
     );
     ui.add_space(body_size * 0.3);
 }
@@ -717,15 +740,15 @@ fn render_unordered_list(
                 Some(false) => "\u{2610}",
                 None => bullet,
             };
-            // Fixed-width bullet column aligned to body text.
+            // Fixed-width bullet column: 1.5 em gives room for checkboxes.
             ui.allocate_ui_with_layout(
-                egui::vec2(body_size * 1.2, body_size),
+                egui::vec2(body_size * 1.5, body_size),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     ui.label(bullet_text);
                 },
             );
-            ui.add_space(4.0);
+            ui.add_space(2.0);
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
             });
@@ -748,12 +771,20 @@ fn render_ordered_list(
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
     let mut num_buf = String::with_capacity(8);
 
+    // Compute column width based on the widest number that will appear.
+    let max_num = start.saturating_add(items.len().saturating_sub(1) as u64);
+    let digit_count = if max_num == 0 {
+        1
+    } else {
+        (max_num as f64).log10().floor() as u32 + 1
+    };
+    // Each digit ≈ 0.6 em, plus the dot, plus a little padding.
+    let num_width = body_size * 0.6f32.mul_add(digit_count as f32, 1.0);
+
     for (i, item) in items.iter().enumerate() {
         let num = start + i as u64;
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
-            // Fixed-width number column, right-aligned for neat stacking.
-            let num_width = body_size * 2.0;
             ui.allocate_ui_with_layout(
                 egui::vec2(num_width, body_size),
                 egui::Layout::right_to_left(egui::Align::Center),
@@ -793,18 +824,44 @@ fn render_table(
 ) {
     let num_cols = header.len().max(1);
     let available = ui.available_width();
-    // Subtract grid spacing so total column width fits within available area.
-    let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
-    let col_width = ((available - spacing) / num_cols as f32).max(40.0);
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
+    let avg_char_w = body_size * 0.55;
+    let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
+    let usable = (available - spacing).max(0.0);
+
+    // Estimate per-column widths from content length (header + rows).
+    let mut col_widths: Vec<f32> = (0..num_cols)
+        .map(|ci| {
+            let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
+            let max_row_len = rows
+                .iter()
+                .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
+                .max()
+                .unwrap_or(0);
+            let char_len = hdr_len.max(max_row_len).max(3) as f32;
+            // Cap per-column estimate at usable / num_cols * 3 to avoid one column
+            // dominating.
+            (char_len * avg_char_w + 12.0).min(usable / num_cols as f32 * 3.0)
+        })
+        .collect();
+
+    // Normalise so total equals usable width, but enforce 40px minimum.
+    let total_est: f32 = col_widths.iter().sum();
+    if total_est > 0.0 {
+        let scale = usable / total_est;
+        for w in &mut col_widths {
+            *w = (*w * scale).max(40.0);
+        }
+    }
 
     egui::Grid::new(ui.next_auto_id())
         .striped(true)
-        .min_col_width(col_width)
         .min_row_height(body_size * 1.4)
         .show(ui, |ui| {
             for (i, cell) in header.iter().enumerate() {
                 let align = alignments.get(i).copied().unwrap_or(Alignment::None);
+                let w = col_widths.get(i).copied().unwrap_or(40.0);
+                ui.set_min_width(w);
                 render_table_cell(ui, cell, style, align, true);
             }
             ui.end_row();
@@ -812,6 +869,8 @@ fn render_table(
             for row in rows {
                 for (i, cell) in row.iter().take(num_cols).enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
+                    let w = col_widths.get(i).copied().unwrap_or(40.0);
+                    ui.set_min_width(w);
                     render_table_cell(ui, cell, style, align, false);
                 }
                 ui.end_row();
