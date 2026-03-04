@@ -2097,7 +2097,7 @@ checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustdown"
-version = "0.6.0-alpha.3"
+version = "0.6.0-alpha.4"
 dependencies = [
  "eframe",
  "image",
@@ -2112,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "rustdown-md"
-version = "0.6.0-alpha.3"
+version = "0.6.0-alpha.4"
 dependencies = [
  "egui",
  "pulldown-cmark",
