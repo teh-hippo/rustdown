@@ -18,10 +18,11 @@ use std::{
 
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, RecursiveMode, Watcher};
 
 mod diagnostics;
 mod disk_io;
+mod disk_sync;
 mod document;
 mod editor;
 mod format;
@@ -39,6 +40,7 @@ mod nav_debug;
 use disk_io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
 };
+use disk_sync::{DiskConflict, DiskReadMessage, DiskReloadOutcome, DiskSyncState, ReloadKind};
 use document::{Document, DocumentStats, EditorGalleyCache, TrackedTextBuffer};
 use live_merge::{Merge3Outcome, merge_three_way};
 use search::{SearchState, find_match_count, replace_all_occurrences};
@@ -337,66 +339,7 @@ struct RustdownApp {
     /// Prevents feedback loops by only syncing when the source changes.
     last_sync_editor_byte: Option<usize>,
 
-    disk_reload_nonce: u64,
-
-    disk_watcher: Option<RecommendedWatcher>,
-    disk_watch_root: Option<PathBuf>,
-    disk_watch_target_name: Option<OsString>,
-    disk_watch_rx: Option<mpsc::Receiver<notify::Result<Event>>>,
-
-    disk_poll_at: Option<Instant>,
-    pending_disk_reload_at: Option<Instant>,
-    disk_reload_in_flight: bool,
-    disk_read_tx: Option<mpsc::Sender<DiskReadMessage>>,
-    disk_read_rx: Option<mpsc::Receiver<DiskReadMessage>>,
-    disk_conflict: Option<DiskConflict>,
-    merge_sidecar_path: Option<PathBuf>,
-}
-
-/// How the document should be flagged after applying disk text.
-#[derive(Clone, Copy, Debug)]
-enum ReloadKind {
-    /// Clean reload from disk: buffer is clean, clear last edit timestamp.
-    Clean,
-    /// Merge result: buffer is dirty (contains merged edits), keep editing.
-    Merged,
-    /// Conflict resolution choice: buffer is dirty, clear last edit.
-    ConflictResolved,
-}
-
-#[derive(Debug)]
-enum DiskReloadOutcome {
-    Replace {
-        disk_text: String,
-        disk_rev: DiskRevision,
-    },
-    MergeClean {
-        merged_text: String,
-        disk_text: String,
-        disk_rev: DiskRevision,
-    },
-    MergeConflict {
-        disk_text: String,
-        disk_rev: DiskRevision,
-        conflict_marked: String,
-        ours_wins: String,
-    },
-}
-
-#[derive(Debug)]
-struct DiskReadMessage {
-    path: PathBuf,
-    nonce: u64,
-    edit_seq: u64,
-    outcome: io::Result<DiskReloadOutcome>,
-}
-
-#[derive(Clone, Debug)]
-struct DiskConflict {
-    disk_text: String,
-    disk_rev: DiskRevision,
-    conflict_marked: String,
-    ours_wins: String,
+    disk: DiskSyncState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -487,7 +430,7 @@ impl eframe::App for RustdownApp {
         self.tick_disk_sync(ctx);
         self.refresh_stats_if_due(ctx);
 
-        let dialog_open = self.pending_action.is_some() || self.disk_conflict.is_some();
+        let dialog_open = self.pending_action.is_some() || self.disk.conflict.is_some();
         let (
             dropped_path,
             open,
@@ -614,7 +557,7 @@ impl eframe::App for RustdownApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut clear_merge_sidecar = false;
-                    if let Some(path) = self.merge_sidecar_path.clone() {
+                    if let Some(path) = self.disk.merge_sidecar_path.clone() {
                         if ui.button("x").clicked() {
                             clear_merge_sidecar = true;
                         }
@@ -633,7 +576,7 @@ impl eframe::App for RustdownApp {
                     }
 
                     if clear_merge_sidecar {
-                        self.merge_sidecar_path = None;
+                        self.disk.merge_sidecar_path = None;
                     }
                 });
             });
@@ -758,19 +701,20 @@ impl RustdownApp {
     }
 
     fn clear_disk_watcher(&mut self) {
-        self.disk_watcher = None;
-        self.disk_watch_root = None;
-        self.disk_watch_target_name = None;
-        self.disk_watch_rx = None;
+        self.disk.watcher = None;
+        self.disk.watch_root = None;
+        self.disk.watch_target_name = None;
+        self.disk.watch_rx = None;
     }
 
     fn schedule_disk_reload(&mut self, now: Instant) {
         let due_at = now + DISK_RELOAD_DEBOUNCE;
         if self
-            .pending_disk_reload_at
+            .disk
+            .pending_reload_at
             .is_none_or(|existing| existing > due_at)
         {
-            self.pending_disk_reload_at = Some(due_at);
+            self.disk.pending_reload_at = Some(due_at);
         }
     }
 
@@ -804,7 +748,7 @@ impl RustdownApp {
         conflict_marked: String,
         ours_wins: String,
     ) {
-        self.disk_conflict = Some(DiskConflict {
+        self.disk.conflict = Some(DiskConflict {
             disk_text,
             disk_rev,
             conflict_marked,
@@ -813,30 +757,30 @@ impl RustdownApp {
     }
 
     fn reset_disk_sync_state(&mut self) {
-        self.disk_reload_nonce = self.disk_reload_nonce.wrapping_add(1);
-        self.disk_poll_at = None;
-        self.pending_disk_reload_at = None;
-        self.disk_reload_in_flight = false;
-        self.disk_conflict = None;
+        self.disk.reload_nonce = self.disk.reload_nonce.wrapping_add(1);
+        self.disk.poll_at = None;
+        self.disk.pending_reload_at = None;
+        self.disk.reload_in_flight = false;
+        self.disk.conflict = None;
         self.clear_disk_watcher();
     }
 
     fn ensure_disk_read_channel(&mut self) {
-        if self.disk_read_tx.is_some() {
+        if self.disk.read_tx.is_some() {
             return;
         }
 
         let (tx, rx) = mpsc::channel();
-        self.disk_read_tx = Some(tx);
-        self.disk_read_rx = Some(rx);
+        self.disk.read_tx = Some(tx);
+        self.disk.read_rx = Some(rx);
     }
 
     fn ensure_disk_watcher(&mut self, ctx: &egui::Context, path: &Path) {
         let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
         let target_name = path.file_name().map(ToOwned::to_owned);
 
-        if self.disk_watcher.is_some() && self.disk_watch_root.as_deref() == Some(watch_root) {
-            self.disk_watch_target_name = target_name;
+        if self.disk.watcher.is_some() && self.disk.watch_root.as_deref() == Some(watch_root) {
+            self.disk.watch_target_name = target_name;
             return;
         }
 
@@ -868,19 +812,19 @@ impl RustdownApp {
             return;
         }
 
-        self.disk_watcher = Some(watcher);
-        self.disk_watch_root = Some(watch_root.to_path_buf());
-        self.disk_watch_target_name = Some(target_name);
-        self.disk_watch_rx = Some(rx);
-        self.disk_poll_at = None;
+        self.disk.watcher = Some(watcher);
+        self.disk.watch_root = Some(watch_root.to_path_buf());
+        self.disk.watch_target_name = Some(target_name);
+        self.disk.watch_rx = Some(rx);
+        self.disk.poll_at = None;
     }
 
     fn drain_disk_watch_events(&mut self) -> bool {
-        let Some(rx) = self.disk_watch_rx.as_ref() else {
+        let Some(rx) = self.disk.watch_rx.as_ref() else {
             return false;
         };
 
-        let target_name = self.disk_watch_target_name.as_deref();
+        let target_name = self.disk.watch_target_name.as_deref();
         let mut saw_change = false;
         let mut watch_error = None;
         let mut disconnected = false;
@@ -923,7 +867,7 @@ impl RustdownApp {
     fn tick_disk_sync(&mut self, ctx: &egui::Context) {
         self.drain_disk_read_results();
 
-        if self.disk_conflict.is_some() {
+        if self.disk.conflict.is_some() {
             return;
         }
 
@@ -939,11 +883,11 @@ impl RustdownApp {
             self.schedule_disk_reload(now);
         }
 
-        if self.disk_watcher.is_none() && !self.disk_reload_in_flight {
-            match self.disk_poll_at {
+        if self.disk.watcher.is_none() && !self.disk.reload_in_flight {
+            match self.disk.poll_at {
                 Some(next) if now < next => {}
                 _ => {
-                    self.disk_poll_at = Some(now + DISK_POLL_INTERVAL);
+                    self.disk.poll_at = Some(now + DISK_POLL_INTERVAL);
 
                     match disk_revision(path.as_path()) {
                         Ok(rev) if Some(rev) != self.doc.disk_rev => self.schedule_disk_reload(now),
@@ -956,23 +900,23 @@ impl RustdownApp {
                 }
             }
         } else {
-            self.disk_poll_at = None;
+            self.disk.poll_at = None;
         }
 
-        if self.disk_reload_in_flight {
+        if self.disk.reload_in_flight {
             return;
         }
 
-        if let Some(due_at) = self.pending_disk_reload_at
+        if let Some(due_at) = self.disk.pending_reload_at
             && now >= due_at
         {
-            self.pending_disk_reload_at = None;
+            self.disk.pending_reload_at = None;
             self.start_disk_reload(ctx, path.clone());
         }
 
-        let mut next_wake = self.pending_disk_reload_at;
-        if self.disk_watcher.is_none() {
-            next_wake = match (next_wake, self.disk_poll_at) {
+        let mut next_wake = self.disk.pending_reload_at;
+        if self.disk.watcher.is_none() {
+            next_wake = match (next_wake, self.disk.poll_at) {
                 (Some(existing), Some(poll)) => Some(existing.min(poll)),
                 (Some(existing), None) => Some(existing),
                 (None, Some(poll)) => Some(poll),
@@ -989,7 +933,7 @@ impl RustdownApp {
 
     fn start_disk_reload(&mut self, ctx: &egui::Context, path: PathBuf) {
         self.ensure_disk_read_channel();
-        let Some(tx) = self.disk_read_tx.clone() else {
+        let Some(tx) = self.disk.read_tx.clone() else {
             return;
         };
 
@@ -998,10 +942,10 @@ impl RustdownApp {
         let base_text = dirty.then(|| self.doc.base_text.clone());
         let ours_text = dirty.then(|| self.doc.text.clone());
 
-        self.disk_reload_nonce = self.disk_reload_nonce.wrapping_add(1);
-        let nonce = self.disk_reload_nonce;
+        self.disk.reload_nonce = self.disk.reload_nonce.wrapping_add(1);
+        let nonce = self.disk.reload_nonce;
 
-        self.disk_reload_in_flight = true;
+        self.disk.reload_in_flight = true;
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let outcome = match read_stable_utf8(&path) {
@@ -1054,19 +998,19 @@ impl RustdownApp {
 
     fn drain_disk_read_results(&mut self) {
         loop {
-            let recv = match self.disk_read_rx.as_ref() {
+            let recv = match self.disk.read_rx.as_ref() {
                 Some(rx) => rx.try_recv(),
                 None => return,
             };
             match recv {
                 Ok(msg) => {
-                    if msg.nonce != self.disk_reload_nonce {
+                    if msg.nonce != self.disk.reload_nonce {
                         continue;
                     }
                     if self.doc.path.as_deref() != Some(msg.path.as_path()) {
                         continue;
                     }
-                    self.disk_reload_in_flight = false;
+                    self.disk.reload_in_flight = false;
 
                     if self.doc.edit_seq != msg.edit_seq {
                         self.schedule_disk_reload(Instant::now());
@@ -1113,9 +1057,9 @@ impl RustdownApp {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.disk_reload_in_flight = false;
-                    self.disk_read_rx = None;
-                    self.disk_read_tx = None;
+                    self.disk.reload_in_flight = false;
+                    self.disk.read_rx = None;
+                    self.disk.read_tx = None;
                     return;
                 }
             }
@@ -1646,7 +1590,7 @@ impl RustdownApp {
 
         let saving_to_current_path = self.doc.path.as_deref() == Some(path.as_path());
 
-        if self.disk_conflict.is_none() && saving_to_current_path {
+        if self.disk.conflict.is_none() && saving_to_current_path {
             match read_stable_utf8(&path) {
                 Ok((disk_text, disk_rev)) => self.incorporate_disk_text(disk_text, disk_rev),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -1657,7 +1601,7 @@ impl RustdownApp {
             }
         }
 
-        if self.disk_conflict.is_some() {
+        if self.disk.conflict.is_some() {
             return false;
         }
 
@@ -1718,7 +1662,7 @@ impl RustdownApp {
     }
 
     fn show_disk_conflict_dialog(&mut self, ctx: &egui::Context) {
-        if self.disk_conflict.is_none() {
+        if self.disk.conflict.is_none() {
             return;
         }
 
@@ -1772,7 +1716,7 @@ impl RustdownApp {
             }
         };
         match atomic_write_utf8(&sidecar_path, conflict_marked) {
-            Ok(()) => self.merge_sidecar_path = Some(sidecar_path),
+            Ok(()) => self.disk.merge_sidecar_path = Some(sidecar_path),
             Err(err) => {
                 self.error
                     .get_or_insert_with(|| format!("Merge file write failed: {err}"));
@@ -1781,7 +1725,7 @@ impl RustdownApp {
     }
 
     fn apply_conflict_choice(&mut self, choice: ConflictChoice) {
-        let Some(conflict) = self.disk_conflict.take() else {
+        let Some(conflict) = self.disk.conflict.take() else {
             return;
         };
 
@@ -1809,7 +1753,7 @@ impl RustdownApp {
             ConflictChoice::SaveAs => {
                 // Save-as switches the active path, so the conflict prompt is no longer relevant.
                 if !self.save_doc(true) {
-                    self.disk_conflict = Some(conflict);
+                    self.disk.conflict = Some(conflict);
                     return;
                 }
             }
@@ -1824,14 +1768,14 @@ impl RustdownApp {
             }
             ConflictChoice::OverwriteDisk => {
                 let Some(path) = self.doc.path.as_deref() else {
-                    self.disk_conflict = Some(conflict);
+                    self.disk.conflict = Some(conflict);
                     return;
                 };
 
                 match atomic_write_utf8(path, self.doc.text.as_str()) {
                     Ok(()) => {}
                     Err(err) => {
-                        self.disk_conflict = Some(conflict);
+                        self.disk.conflict = Some(conflict);
                         self.error
                             .get_or_insert_with(|| format!("Overwrite failed: {err}"));
                         return;
@@ -1893,10 +1837,10 @@ mod tests {
 
     fn disk_conflict(app: &RustdownApp) -> &DiskConflict {
         assert!(
-            app.disk_conflict.is_some(),
+            app.disk.conflict.is_some(),
             "Expected conflict prompt to be set"
         );
-        app.disk_conflict.as_ref().unwrap_or_else(|| unreachable!())
+        app.disk.conflict.as_ref().unwrap_or_else(|| unreachable!())
     }
 
     fn read_file(path: &Path) -> String {
@@ -2258,7 +2202,7 @@ mod tests {
                 Some(test_rev(case.expected_disk_rev.0, case.expected_disk_rev.1))
             );
             assert_eq!(app.doc.dirty, case.expected_dirty);
-            assert_eq!(app.disk_conflict.is_some(), case.expect_conflict);
+            assert_eq!(app.disk.conflict.is_some(), case.expect_conflict);
         }
     }
 
@@ -2275,7 +2219,7 @@ mod tests {
         assert_eq!(app.doc.base_text.as_str(), "a\nT\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
         assert!(app.doc.dirty);
-        assert!(app.disk_conflict.is_none());
+        assert!(app.disk.conflict.is_none());
     }
 
     #[test]
@@ -2298,13 +2242,14 @@ mod tests {
         assert_eq!(app.doc.text.as_str(), expected_ours_wins.as_str());
         assert_eq!(app.doc.base_text.as_str(), "line1\nT2\nT3\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 15)));
-        assert!(app.disk_conflict.is_none());
+        assert!(app.disk.conflict.is_none());
 
         assert!(
-            app.merge_sidecar_path.is_some(),
+            app.disk.merge_sidecar_path.is_some(),
             "Expected merge sidecar path to be set"
         );
         let sidecar_path = app
+            .disk
             .merge_sidecar_path
             .clone()
             .unwrap_or_else(|| unreachable!());
