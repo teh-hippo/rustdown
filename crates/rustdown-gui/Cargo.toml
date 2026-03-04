@@ -16,7 +16,7 @@ eframe = { version = "0.33", default-features = false, features = [
 egui_commonmark = { version = "0.22", default-features = false, features = ["pulldown_cmark", "load-images"] }
 pulldown-cmark = "0.13"
 memchr = "2"
-rfd = { version = "0.15", default-features = false }
+rfd = { version = "0.17", default-features = false }
 imara-diff = { version = "0.2.0", default-features = false }
 notify = { version = "8.0.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -28,4 +28,4 @@ eframe = { version = "0.33", default-features = false, features = [
   "x11",
 ] }
 libloading = "0.8"
-rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
