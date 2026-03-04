@@ -821,6 +821,10 @@ struct RustdownApp {
     focus_search: bool,
     heading_color_mode: bool,
 
+    /// Last editor scroll byte offset used for `SideBySide` sync.
+    /// Prevents feedback loops by only syncing when the source changes.
+    last_sync_editor_byte: Option<usize>,
+
     disk_reload_nonce: u64,
 
     disk_watcher: Option<RecommendedWatcher>,
@@ -1251,7 +1255,7 @@ impl eframe::App for RustdownApp {
                 self.request_action(PendingAction::NewBlank);
             }
             if cycle_mode {
-                self.set_mode(self.mode.cycle());
+                self.set_mode(self.mode.cycle(), ctx);
             }
             if search {
                 self.open_search(false);
@@ -1290,7 +1294,7 @@ impl eframe::App for RustdownApp {
                         .on_hover_text(mode.tooltip())
                         .clicked()
                     {
-                        self.set_mode(mode);
+                        self.set_mode(mode, ui.ctx());
                     }
                 }
 
@@ -1460,6 +1464,11 @@ impl RustdownApp {
         // Sync the active heading highlight from the current scroll position.
         if self.nav.visible {
             self.sync_nav_active_heading(ctx);
+        }
+
+        // In SideBySide, sync the preview scroll to match the editor position.
+        if self.mode == Mode::SideBySide {
+            self.sync_side_by_side_scroll(ctx);
         }
     }
 
@@ -1866,18 +1875,24 @@ impl RustdownApp {
     }
 
     fn from_launch_options(options: LaunchOptions) -> Self {
-        let mut app = Self::default();
-        app.set_mode(options.mode);
+        let mut app = Self {
+            mode: options.mode,
+            ..Self::default()
+        };
         if let Some(path) = options.path {
             app.open_path(path);
         }
         app
     }
 
-    fn set_mode(&mut self, mode: Mode) {
+    fn set_mode(&mut self, mode: Mode, ctx: &egui::Context) {
         if self.mode == mode {
             return;
         }
+
+        // Capture the current scroll position as a byte offset before
+        // switching modes, so the new mode can jump to the same location.
+        let scroll_byte = self.current_scroll_byte_offset(ctx);
 
         self.mode = mode;
 
@@ -1890,6 +1905,32 @@ impl RustdownApp {
             self.doc.md_cache.clear_scrollable();
             self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
+        }
+
+        // Request a scroll to the same position in the new mode.
+        if let Some(byte_offset) = scroll_byte {
+            self.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(byte_offset));
+        }
+    }
+
+    /// Determine the current scroll position as a byte offset in the source
+    /// text.  Works in both editor and preview modes.
+    fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
+        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
+        let scroll_id = if uses_editor {
+            nav_panel::editor_scroll_id()
+        } else {
+            nav_panel::preview_scroll_id()
+        };
+        let state = egui::scroll_area::State::load(ctx, scroll_id)?;
+        let y = state.offset.y;
+        if uses_editor {
+            self.ensure_row_byte_offsets();
+            self.editor_y_to_byte(y)
+        } else {
+            // Refresh outline if needed for accurate byte mapping.
+            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
+            Some(nav_panel::preview_scroll_y_to_byte(&self.nav.outline, y))
         }
     }
 
@@ -2172,6 +2213,39 @@ impl RustdownApp {
             } else if !self.doc.text.is_empty() {
                 self.nav.update_active_from_scroll_y(y);
             }
+        }
+    }
+
+    /// In Side-by-Side mode, sync the preview scroll position to track the
+    /// editor scroll position.  Uses byte offsets as an intermediate
+    /// representation so both panes show the same content region.
+    fn sync_side_by_side_scroll(&mut self, ctx: &egui::Context) {
+        self.ensure_row_byte_offsets();
+        self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
+
+        // Read editor scroll position.
+        let editor_state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id());
+        let Some(editor_state) = editor_state else {
+            return;
+        };
+        let Some(editor_byte) = self.editor_y_to_byte(editor_state.offset.y) else {
+            return;
+        };
+
+        // Only sync when the editor position has actually changed.
+        if self.last_sync_editor_byte == Some(editor_byte) {
+            return;
+        }
+        self.last_sync_editor_byte = Some(editor_byte);
+
+        // Map editor byte offset to preview scroll-y.
+        let preview_y = nav_panel::preview_byte_to_scroll_y(&self.nav.outline, editor_byte);
+
+        let scroll_id = nav_panel::preview_scroll_id();
+        if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
+            state.offset = egui::vec2(state.offset.x, preview_y);
+            state.store(ctx, scroll_id);
+            ctx.request_repaint();
         }
     }
 
@@ -3242,14 +3316,15 @@ mod tests {
 
     #[test]
     fn set_mode_changes_mode() {
+        let ctx = egui::Context::default();
         let mut app = RustdownApp::default();
         assert_eq!(app.mode, Mode::Edit);
-        app.set_mode(Mode::Preview);
+        app.set_mode(Mode::Preview, &ctx);
         assert_eq!(app.mode, Mode::Preview);
         // Going to Preview drops editor galley cache.
         assert!(app.doc.editor_galley_cache.is_none());
         // Going back to Edit clears preview state.
-        app.set_mode(Mode::Edit);
+        app.set_mode(Mode::Edit, &ctx);
         assert_eq!(app.mode, Mode::Edit);
     }
 

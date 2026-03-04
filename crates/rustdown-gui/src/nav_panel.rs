@@ -90,7 +90,7 @@ pub fn preview_byte_to_scroll_y(outline: &[HeadingEntry], byte_offset: usize) ->
 
 /// Convert a preview scroll-y value to an estimated byte offset.
 /// Returns `0` when the outline is empty.
-fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
+pub fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
     let max_offset = match outline.last() {
         Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
         _ => return 0,
