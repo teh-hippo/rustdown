@@ -1,14 +1,29 @@
 #![forbid(unsafe_code)]
 //! Render parsed Markdown blocks into egui widgets.
+//!
+//! Key feature: viewport culling in `show_scrollable` — only blocks
+//! overlapping the visible region are laid out, giving O(visible) cost.
 
 use crate::parse::{Alignment, Block, ListItem, SpanKind, StyledText, parse_markdown};
 use crate::style::MarkdownStyle;
 
-/// Cached pre-parsed blocks plus the text hash they were built from.
+// ── Cache ──────────────────────────────────────────────────────────
+
+/// Cached pre-parsed blocks, height estimates, and the source hash.
 #[derive(Default)]
 pub struct MarkdownCache {
     text_hash: u64,
     blocks: Vec<Block>,
+    /// Estimated pixel height for each top-level block (same len as `blocks`).
+    heights: Vec<f32>,
+    /// Cumulative Y offsets: `cum_y[i]` = sum of heights[0..i].
+    cum_y: Vec<f32>,
+    /// Total estimated height of all blocks.
+    total_height: f32,
+    /// The body font size used when heights were estimated.
+    height_body_size: f32,
+    /// The wrap width used when heights were estimated.
+    height_wrap_width: f32,
 }
 
 impl MarkdownCache {
@@ -16,8 +31,54 @@ impl MarkdownCache {
     pub fn clear(&mut self) {
         self.text_hash = 0;
         self.blocks.clear();
+        self.heights.clear();
+        self.cum_y.clear();
+        self.total_height = 0.0;
+        self.height_body_size = 0.0;
+        self.height_wrap_width = 0.0;
+    }
+
+    fn ensure_parsed(&mut self, source: &str) {
+        let hash = simple_hash(source);
+        if self.text_hash != hash {
+            self.blocks = parse_markdown(source);
+            self.text_hash = hash;
+            self.heights.clear();
+            self.cum_y.clear();
+            self.total_height = 0.0;
+        }
+    }
+
+    fn ensure_heights(&mut self, body_size: f32, wrap_width: f32, style: &MarkdownStyle) {
+        let size_bits = body_size.to_bits();
+        let width_bits = wrap_width.to_bits();
+        if !self.heights.is_empty()
+            && self.height_body_size.to_bits() == size_bits
+            && self.height_wrap_width.to_bits() == width_bits
+        {
+            return;
+        }
+        self.height_body_size = body_size;
+        self.height_wrap_width = wrap_width;
+        self.heights.clear();
+        self.heights.reserve(self.blocks.len());
+        for block in &self.blocks {
+            self.heights
+                .push(estimate_block_height(block, body_size, wrap_width, style));
+        }
+        // Build cumulative offsets.
+        self.cum_y.clear();
+        self.cum_y.reserve(self.blocks.len());
+        let mut acc = 0.0_f32;
+        for h in &self.heights {
+            self.cum_y.push(acc);
+            acc += h;
+        }
+        self.total_height = acc;
     }
 }
+
+// ── Viewer widget ──────────────────────────────────────────────────
 
 /// The main Markdown viewer widget.
 pub struct MarkdownViewer {
@@ -30,7 +91,10 @@ impl MarkdownViewer {
         Self { id_salt }
     }
 
-    /// Render markdown in a scrollable area with viewport culling.
+    /// Render markdown in a scrollable area with **viewport culling**.
+    ///
+    /// Only blocks overlapping the visible viewport are actually rendered;
+    /// off-screen blocks are replaced by empty space allocations.
     pub fn show_scrollable(
         &self,
         ui: &mut egui::Ui,
@@ -38,21 +102,67 @@ impl MarkdownViewer {
         style: &MarkdownStyle,
         source: &str,
     ) {
-        // Re-parse only when source changes.
-        let hash = simple_hash(source);
-        if cache.text_hash != hash {
-            cache.blocks = parse_markdown(source);
-            cache.text_hash = hash;
+        cache.ensure_parsed(source);
+
+        let body_size = ui.text_style_height(&egui::TextStyle::Body);
+        let wrap_width = ui.available_width();
+        cache.ensure_heights(body_size, wrap_width, style);
+
+        if cache.blocks.is_empty() {
+            return;
         }
 
         egui::ScrollArea::vertical()
             .id_salt(self.id_salt)
-            .show(ui, |ui| {
-                render_blocks(ui, &cache.blocks, style, 0);
+            .show_viewport(ui, |ui, viewport| {
+                // Allocate total height so scroll thumb is correct.
+                ui.set_min_height(cache.total_height);
+
+                let vis_top = viewport.min.y;
+                let vis_bottom = viewport.max.y;
+
+                // Binary search for first visible block.
+                let first = match cache.cum_y.binary_search_by(|y| {
+                    y.partial_cmp(&vis_top)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    Ok(i) => i,
+                    Err(i) => i.saturating_sub(1),
+                };
+
+                // Allocate space for all blocks above viewport.
+                if first > 0 {
+                    let skip_h = cache.cum_y[first];
+                    ui.add_space(skip_h);
+                }
+
+                // Render visible blocks.
+                let mut idx = first;
+                while idx < cache.blocks.len() {
+                    let block_y = cache.cum_y[idx];
+                    if block_y > vis_bottom {
+                        break;
+                    }
+                    render_block(ui, &cache.blocks[idx], style, 0);
+                    idx += 1;
+                }
+
+                // Allocate space for blocks below viewport.
+                if idx < cache.blocks.len() {
+                    let rendered_bottom = if idx > 0 {
+                        cache.cum_y[idx - 1] + cache.heights[idx - 1]
+                    } else {
+                        0.0
+                    };
+                    let remaining = cache.total_height - rendered_bottom;
+                    if remaining > 0.0 {
+                        ui.add_space(remaining);
+                    }
+                }
             });
     }
 
-    /// Render markdown inline (no scroll area).
+    /// Render markdown inline (no scroll area, no culling).
     pub fn show(
         &self,
         ui: &mut egui::Ui,
@@ -60,109 +170,108 @@ impl MarkdownViewer {
         style: &MarkdownStyle,
         source: &str,
     ) {
-        let hash = simple_hash(source);
-        if cache.text_hash != hash {
-            cache.blocks = parse_markdown(source);
-            cache.text_hash = hash;
-        }
+        cache.ensure_parsed(source);
         render_blocks(ui, &cache.blocks, style, 0);
     }
 }
 
+// ── Height estimation ──────────────────────────────────────────────
+
+/// Estimate pixel height for a top-level block without actually laying it out.
+/// Errs on the side of *over*-estimating so that blocks are never clipped.
+fn estimate_block_height(
+    block: &Block,
+    body_size: f32,
+    wrap_width: f32,
+    style: &MarkdownStyle,
+) -> f32 {
+    match block {
+        Block::Heading { level, text } => {
+            let idx = (*level as usize).saturating_sub(1).min(5);
+            let size = body_size * style.headings[idx].font_scale;
+            let text_h = estimate_text_height(&text.text, size, wrap_width);
+            let sep = if *level <= 2 { 4.0 } else { 0.0 };
+            size.mul_add(0.45, text_h) + sep
+        }
+        Block::Paragraph(text) => {
+            body_size.mul_add(0.4, estimate_text_height(&text.text, body_size, wrap_width))
+        }
+        Block::Code { code, .. } => {
+            let mono_size = body_size * 0.9;
+            let lines = code.lines().count().max(1) as f32;
+            body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0))
+        }
+        Block::Quote(inner) => {
+            let inner_h: f32 = inner
+                .iter()
+                .map(|b| estimate_block_height(b, body_size, wrap_width - 20.0, style))
+                .sum();
+            body_size.mul_add(0.3, inner_h)
+        }
+        Block::UnorderedList(items) | Block::OrderedList { items, .. } => {
+            let item_h: f32 = items
+                .iter()
+                .map(|item| {
+                    let text_h =
+                        estimate_text_height(&item.content.text, body_size, wrap_width - 40.0);
+                    let child_h: f32 = item
+                        .children
+                        .iter()
+                        .map(|b| estimate_block_height(b, body_size, wrap_width - 40.0, style))
+                        .sum();
+                    body_size.mul_add(0.2, text_h + child_h)
+                })
+                .sum();
+            body_size.mul_add(0.2, item_h)
+        }
+        Block::ThematicBreak => body_size * 0.8,
+        Block::Table { header, rows, .. } => {
+            let row_h = body_size * 1.6;
+            let hdr = if header.is_empty() { 0.0 } else { row_h };
+            body_size.mul_add(0.4, (rows.len() as f32).mul_add(row_h, hdr))
+        }
+        Block::Image { .. } => body_size * 1.8,
+    }
+}
+
+/// Rough text height estimate: characters / chars-per-line -> line count -> height.
+fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
+    if text.is_empty() {
+        return font_size;
+    }
+    let avg_char_width = font_size * 0.55;
+    let chars_per_line = (wrap_width / avg_char_width).max(1.0);
+    let hard_lines: usize = text.lines().count().max(1);
+    let soft_lines: f32 = text
+        .lines()
+        .map(|line| (line.len() as f32 / chars_per_line).ceil().max(1.0))
+        .sum();
+    let total = soft_lines.max(hard_lines as f32);
+    total * font_size * 1.3
+}
+
+// ── Block rendering ────────────────────────────────────────────────
+
 fn render_blocks(ui: &mut egui::Ui, blocks: &[Block], style: &MarkdownStyle, indent: usize) {
+    for block in blocks {
+        render_block(ui, block, style, indent);
+    }
+}
+
+fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent: usize) {
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
-    for block in blocks {
-        match block {
-            Block::Heading { level, text } => {
-                let idx = (*level as usize).saturating_sub(1).min(5);
-                let hs = &style.headings[idx];
-                let size = body_size * hs.font_scale;
+    match block {
+        Block::Heading { level, text } => {
+            let idx = (*level as usize).saturating_sub(1).min(5);
+            let hs = &style.headings[idx];
+            let size = body_size * hs.font_scale;
 
-                ui.add_space(size * 0.3);
-                render_styled_text_with_override(ui, text, style, Some(size), Some(hs.color));
-                ui.add_space(size * 0.15);
+            ui.add_space(size * 0.3);
+            render_styled_text_ex(ui, text, style, Some(size), Some(hs.color));
+            ui.add_space(size * 0.15);
 
-                // Draw separator under H1 and H2.
-                if *level <= 2 {
-                    let rect = ui.available_rect_before_wrap();
-                    let y = rect.min.y;
-                    let color = style
-                        .hr_color
-                        .unwrap_or_else(|| ui.visuals().weak_text_color());
-                    ui.painter().line_segment(
-                        [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-                        egui::Stroke::new(1.0, color),
-                    );
-                    ui.add_space(4.0);
-                }
-            }
-
-            Block::Paragraph(text) => {
-                if indent > 0 {
-                    add_indent(ui, indent);
-                }
-                render_styled_text(ui, text, style);
-                ui.add_space(body_size * 0.4);
-            }
-
-            Block::Code { code, .. } => {
-                let bg = style
-                    .code_bg
-                    .unwrap_or_else(|| ui.visuals().faint_bg_color);
-                let available = ui.available_width();
-                egui::Frame::NONE
-                    .fill(bg)
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(available - 12.0);
-                        let mono = egui::FontId::new(
-                            body_size * 0.9,
-                            egui::FontFamily::Monospace,
-                        );
-                        ui.label(
-                            egui::RichText::new(code.trim_end())
-                                .font(mono)
-                                .color(ui.visuals().text_color()),
-                        );
-                    });
-                ui.add_space(body_size * 0.4);
-            }
-
-            Block::Quote(inner) => {
-                let bar_color = style
-                    .blockquote_bar
-                    .unwrap_or_else(|| ui.visuals().weak_text_color());
-
-                ui.horizontal(|ui| {
-                    // Paint left border bar.
-                    let rect = ui.available_rect_before_wrap();
-                    let x = rect.min.x + 4.0;
-                    ui.painter().line_segment(
-                        [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-                        egui::Stroke::new(3.0, bar_color),
-                    );
-                    ui.add_space(16.0);
-                    ui.vertical(|ui| {
-                        render_blocks(ui, inner, style, indent + 1);
-                    });
-                });
-                ui.add_space(body_size * 0.3);
-            }
-
-            Block::UnorderedList(items) => {
-                render_unordered_list(ui, items, style, indent);
-                ui.add_space(body_size * 0.2);
-            }
-
-            Block::OrderedList { start, items } => {
-                render_ordered_list(ui, *start, items, style, indent);
-                ui.add_space(body_size * 0.2);
-            }
-
-            Block::ThematicBreak => {
-                ui.add_space(body_size * 0.3);
+            if *level <= 2 {
                 let rect = ui.available_rect_before_wrap();
                 let y = rect.min.y;
                 let color = style
@@ -172,40 +281,189 @@ fn render_blocks(ui: &mut egui::Ui, blocks: &[Block], style: &MarkdownStyle, ind
                     [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
                     egui::Stroke::new(1.0, color),
                 );
-                ui.add_space(body_size * 0.5);
+                ui.add_space(4.0);
             }
+        }
 
-            Block::Table {
-                header,
-                alignments,
-                rows,
-            } => {
-                render_table(ui, header, alignments, rows, style);
-                ui.add_space(body_size * 0.4);
+        Block::Paragraph(text) => {
+            if indent > 0 {
+                ui.add_space(16.0 * indent as f32);
             }
+            render_styled_text(ui, text, style);
+            ui.add_space(body_size * 0.4);
+        }
 
-            Block::Image { url, alt } => {
-                // Placeholder: show alt text as link.
-                let link_color = style
+        Block::Code { code, .. } => {
+            let bg = style
+                .code_bg
+                .unwrap_or_else(|| ui.visuals().faint_bg_color);
+            let available = ui.available_width();
+            egui::Frame::NONE
+                .fill(bg)
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_min_width(available - 12.0);
+                    let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
+                    ui.label(
+                        egui::RichText::new(code.trim_end())
+                            .font(mono)
+                            .color(ui.visuals().text_color()),
+                    );
+                });
+            ui.add_space(body_size * 0.4);
+        }
+
+        Block::Quote(inner) => {
+            let bar_color = style
+                .blockquote_bar
+                .unwrap_or_else(|| ui.visuals().weak_text_color());
+
+            let rect_before = ui.available_rect_before_wrap();
+            let bar_x = rect_before.min.x + 4.0;
+
+            let inner_response = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(ui.available_width() - 20.0, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.indent("bq", |ui| {
+                            render_blocks(ui, inner, style, indent + 1);
+                        });
+                    },
+                )
+                .response;
+
+            let bar_top = inner_response.rect.min.y;
+            let bar_bottom = inner_response.rect.max.y;
+            ui.painter().line_segment(
+                [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
+                egui::Stroke::new(3.0, bar_color),
+            );
+            ui.add_space(body_size * 0.3);
+        }
+
+        Block::UnorderedList(items) => {
+            render_unordered_list(ui, items, style, indent);
+            ui.add_space(body_size * 0.2);
+        }
+
+        Block::OrderedList { start, items } => {
+            render_ordered_list(ui, *start, items, style, indent);
+            ui.add_space(body_size * 0.2);
+        }
+
+        Block::ThematicBreak => {
+            ui.add_space(body_size * 0.3);
+            let rect = ui.available_rect_before_wrap();
+            let y = rect.min.y;
+            let color = style
+                .hr_color
+                .unwrap_or_else(|| ui.visuals().weak_text_color());
+            ui.painter().line_segment(
+                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                egui::Stroke::new(1.0, color),
+            );
+            ui.add_space(body_size * 0.5);
+        }
+
+        Block::Table {
+            header,
+            alignments,
+            rows,
+        } => {
+            render_table(ui, header, alignments, rows, style);
+            ui.add_space(body_size * 0.4);
+        }
+
+        Block::Image { url, alt } => {
+            let link_color = style
+                .link_color
+                .unwrap_or_else(|| ui.visuals().hyperlink_color);
+            let label = if alt.is_empty() {
+                format!("[image: {url}]")
+            } else {
+                format!("[{alt}]")
+            };
+            ui.label(egui::RichText::new(label).color(link_color).italics());
+            ui.add_space(body_size * 0.3);
+        }
+    }
+}
+
+// ── Inline text rendering ──────────────────────────────────────────
+
+/// Inline formatting properties resolved from a `SpanKind`.
+struct SpanFormat {
+    font_family: egui::FontFamily,
+    color: egui::Color32,
+    background: egui::Color32,
+    underline: bool,
+    strikethrough: bool,
+    italics: bool,
+}
+
+impl SpanFormat {
+    fn resolve(
+        kind: &SpanKind,
+        style: &MarkdownStyle,
+        base_color: egui::Color32,
+        ui: &egui::Ui,
+    ) -> Self {
+        match kind {
+            SpanKind::Plain | SpanKind::Strong => Self {
+                font_family: egui::FontFamily::Proportional,
+                color: base_color,
+                background: egui::Color32::TRANSPARENT,
+                underline: false,
+                strikethrough: false,
+                italics: false,
+            },
+            SpanKind::Emphasis => Self {
+                font_family: egui::FontFamily::Proportional,
+                color: base_color,
+                background: egui::Color32::TRANSPARENT,
+                underline: false,
+                strikethrough: false,
+                italics: true,
+            },
+            SpanKind::Strikethrough => Self {
+                font_family: egui::FontFamily::Proportional,
+                color: base_color,
+                background: egui::Color32::TRANSPARENT,
+                underline: false,
+                strikethrough: true,
+                italics: false,
+            },
+            SpanKind::Code => Self {
+                font_family: egui::FontFamily::Monospace,
+                color: base_color,
+                background: style
+                    .code_bg
+                    .unwrap_or_else(|| ui.visuals().faint_bg_color),
+                underline: false,
+                strikethrough: false,
+                italics: false,
+            },
+            SpanKind::Link(_) => Self {
+                font_family: egui::FontFamily::Proportional,
+                color: style
                     .link_color
-                    .unwrap_or_else(|| ui.visuals().hyperlink_color);
-                let label = if alt.is_empty() {
-                    format!("[image: {url}]")
-                } else {
-                    format!("[{alt}]")
-                };
-                ui.label(egui::RichText::new(label).color(link_color).italics());
-                ui.add_space(body_size * 0.3);
-            }
+                    .unwrap_or_else(|| ui.visuals().hyperlink_color),
+                background: egui::Color32::TRANSPARENT,
+                underline: true,
+                strikethrough: false,
+                italics: false,
+            },
         }
     }
 }
 
 fn render_styled_text(ui: &mut egui::Ui, st: &StyledText, style: &MarkdownStyle) {
-    render_styled_text_with_override(ui, st, style, None, None);
+    render_styled_text_ex(ui, st, style, None, None);
 }
 
-fn render_styled_text_with_override(
+fn render_styled_text_ex(
     ui: &mut egui::Ui,
     st: &StyledText,
     style: &MarkdownStyle,
@@ -222,12 +480,18 @@ fn render_styled_text_with_override(
         .or(style.body_color)
         .unwrap_or_else(|| ui.visuals().text_color());
 
-    let mut job = egui::text::LayoutJob::default();
-    job.wrap.max_width = ui.available_width();
+    let mut job = egui::text::LayoutJob {
+        text: String::new(),
+        sections: Vec::with_capacity(st.spans.len().max(1)),
+        wrap: egui::text::TextWrapping {
+            max_width: ui.available_width(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     job.text.clone_from(&st.text);
 
     if st.spans.is_empty() {
-        // Single plain span for entire text.
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,
             byte_range: 0..st.text.len(),
@@ -239,34 +503,24 @@ fn render_styled_text_with_override(
         });
     } else {
         for span in &st.spans {
-            let (font_family, color, underline, strikethrough, italics, strong, background) =
-                span_format_props(&span.kind, style, base_color, ui);
-
+            let sf = SpanFormat::resolve(&span.kind, style, base_color, ui);
+            let span_size = if matches!(span.kind, SpanKind::Code) {
+                size * 0.9
+            } else {
+                size
+            };
             let mut format = egui::TextFormat {
-                font_id: egui::FontId::new(
-                    if matches!(span.kind, SpanKind::Code) {
-                        size * 0.9
-                    } else {
-                        size
-                    },
-                    font_family,
-                ),
-                color,
-                background,
+                font_id: egui::FontId::new(span_size, sf.font_family),
+                color: sf.color,
+                background: sf.background,
+                italics: sf.italics,
                 ..Default::default()
             };
-            if underline {
-                format.underline = egui::Stroke::new(1.0, color);
+            if sf.underline {
+                format.underline = egui::Stroke::new(1.0, sf.color);
             }
-            if strikethrough {
-                format.strikethrough = egui::Stroke::new(1.0, color);
-            }
-            if italics {
-                format.italics = true;
-            }
-            if strong {
-                // egui doesn't have bold font natively; we approximate.
-                format.color = color;
+            if sf.strikethrough {
+                format.strikethrough = egui::Stroke::new(1.0, sf.color);
             }
             job.sections.push(egui::text::LayoutSection {
                 leading_space: 0.0,
@@ -276,94 +530,11 @@ fn render_styled_text_with_override(
         }
     }
 
-    // Allocate a galley and render as selectable label.
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     ui.label(galley);
 }
 
-#[allow(clippy::type_complexity)]
-fn span_format_props(
-    kind: &SpanKind,
-    style: &MarkdownStyle,
-    base_color: egui::Color32,
-    ui: &egui::Ui,
-) -> (
-    egui::FontFamily,
-    egui::Color32,
-    bool,
-    bool,
-    bool,
-    bool,
-    egui::Color32,
-) {
-    // (font_family, color, underline, strikethrough, italics, strong, background)
-    match kind {
-        SpanKind::Plain => (
-            egui::FontFamily::Proportional,
-            base_color,
-            false,
-            false,
-            false,
-            false,
-            egui::Color32::TRANSPARENT,
-        ),
-        SpanKind::Strong => (
-            egui::FontFamily::Proportional,
-            base_color,
-            false,
-            false,
-            false,
-            true,
-            egui::Color32::TRANSPARENT,
-        ),
-        SpanKind::Emphasis => (
-            egui::FontFamily::Proportional,
-            base_color,
-            false,
-            false,
-            true,
-            false,
-            egui::Color32::TRANSPARENT,
-        ),
-        SpanKind::Strikethrough => (
-            egui::FontFamily::Proportional,
-            base_color,
-            false,
-            true,
-            false,
-            false,
-            egui::Color32::TRANSPARENT,
-        ),
-        SpanKind::Code => {
-            let bg = style
-                .code_bg
-                .unwrap_or_else(|| ui.visuals().faint_bg_color);
-            (
-                egui::FontFamily::Monospace,
-                base_color,
-                false,
-                false,
-                false,
-                false,
-                bg,
-            )
-        }
-        SpanKind::Link(_) => {
-            let link_color = style
-                .link_color
-                .unwrap_or_else(|| ui.visuals().hyperlink_color);
-            (
-                egui::FontFamily::Proportional,
-                link_color,
-                true,
-                false,
-                false,
-                false,
-                egui::Color32::TRANSPARENT,
-            )
-        }
-    }
-}
+// ── List rendering ─────────────────────────────────────────────────
 
 fn render_unordered_list(
     ui: &mut egui::Ui,
@@ -372,9 +543,9 @@ fn render_unordered_list(
     indent: usize,
 ) {
     let bullet = match indent {
-        0 => "•",
-        1 => "◦",
-        _ => "▪",
+        0 => "\u{2022}",
+        1 => "\u{25E6}",
+        _ => "\u{25AA}",
     };
     let indent_px = 20.0 * (indent as f32 + 1.0);
 
@@ -386,7 +557,6 @@ fn render_unordered_list(
                 render_styled_text(ui, &item.content, style);
             });
         });
-        // Render nested children.
         if !item.children.is_empty() {
             render_blocks(ui, &item.children, style, indent + 1);
         }
@@ -417,6 +587,8 @@ fn render_ordered_list(
     }
 }
 
+// ── Table rendering ────────────────────────────────────────────────
+
 fn render_table(
     ui: &mut egui::Ui,
     header: &[StyledText],
@@ -432,14 +604,12 @@ fn render_table(
         .striped(true)
         .min_col_width(col_width)
         .show(ui, |ui| {
-            // Header row.
             for (i, cell) in header.iter().enumerate() {
                 let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                 render_table_cell(ui, cell, style, align, true);
             }
             ui.end_row();
 
-            // Data rows.
             for row in rows {
                 for (i, cell) in row.iter().enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
@@ -459,18 +629,16 @@ fn render_table_cell(
 ) {
     if is_header {
         let body_size = ui.text_style_height(&egui::TextStyle::Body);
-        render_styled_text_with_override(ui, cell, style, Some(body_size), None);
+        render_styled_text_ex(ui, cell, style, Some(body_size), None);
     } else {
         render_styled_text(ui, cell, style);
     }
 }
 
-fn add_indent(ui: &mut egui::Ui, level: usize) {
-    ui.add_space(16.0 * level as f32);
-}
+// ── Utilities ──────────────────────────────────────────────────────
 
 fn simple_hash(s: &str) -> u64 {
-    // FNV-1a 64-bit for fast, non-cryptographic hashing.
+    // FNV-1a 64-bit.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in s.as_bytes() {
         h ^= u64::from(b);
@@ -478,6 +646,8 @@ fn simple_hash(s: &str) -> u64 {
     }
     h
 }
+
+// ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -488,19 +658,15 @@ mod tests {
         let mut cache = MarkdownCache::default();
         let s1 = "# Hello";
         let s2 = "# World";
-        let _style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
 
-        // First parse.
         let h1 = simple_hash(s1);
         cache.blocks = crate::parse::parse_markdown(s1);
         cache.text_hash = h1;
         assert_eq!(cache.blocks.len(), 1);
 
-        // Same text, no re-parse.
         let h1b = simple_hash(s1);
         assert_eq!(h1, h1b);
 
-        // Different text.
         let h2 = simple_hash(s2);
         assert_ne!(h1, h2);
     }
@@ -525,5 +691,64 @@ mod tests {
         style.with_heading_colors(colors);
         assert_eq!(style.headings[0].color, egui::Color32::RED);
         assert_eq!(style.headings[5].color, egui::Color32::GRAY);
+    }
+
+    #[test]
+    fn estimate_text_height_basic() {
+        let h = estimate_text_height("Hello World", 14.0, 200.0);
+        assert!(h > 0.0);
+        assert!(h < 100.0);
+    }
+
+    #[test]
+    fn estimate_text_height_wrapping() {
+        let short = estimate_text_height("Hi", 14.0, 200.0);
+        let long = estimate_text_height(&"word ".repeat(100), 14.0, 200.0);
+        assert!(long > short);
+    }
+
+    #[test]
+    fn estimate_block_height_heading() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Heading {
+            level: 1,
+            text: StyledText {
+                text: "Title".to_owned(),
+                spans: vec![],
+            },
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 20.0);
+    }
+
+    #[test]
+    fn cache_heights_invalidate_on_size_change() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# Hello\n\nParagraph");
+        cache.ensure_heights(14.0, 400.0, &style);
+        let h1 = cache.total_height;
+
+        cache.ensure_heights(28.0, 400.0, &style);
+        let h2 = cache.total_height;
+        assert!(h2 > h1, "larger font should produce larger total height");
+    }
+
+    #[test]
+    fn cum_y_correct() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# H1\n\nPara 1\n\nPara 2");
+        cache.ensure_heights(14.0, 400.0, &style);
+
+        assert_eq!(cache.cum_y.len(), cache.blocks.len());
+        assert!((cache.cum_y[0] - 0.0).abs() < f32::EPSILON);
+        for i in 1..cache.cum_y.len() {
+            let expected = cache.cum_y[i - 1] + cache.heights[i - 1];
+            assert!(
+                (cache.cum_y[i] - expected).abs() < 0.01,
+                "cum_y[{i}] should be sum of previous heights"
+            );
+        }
     }
 }
