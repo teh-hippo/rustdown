@@ -2538,4 +2538,122 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn from_launch_options_sets_mode() {
+        let opts = LaunchOptions {
+            mode: Mode::Preview,
+            path: None,
+            print_version: false,
+            diagnostics: DiagnosticsMode::Off,
+            diagnostics_iterations: 200,
+            diagnostics_runs: 1,
+        };
+        let app = RustdownApp::from_launch_options(opts);
+        assert_eq!(app.mode, Mode::Preview);
+    }
+
+    #[test]
+    fn open_and_close_search() {
+        let mut app = RustdownApp::default();
+        assert!(!app.search.visible);
+        assert!(!app.focus_search);
+
+        app.open_search(false);
+        assert!(app.search.visible);
+        assert!(!app.search.replace_mode);
+        assert!(app.focus_search);
+
+        app.open_search(true);
+        assert!(app.search.replace_mode);
+
+        app.close_search();
+        assert!(!app.search.visible);
+        assert!(!app.search.replace_mode);
+        assert!(!app.focus_search);
+    }
+
+    #[test]
+    fn format_document_applies_formatting() {
+        let mut app = RustdownApp::default();
+        // Default format options insert a final newline.
+        app.doc.text = Arc::new("# Hello\n\nworld".to_owned());
+        let seq_before = app.doc.edit_seq;
+        app.format_document();
+        // Should have appended a final newline.
+        assert!(app.doc.text.ends_with('\n'));
+        assert!(app.doc.edit_seq > seq_before);
+        assert!(app.doc.dirty);
+    }
+
+    #[test]
+    fn refresh_stats_now_updates_line_count() {
+        let mut app = RustdownApp::default();
+        app.doc.text = Arc::new("a\nb\nc\n".to_owned());
+        app.doc.stats_dirty = true;
+        app.refresh_stats_now();
+        assert_eq!(app.doc.stats.lines, 4);
+        assert!(!app.doc.stats_dirty);
+    }
+
+    #[test]
+    fn request_action_defers_when_dirty() {
+        let mut app = RustdownApp::default();
+        app.doc.dirty = true;
+        app.request_action(PendingAction::NewBlank);
+        assert!(app.pending_action.is_some());
+    }
+
+    #[test]
+    fn schedule_disk_reload_sets_earliest_time() {
+        let mut app = RustdownApp::default();
+        let now = Instant::now();
+        app.schedule_disk_reload(now);
+        assert!(app.disk.pending_reload_at.is_some());
+        // A second schedule at the same time should not push the reload later.
+        let first = app.disk.pending_reload_at;
+        app.schedule_disk_reload(now);
+        assert_eq!(app.disk.pending_reload_at, first);
+    }
+
+    #[test]
+    fn write_merge_sidecar_creates_file() {
+        let dir = make_temp_dir("rustdown-sidecar-write-test");
+        let doc_path = dir.join("test.md");
+        fs::write(&doc_path, "# doc").ok();
+
+        let mut app = RustdownApp::default();
+        app.write_merge_sidecar(&doc_path, "conflict content");
+        assert!(app.disk.merge_sidecar_path.is_some());
+        let sidecar = app
+            .disk
+            .merge_sidecar_path
+            .as_ref()
+            .unwrap_or_else(|| unreachable!());
+        assert!(sidecar.exists());
+        assert_eq!(
+            fs::read_to_string(sidecar).unwrap_or_default(),
+            "conflict content"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bump_edit_seq_wraps() {
+        let mut app = RustdownApp::default();
+        let seq = app.doc.edit_seq;
+        app.bump_edit_seq();
+        assert_eq!(app.doc.edit_seq, seq + 1);
+    }
+
+    #[test]
+    fn note_text_changed_marks_all_dirty() {
+        let mut app = RustdownApp::default();
+        app.note_text_changed(true);
+        assert!(app.doc.dirty);
+        assert!(app.doc.stats_dirty);
+        assert!(app.doc.preview_dirty);
+        assert!(app.doc.last_edit_at.is_some());
+    }
 }
