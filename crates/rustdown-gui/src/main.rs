@@ -17,7 +17,6 @@ use std::{
 };
 
 use eframe::egui;
-use egui_commonmark::CommonMarkCache;
 use notify::{Event, RecursiveMode, Watcher};
 use rustdown_md::{MarkdownStyle, MarkdownViewer};
 
@@ -535,7 +534,6 @@ impl eframe::App for RustdownApp {
                     .changed()
                 {
                     self.doc.editor_galley_cache = None;
-                    self.doc.md_cache.clear_scrollable();
                     self.doc.preview_cache.clear();
                 }
                 ui.separator();
@@ -735,7 +733,6 @@ impl RustdownApp {
         self.bump_edit_seq();
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.stats_dirty = false;
-        self.doc.md_cache.clear_scrollable();
         self.doc.preview_cache.clear();
         self.doc.preview_dirty = false;
         self.doc.dirty = !matches!(kind, ReloadKind::Clean);
@@ -1132,7 +1129,6 @@ impl RustdownApp {
         }
 
         if mode == Mode::Edit {
-            self.doc.md_cache.clear_scrollable();
             self.doc.preview_cache.clear();
             self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
@@ -1536,7 +1532,6 @@ impl RustdownApp {
             stats_dirty: false,
             preview_dirty: false,
             dirty: false,
-            md_cache: CommonMarkCache::default(),
             preview_cache: rustdown_md::MarkdownCache::default(),
             last_edit_at: None,
             edit_seq: 0,
