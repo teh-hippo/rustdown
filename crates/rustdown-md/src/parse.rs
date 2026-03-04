@@ -457,10 +457,11 @@ fn parse_table(
         })
         .collect();
 
-    let mut header = Vec::new();
+    let num_cols = aligns.len();
+    let mut header = Vec::with_capacity(num_cols);
     let mut rows: Vec<Vec<StyledText>> = Vec::new();
     let mut in_head = false;
-    let mut current_row: Vec<StyledText> = Vec::new();
+    let mut current_row: Vec<StyledText> = Vec::with_capacity(num_cols);
     let mut current_cell = StyledText::default();
     fmt_buf.clear();
     let mut consumed = 1;

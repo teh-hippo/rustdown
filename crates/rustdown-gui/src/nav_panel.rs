@@ -38,6 +38,14 @@ pub struct NavState {
     /// Resolved scroll-y target (pixels) to be consumed inside the scroll
     /// area closure on the next frame for smooth animation.
     pub pending_scroll_y: Option<f32>,
+    /// Cached visible heading indices (recomputed only when state changes).
+    cached_visible: Vec<usize>,
+    /// Sequence counter for visible-heading cache invalidation.
+    visible_seq: u64,
+    /// The expanded set hash when `cached_visible` was last computed.
+    visible_expanded_hash: u64,
+    /// The `max_depth` when `cached_visible` was last computed.
+    visible_max_depth: u8,
 }
 
 impl Default for NavState {
@@ -53,6 +61,10 @@ impl Default for NavState {
             active_index: None,
             pending_scroll: None,
             pending_scroll_y: None,
+            cached_visible: Vec::new(),
+            visible_seq: u64::MAX,
+            visible_expanded_hash: u64::MAX,
+            visible_max_depth: 0,
         }
     }
 }
@@ -141,6 +153,15 @@ impl NavState {
         self.max_depth = (self.max_depth + 1).min(6);
     }
 
+    /// Cheap hash of the expanded set for cache invalidation.
+    fn expanded_hash(&self) -> u64 {
+        let mut h: u64 = self.expanded.len() as u64;
+        for &idx in &self.expanded {
+            h = h.wrapping_add(idx as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        h
+    }
+
     /// Show the navigation panel.
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.visible {
@@ -187,13 +208,23 @@ impl NavState {
         let heading_color_mode = self.heading_color_mode;
 
         // Compute visible headings: a heading is visible if it's at min_level
-        // or all its ancestors are expanded.
-        let visible = compute_visible_headings(&self.outline, &self.expanded, max_depth, min_level);
+        // or all its ancestors are expanded.  Cache to avoid Vec allocation each frame.
+        let expanded_hash = self.expanded_hash();
+        if self.visible_seq != self.outline_seq
+            || self.visible_expanded_hash != expanded_hash
+            || self.visible_max_depth != max_depth
+        {
+            self.cached_visible =
+                compute_visible_headings(&self.outline, &self.expanded, max_depth, min_level);
+            self.visible_seq = self.outline_seq;
+            self.visible_expanded_hash = expanded_hash;
+            self.visible_max_depth = max_depth;
+        }
 
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                if visible.is_empty() {
+                if self.cached_visible.is_empty() {
                     ui.weak("No headings found.");
                     return;
                 }
@@ -201,7 +232,7 @@ impl NavState {
                     ui,
                     &RenderContext {
                         outline: &self.outline,
-                        visible: &visible,
+                        visible: &self.cached_visible,
                         min_level,
                         max_depth,
                         expanded: &self.expanded,
@@ -231,7 +262,10 @@ impl NavState {
             {
                 self.decrease_depth();
             }
-            ui.label(format!("H1–H{}", self.max_depth));
+            const DEPTH_LABELS: [&str; 7] = [
+                "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
+            ];
+            ui.label(DEPTH_LABELS[self.max_depth as usize]);
             if ui
                 .add_enabled(self.max_depth < 6, egui::Button::new("+").small())
                 .on_hover_text("Show more heading levels")

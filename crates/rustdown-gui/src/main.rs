@@ -1198,17 +1198,29 @@ impl RustdownApp {
     }
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
-        let title = format!(
-            "rustdown v{} - {}{}",
-            app_version(),
-            self.doc.title(),
-            if self.doc.dirty { "*" } else { "" },
-        );
-        if self.last_viewport_title == title {
+        // Avoid format! allocation when nothing changed.
+        use std::fmt::Write;
+        let ver = app_version();
+        let file_title = self.doc.title();
+        let dirty_mark = if self.doc.dirty { "*" } else { "" };
+
+        // Quick length pre-check: "rustdown v" + ver + " - " + title + dirty
+        let expected_len = 13 + ver.len() + file_title.len() + dirty_mark.len();
+        if self.last_viewport_title.len() == expected_len
+            && self.last_viewport_title.ends_with(dirty_mark)
+            && self.last_viewport_title.contains(file_title.as_ref())
+        {
             return;
         }
-        self.last_viewport_title.clone_from(&title);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+
+        self.last_viewport_title.clear();
+        let _ = write!(
+            self.last_viewport_title,
+            "rustdown v{ver} - {file_title}{dirty_mark}"
+        );
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+            self.last_viewport_title.clone(),
+        ));
     }
 
     const fn bump_edit_seq(&mut self) {
