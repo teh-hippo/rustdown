@@ -11,6 +11,10 @@ use std::os::unix::fs::MetadataExt as _;
 
 const STABLE_READ_RETRIES: usize = 3;
 const STABLE_READ_RETRY_SLEEP: Duration = Duration::from_millis(5);
+/// Maximum retries for atomic write temp-file creation.
+const ATOMIC_WRITE_MAX_ATTEMPTS: u128 = 10;
+/// Maximum merge sidecar files before giving up.
+const MERGE_SIDECAR_MAX_FILES: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DiskRevision {
@@ -83,7 +87,7 @@ pub(crate) fn atomic_write_utf8(path: &Path, contents: &str) -> io::Result<()> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
 
-    for attempt in 0..10u128 {
+    for attempt in 0..ATOMIC_WRITE_MAX_ATTEMPTS {
         let suffix = pid ^ nanos ^ attempt;
         let tmp_path = dir.join(format!(".rustdown-tmp-{file_name}-{suffix}"));
 
@@ -152,7 +156,7 @@ pub(crate) fn next_merge_sidecar_path(original: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file stem"))?;
 
     let ext = original.extension();
-    for n in 1..=100usize {
+    for n in 1..=MERGE_SIDECAR_MAX_FILES {
         let mut name = OsString::new();
         name.push(stem);
         name.push(".rustdown-merge");

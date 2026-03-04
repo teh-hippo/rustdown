@@ -186,48 +186,65 @@ pub(crate) fn markdown_layout_job(
         // Line contains inline code - emit individual sections for each fragment.
         flush(&mut job, &pending_fmt, pending_start, pending_end);
         pending_fmt = None;
-
-        let mut pos = line_start;
-        let line_bytes = line.as_bytes();
-        let mut i = 0;
-        while let Some(tick_rel) = memchr::memchr(b'`', &line_bytes[i..]) {
-            let tick_i = i + tick_rel;
-            // Flush text before backtick.
-            if pos < line_start + tick_i {
-                push_section(&mut job, pos..line_start + tick_i, base.clone());
-            }
-            // Find closing backtick.
-            if let Some(close) = memchr::memchr(b'`', &line_bytes[tick_i + 1..]) {
-                let tick_start = line_start + tick_i;
-                let code_start = tick_start + 1;
-                let code_end = code_start + close;
-                let tick_end = code_end + 1;
-                push_section(&mut job, tick_start..code_start, weak.clone());
-                push_section(&mut job, code_start..code_end, inline_code.clone());
-                push_section(&mut job, code_end..tick_end, weak.clone());
-                pos = tick_end;
-                i = tick_i + 1 + close + 1;
-            } else {
-                // Unmatched backtick.
-                push_section(
-                    &mut job,
-                    line_start + tick_i..line_start + tick_i + 1,
-                    weak.clone(),
-                );
-                if line_start + tick_i + 1 < line_end {
-                    push_section(&mut job, line_start + tick_i + 1..line_end, base.clone());
-                }
-                pos = line_end;
-                i = line_bytes.len();
-            }
-        }
-        if pos < line_end {
-            push_section(&mut job, pos..line_end, base.clone());
-        }
+        emit_inline_code_sections(
+            &mut job,
+            line_start,
+            line_end,
+            line,
+            &base,
+            &weak,
+            &inline_code,
+        );
     }
 
     flush(&mut job, &pending_fmt, pending_start, pending_end);
     job
+}
+
+/// Emit layout sections for a line that contains inline backtick code spans.
+fn emit_inline_code_sections(
+    job: &mut egui::text::LayoutJob,
+    line_start: usize,
+    line_end: usize,
+    line: &str,
+    base: &egui::TextFormat,
+    weak: &egui::TextFormat,
+    inline_code: &egui::TextFormat,
+) {
+    let mut pos = line_start;
+    let line_bytes = line.as_bytes();
+    let mut i = 0;
+    while let Some(tick_rel) = memchr::memchr(b'`', &line_bytes[i..]) {
+        let tick_i = i + tick_rel;
+        if pos < line_start + tick_i {
+            push_section(job, pos..line_start + tick_i, base.clone());
+        }
+        if let Some(close) = memchr::memchr(b'`', &line_bytes[tick_i + 1..]) {
+            let tick_start = line_start + tick_i;
+            let code_start = tick_start + 1;
+            let code_end = code_start + close;
+            let tick_end = code_end + 1;
+            push_section(job, tick_start..code_start, weak.clone());
+            push_section(job, code_start..code_end, inline_code.clone());
+            push_section(job, code_end..tick_end, weak.clone());
+            pos = tick_end;
+            i = tick_i + 1 + close + 1;
+        } else {
+            push_section(
+                job,
+                line_start + tick_i..line_start + tick_i + 1,
+                weak.clone(),
+            );
+            if line_start + tick_i + 1 < line_end {
+                push_section(job, line_start + tick_i + 1..line_end, base.clone());
+            }
+            pos = line_end;
+            i = line_bytes.len();
+        }
+    }
+    if pos < line_end {
+        push_section(job, pos..line_end, base.clone());
+    }
 }
 
 #[cfg(test)]
