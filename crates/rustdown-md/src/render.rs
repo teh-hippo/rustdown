@@ -2380,6 +2380,160 @@ Normal paragraph.
         );
     }
 
+    // ── strengthen_color tests ───────────────────────────────────────
+
+    #[test]
+    fn strengthen_color_black_gets_brighter() {
+        let out = strengthen_color(egui::Color32::from_rgb(0, 0, 0));
+        let [r, g, b, _] = out.to_array();
+        assert!(r > 0 && g > 0 && b > 0, "black should become brighter");
+    }
+
+    #[test]
+    fn strengthen_color_white_stays_white() {
+        let out = strengthen_color(egui::Color32::from_rgb(255, 255, 255));
+        let [r, g, b, _] = out.to_array();
+        assert_eq!((r, g, b), (255, 255, 255));
+    }
+
+    #[test]
+    fn strengthen_color_preserves_alpha() {
+        let out = strengthen_color(egui::Color32::from_rgba_premultiplied(100, 100, 100, 42));
+        let [_, _, _, a] = out.to_array();
+        assert_eq!(a, 42, "alpha channel must be preserved");
+    }
+
+    #[test]
+    fn strengthen_color_mid_range_increases() {
+        let src = egui::Color32::from_rgb(100, 100, 100);
+        let out = strengthen_color(src);
+        let [sr, sg, sb, _] = src.to_array();
+        let [dr, dg, db, _] = out.to_array();
+        assert!(
+            dr > sr && dg > sg && db > sb,
+            "mid-range channels should increase"
+        );
+    }
+
+    // ── bytecount_newlines tests ──────────────────────────────────────
+
+    #[test]
+    fn bytecount_newlines_empty() {
+        assert_eq!(bytecount_newlines(b""), 0);
+    }
+
+    #[test]
+    fn bytecount_newlines_single() {
+        assert_eq!(bytecount_newlines(b"\n"), 1);
+    }
+
+    #[test]
+    fn bytecount_newlines_three() {
+        assert_eq!(bytecount_newlines(b"\n\n\n"), 3);
+    }
+
+    #[test]
+    fn bytecount_newlines_embedded() {
+        assert_eq!(bytecount_newlines(b"line1\nline2"), 1);
+    }
+
+    #[test]
+    fn bytecount_newlines_none() {
+        assert_eq!(bytecount_newlines(b"no newlines here"), 0);
+    }
+
+    // ── Edge-case code block rendering ────────────────────────────────
+
+    #[test]
+    fn render_empty_code_block_no_panic() {
+        let _ = headless_render("```\n```\n");
+    }
+
+    #[test]
+    fn render_code_block_without_language_tag() {
+        let (blocks, _) = headless_render("```\ncode\n```\n");
+        let has_code = blocks.iter().any(|b| matches!(b, Block::Code { .. }));
+        assert!(has_code, "should parse a code block without language tag");
+    }
+
+    // ── Ordered list digit_count with start=0 ─────────────────────────
+
+    #[test]
+    fn ordered_list_zero_start_rendered() {
+        // Render an ordered list that starts at 0 via headless context.
+        let (blocks, _) = headless_render("0. first\n1. second\n");
+        let has_ordered = blocks
+            .iter()
+            .any(|b| matches!(b, Block::OrderedList { start: 0, .. }));
+        assert!(has_ordered, "should parse ordered list starting at 0");
+    }
+
+    // ── Viewport culling at exact boundary ────────────────────────────
+
+    #[test]
+    fn viewport_culling_exact_boundary_renders_block() {
+        let md = "# Block One\n\nParagraph two\n\n# Block Three\n\n";
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(md);
+        cache.ensure_heights(14.0, 900.0, &style);
+
+        // Scroll to exactly the start of the second block.
+        let boundary_y = cache.cum_y[1];
+        let (block_count, _) = headless_render_scrollable(md, Some(boundary_y));
+        assert!(block_count > 1, "block at exact boundary should be counted");
+    }
+
+    // ── Table with header only ────────────────────────────────────────
+
+    #[test]
+    fn estimate_height_table_header_only_no_rows() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Table(Box::new(TableData {
+            header: vec![StyledText {
+                text: "Header".to_owned(),
+                spans: vec![],
+            }],
+            alignments: vec![Alignment::None],
+            rows: vec![],
+        }));
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(
+            h > 0.0,
+            "table with header only should have positive height"
+        );
+    }
+
+    #[test]
+    fn render_table_header_only_no_panic() {
+        let md = "| H1 | H2 |\n|---|---|\n";
+        let (blocks, _) = headless_render(md);
+        let has_table = blocks.iter().any(|b| matches!(b, Block::Table(_)));
+        assert!(has_table, "header-only table should parse");
+    }
+
+    // ── estimate_text_height edge cases ───────────────────────────────
+
+    #[test]
+    fn estimate_text_height_empty_returns_font_size() {
+        let h = estimate_text_height("", 14.0, 200.0);
+        assert!(
+            (h - 14.0).abs() < f32::EPSILON,
+            "empty text should return font_size"
+        );
+    }
+
+    #[test]
+    fn estimate_text_height_zero_wrap_width_no_crash() {
+        let h = estimate_text_height("some text", 14.0, 0.0);
+        assert!(
+            h > 0.0,
+            "zero wrap_width should not crash and should return positive height"
+        );
+    }
+
+    // ── Existing coverage tests below ─────────────────────────────────
+
     #[test]
     fn estimate_height_all_block_types_positive() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());

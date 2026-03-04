@@ -371,4 +371,42 @@ mod tests {
         assert!(section_match("*.{md,markdown}", "test.markdown"));
         assert!(!section_match("*.txt", "test.md"));
     }
+
+    #[test]
+    fn glob_match_multiple_wildcards() {
+        assert!(glob_match("a*b*c", "aXbYc"));
+        assert!(!glob_match("a*b*c", "aXbYd"));
+    }
+
+    #[test]
+    fn glob_match_surrounding_wildcards() {
+        assert!(glob_match("*test*", "prefix-test-suffix"));
+    }
+
+    #[test]
+    fn glob_match_both_empty() {
+        assert!(glob_match("", ""));
+    }
+
+    #[test]
+    fn glob_match_star_matches_all() {
+        assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn glob_match_trailing_wildcard_matches_empty() {
+        assert!(glob_match("a*", "a"));
+    }
+
+    #[test]
+    fn section_match_via_editorconfig_overrides() {
+        // section_match is exercised indirectly through editorconfig_overrides.
+        let cfg = "[*.md]\ntrim_trailing_whitespace = false\n";
+        let ov = editorconfig_overrides(cfg, "notes.md");
+        assert_eq!(ov.trim, Some(false));
+
+        // Non-matching section should not apply.
+        let ov2 = editorconfig_overrides(cfg, "notes.txt");
+        assert_eq!(ov2.trim, None);
+    }
 }

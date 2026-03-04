@@ -1167,4 +1167,177 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn inline_state_pop_without_push() {
+        let mut state = InlineState::new();
+        // Pop Strong without any preceding push — must not crash.
+        state.pop(&InlineFlag::Strong);
+        assert!(state.stack.is_empty());
+        assert_eq!(state.cached_flags, 0);
+        assert!(state.cached_link.is_none());
+    }
+
+    #[test]
+    fn parse_empty_code_block() {
+        let blocks = parse_markdown("```\n```\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Code { language, code } => {
+                assert!(language.is_empty());
+                assert!(code.is_empty());
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_table_column_mismatch() {
+        let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 |\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Table(table) => {
+                let TableData {
+                    header,
+                    rows,
+                    alignments,
+                } = table.as_ref();
+                assert_eq!(header.len(), 3);
+                assert_eq!(alignments.len(), 3);
+                assert_eq!(rows.len(), 1);
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_empty_list_items() {
+        let blocks = parse_markdown("- \n- text\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(items[0].content.text.is_empty());
+                assert_eq!(items[1].content.text, "text");
+            }
+            other => panic!("expected unordered list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ordered_list_starting_at_zero() {
+        let blocks = parse_markdown("0. zero\n1. one\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 0);
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].content.text, "zero");
+                assert_eq!(items[1].content.text, "one");
+            }
+            other => panic!("expected ordered list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_deeply_nested_blockquotes() {
+        let blocks = parse_markdown("> > > deep\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Quote(level1) => {
+                assert!(
+                    level1.iter().any(|b| matches!(b, Block::Quote(_))),
+                    "expected second level of nesting"
+                );
+                // Find the inner Quote and check for a third level.
+                for b in level1 {
+                    if let Block::Quote(level2) = b {
+                        assert!(
+                            level2.iter().any(|b2| matches!(b2, Block::Quote(_))),
+                            "expected third level of nesting"
+                        );
+                    }
+                }
+            }
+            other => panic!("expected quote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_code_block_without_closing_fence() {
+        let blocks = parse_markdown("```rust\ncode\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Code { language, code } => {
+                assert_eq!(language, "rust");
+                assert!(code.contains("code"));
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_heading_with_mixed_formatting() {
+        let blocks = parse_markdown("# **bold** and *italic*\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 1);
+                assert!(text.text.contains("bold"));
+                assert!(text.text.contains("italic"));
+                assert!(
+                    text.spans.iter().any(|s| s.style.strong()),
+                    "expected a strong span in heading"
+                );
+                assert!(
+                    text.spans.iter().any(|s| s.style.emphasis()),
+                    "expected an emphasis span in heading"
+                );
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_empty_table_no_data_rows() {
+        let md = "| X | Y |\n|---|---|\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Table(table) => {
+                let TableData { header, rows, .. } = table.as_ref();
+                assert_eq!(header.len(), 2);
+                assert!(rows.is_empty());
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_consecutive_headings() {
+        let blocks = parse_markdown("# H1\n## H2\n### H3\n");
+        assert_eq!(blocks.len(), 3);
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 1);
+                assert_eq!(text.text, "H1");
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+        match &blocks[1] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 2);
+                assert_eq!(text.text, "H2");
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+        match &blocks[2] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 3);
+                assert_eq!(text.text, "H3");
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+    }
 }

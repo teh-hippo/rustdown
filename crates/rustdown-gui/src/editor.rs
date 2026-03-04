@@ -100,4 +100,29 @@ mod tests {
         assert_eq!(row_y_to_byte_offset(&rows, 99.0), 150);
         assert_eq!(row_y_to_byte_offset(&[], 50.0), 0);
     }
+
+    #[test]
+    fn row_byte_offset_to_y_empty_rows() {
+        assert_eq!(row_byte_offset_to_y(&[], 0), 0.0);
+        assert_eq!(row_byte_offset_to_y(&[], 42), 0.0);
+    }
+
+    #[test]
+    fn row_y_to_byte_offset_empty_rows() {
+        assert_eq!(row_y_to_byte_offset(&[], 0.0), 0);
+        assert_eq!(row_y_to_byte_offset(&[], 42.0), 0);
+    }
+
+    #[test]
+    fn row_byte_offset_to_y_boundaries() {
+        let rows = vec![(0.0, 0u32), (15.0, 30), (30.0, 60)];
+        // Exact match on first row.
+        assert_eq!(row_byte_offset_to_y(&rows, 0), 0.0);
+        // Exact match on last row.
+        assert_eq!(row_byte_offset_to_y(&rows, 60), 30.0);
+        // Beyond last row byte offset clamps to last row y.
+        assert_eq!(row_byte_offset_to_y(&rows, 999), 30.0);
+        // Between first and second row maps to first row.
+        assert_eq!(row_byte_offset_to_y(&rows, 15), 0.0);
+    }
 }
