@@ -62,6 +62,8 @@ const UI_FONT_FALLBACK_PATHS: &[&str] = &[
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/truetype/unifont/unifont.ttf",
 ];
 #[cfg(target_os = "macos")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -2138,29 +2140,26 @@ impl RustdownApp {
             self.doc.preview_dirty = false;
         }
 
-        CommonMarkViewer::new()
-            .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
-            .show_scrollable(
-                "preview_markdown",
-                ui,
-                &mut self.doc.md_cache,
-                self.doc.text.as_str(),
-            );
+        let nav_scroll_y = &mut self.nav.pending_scroll_y;
+        let mode = self.mode;
+        egui::ScrollArea::vertical()
+            .id_salt(egui::Id::new("preview_markdown").with("_scroll_area"))
+            .auto_shrink([false, true])
+            .drag_to_scroll(false)
+            .show(ui, |ui| {
+                CommonMarkViewer::new()
+                    .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
+                    .show(ui, &mut self.doc.md_cache, self.doc.text.as_str());
 
-        // Consume any pending nav-scroll target.  We cannot inject into
-        // show_scrollable's internal ScrollArea, so apply directly.
-        // Only consume when this is the scroll target (Preview-only mode);
-        // in SideBySide the editor is the scroll target instead.
-        if self.mode == Mode::Preview
-            && let Some(y) = self.nav.pending_scroll_y.take()
-        {
-            let scroll_id = nav_panel::preview_scroll_id();
-            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
-                state.offset = egui::vec2(state.offset.x, y);
-                state.store(ui.ctx(), scroll_id);
-                ui.ctx().request_repaint();
-            }
-        }
+                // Consume any pending nav-scroll target inside the scroll area.
+                if mode == Mode::Preview
+                    && let Some(y) = nav_scroll_y.take()
+                {
+                    let target =
+                        egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0));
+                    ui.scroll_to_rect(target, Some(egui::Align::TOP));
+                }
+            });
     }
 
     /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
