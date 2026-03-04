@@ -78,11 +78,12 @@ impl MarkdownStyle {
         } else {
             LIGHT_HEADING_COLORS
         };
-        s.with_heading_colors(colors);
+        let _ = s.with_heading_colors(colors);
         s
     }
 
     /// Set heading colours from an external palette.
+    #[must_use]
     pub fn with_heading_colors(&mut self, colors: [egui::Color32; 6]) -> &mut Self {
         for (h, c) in self.headings.iter_mut().zip(colors) {
             h.color = c;
@@ -91,6 +92,7 @@ impl MarkdownStyle {
     }
 
     /// Set heading font scales.
+    #[must_use]
     pub fn with_heading_scales(&mut self, scales: [f32; 6]) -> &mut Self {
         for (h, s) in self.headings.iter_mut().zip(scales) {
             h.font_scale = s;

@@ -12,6 +12,9 @@ pub(crate) enum Block {
     },
     Paragraph(StyledText),
     Code {
+        /// Language tag from fenced code blocks (e.g. "rust", "python").
+        /// Preserved for future use (syntax highlighting labels, copy-button
+        /// tooltips) even though the renderer does not read it yet.
         #[allow(dead_code)]
         language: String,
         code: String,
@@ -320,8 +323,7 @@ fn parse_table(
             }
             Event::End(TagEnd::TableHead) => {
                 in_head = false;
-                header.clone_from(&current_row);
-                current_row.clear();
+                header = std::mem::take(&mut current_row);
                 consumed += 1;
             }
             Event::Start(Tag::TableRow) => {
@@ -329,10 +331,11 @@ fn parse_table(
                 consumed += 1;
             }
             Event::End(TagEnd::TableRow) => {
-                if !in_head {
-                    rows.push(current_row.clone());
+                if in_head {
+                    current_row.clear();
+                } else {
+                    rows.push(std::mem::take(&mut current_row));
                 }
-                current_row.clear();
                 consumed += 1;
             }
             Event::Start(Tag::TableCell) => {
@@ -341,8 +344,7 @@ fn parse_table(
                 consumed += 1;
             }
             Event::End(TagEnd::TableCell) => {
-                current_row.push(current_cell.clone());
-                current_cell = StyledText::default();
+                current_row.push(std::mem::take(&mut current_cell));
                 consumed += 1;
             }
             ev => {
@@ -692,7 +694,10 @@ mod tests {
                     .iter()
                     .filter(|s| matches!(&s.kind, SpanKind::Link(_)))
                     .count();
-                assert!(link_count >= 2, "expected at least 2 links, got {link_count}");
+                assert!(
+                    link_count >= 2,
+                    "expected at least 2 links, got {link_count}"
+                );
             }
             other => panic!("expected paragraph, got {other:?}"),
         }

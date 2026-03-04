@@ -442,50 +442,30 @@ impl SpanFormat {
         base_color: egui::Color32,
         ui: &egui::Ui,
     ) -> Self {
+        let mut sf = Self {
+            font_family: egui::FontFamily::Proportional,
+            color: base_color,
+            background: egui::Color32::TRANSPARENT,
+            underline: false,
+            strikethrough: false,
+            italics: false,
+        };
         match kind {
-            SpanKind::Plain | SpanKind::Strong => Self {
-                font_family: egui::FontFamily::Proportional,
-                color: base_color,
-                background: egui::Color32::TRANSPARENT,
-                underline: false,
-                strikethrough: false,
-                italics: false,
-            },
-            SpanKind::Emphasis => Self {
-                font_family: egui::FontFamily::Proportional,
-                color: base_color,
-                background: egui::Color32::TRANSPARENT,
-                underline: false,
-                strikethrough: false,
-                italics: true,
-            },
-            SpanKind::Strikethrough => Self {
-                font_family: egui::FontFamily::Proportional,
-                color: base_color,
-                background: egui::Color32::TRANSPARENT,
-                underline: false,
-                strikethrough: true,
-                italics: false,
-            },
-            SpanKind::Code => Self {
-                font_family: egui::FontFamily::Monospace,
-                color: base_color,
-                background: style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
-                underline: false,
-                strikethrough: false,
-                italics: false,
-            },
-            SpanKind::Link(_) => Self {
-                font_family: egui::FontFamily::Proportional,
-                color: style
+            SpanKind::Plain | SpanKind::Strong => {}
+            SpanKind::Emphasis => sf.italics = true,
+            SpanKind::Strikethrough => sf.strikethrough = true,
+            SpanKind::Code => {
+                sf.font_family = egui::FontFamily::Monospace;
+                sf.background = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
+            }
+            SpanKind::Link(_) => {
+                sf.color = style
                     .link_color
-                    .unwrap_or_else(|| ui.visuals().hyperlink_color),
-                background: egui::Color32::TRANSPARENT,
-                underline: true,
-                strikethrough: false,
-                italics: false,
-            },
+                    .unwrap_or_else(|| ui.visuals().hyperlink_color);
+                sf.underline = true;
+            }
         }
+        sf
     }
 }
 
@@ -653,7 +633,7 @@ fn render_table_cell(
     ui: &mut egui::Ui,
     cell: &StyledText,
     style: &MarkdownStyle,
-    _align: Alignment,
+    _align: Alignment, // Table column alignment is not yet applied to cell layout.
     is_header: bool,
 ) {
     if is_header {
@@ -667,11 +647,26 @@ fn render_table_cell(
 // ── Utilities ──────────────────────────────────────────────────────
 
 pub(crate) fn simple_hash(s: &str) -> u64 {
-    // FNV-1a 64-bit.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in s.as_bytes() {
+    // FNV-1a–inspired 64-bit hash, processing 8 bytes at a time for throughput.
+    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    let bytes = s.as_bytes();
+    let chunks = bytes.chunks_exact(8);
+    let remainder = chunks.remainder();
+    let mut h: u64 = BASIS;
+
+    for chunk in chunks {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(chunk);
+        let word = u64::from_le_bytes(buf);
+        h ^= word;
+        h = h.wrapping_mul(PRIME);
+    }
+
+    for &b in remainder {
         h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
+        h = h.wrapping_mul(PRIME);
     }
     h
 }
@@ -718,7 +713,7 @@ mod tests {
             egui::Color32::WHITE,
             egui::Color32::GRAY,
         ];
-        style.with_heading_colors(colors);
+        let _ = style.with_heading_colors(colors);
         assert_eq!(style.headings[0].color, egui::Color32::RED);
         assert_eq!(style.headings[5].color, egui::Color32::GRAY);
     }
@@ -902,7 +897,7 @@ mod tests {
     fn style_with_heading_scales() {
         let mut style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let scales = [3.0, 2.5, 2.0, 1.5, 1.2, 1.0];
-        style.with_heading_scales(scales);
+        let _ = style.with_heading_scales(scales);
         for (i, &expected) in scales.iter().enumerate() {
             assert!(
                 (style.headings[i].font_scale - expected).abs() < f32::EPSILON,
