@@ -9,9 +9,8 @@ use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 
 use crate::{
-    Document, DocumentStats, Mode, RustdownApp, configure_single_font, configure_ui_style,
-    default_image_uri_scheme, diagnostics_raw_input, disk_io::read_stable_utf8,
-    nav_panel::NavScrollTarget,
+    Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme, diagnostics_raw_input,
+    disk_io::read_stable_utf8, nav_panel::NavScrollTarget,
 };
 
 /// Render one simulated frame using the same layout as the real app.
@@ -44,8 +43,8 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
     let md_cache = CommonMarkCache::default();
 
     let ctx = egui::Context::default();
-    configure_single_font(&ctx).map_err(io::Error::other)?;
-    configure_ui_style(&ctx);
+    crate::ui_style::configure_fonts(&ctx).map_err(io::Error::other)?;
+    crate::ui_style::configure_style(&ctx);
     // Warm up: egui needs one frame for fonts.
     let _ = ctx.run(egui::RawInput::default(), |_ctx| {});
 

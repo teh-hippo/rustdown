@@ -255,6 +255,7 @@ struct RenderContext<'a> {
 }
 
 /// Compute which outline indices are visible given the current expanded set.
+/// Uses a parent stack for O(n) traversal instead of O(n²) reverse scans.
 fn compute_visible_headings(
     outline: &[HeadingEntry],
     expanded: &HashSet<usize>,
@@ -263,26 +264,34 @@ fn compute_visible_headings(
 ) -> Vec<usize> {
     let mut visible = Vec::new();
     let mut is_visible = vec![false; outline.len()];
+    // Stack of ancestor indices; top has the nearest parent at a lower level.
+    let mut parent_stack: Vec<usize> = Vec::new();
 
     for (idx, h) in outline.iter().enumerate() {
         if h.level > max_depth {
             continue;
         }
-        if h.level <= min_level {
-            is_visible[idx] = true;
-            visible.push(idx);
-            continue;
+        // Pop ancestors at same or deeper level to find the direct parent.
+        while parent_stack
+            .last()
+            .is_some_and(|&p| outline[p].level >= h.level)
+        {
+            parent_stack.pop();
         }
-        // Find direct parent: nearest preceding heading with level < h.level
-        let parent_ok = (0..idx)
-            .rev()
-            .find(|&i| outline[i].level < h.level && outline[i].level <= max_depth)
-            .is_some_and(|parent_idx| is_visible[parent_idx] && expanded.contains(&parent_idx));
 
-        if parent_ok {
+        let show = if h.level <= min_level {
+            true
+        } else {
+            parent_stack
+                .last()
+                .is_some_and(|&p| is_visible[p] && expanded.contains(&p))
+        };
+
+        if show {
             is_visible[idx] = true;
             visible.push(idx);
         }
+        parent_stack.push(idx);
     }
     visible
 }
