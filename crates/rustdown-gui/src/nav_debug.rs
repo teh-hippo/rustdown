@@ -9,13 +9,13 @@ use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 
 use crate::{
-    Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme, diagnostics_raw_input,
+    Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme,
     disk_io::read_stable_utf8, nav_panel::NavScrollTarget,
 };
 
 /// Render one simulated frame using the same layout as the real app.
 fn run_frame(ctx: &egui::Context, app: &mut RustdownApp) {
-    let raw = diagnostics_raw_input();
+    let raw = crate::diagnostics::diagnostics_raw_input();
     let _ = ctx.run(raw, |ctx| {
         app.show_content_panels(ctx);
     });
