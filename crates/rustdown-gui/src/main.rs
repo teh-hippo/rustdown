@@ -363,9 +363,9 @@ impl Mode {
     #[must_use]
     const fn icon(self) -> &'static str {
         match self {
-            Self::Edit => "✎",
-            Self::Preview => "👁",
-            Self::SideBySide => "◫",
+            Self::Edit => "\u{270F}\u{FE0E}",    // ✏︎ pencil (text presentation)
+            Self::Preview => "\u{25B6}\u{FE0E}", // ▶︎ play/preview (text presentation)
+            Self::SideBySide => "\u{2261}",      // ≡ triple bar (columns)
         }
     }
 
@@ -516,10 +516,15 @@ impl eframe::App for RustdownApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let mut clear_error = false;
 
+            // Use a smaller font for the toolbar.
+            let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
+            let toolbar_font = egui::FontId::proportional(toolbar_size);
+
             ui.horizontal(|ui| {
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
+                    let label = egui::RichText::new(mode.icon()).font(toolbar_font.clone());
                     if ui
-                        .selectable_label(self.mode == mode, mode.icon())
+                        .selectable_label(self.mode == mode, label)
                         .on_hover_text(mode.tooltip())
                         .clicked()
                     {
@@ -528,8 +533,16 @@ impl eframe::App for RustdownApp {
                 }
 
                 ui.separator();
+                let color_icon = if self.heading_color_mode {
+                    "\u{1F3A8}" // 🎨 palette (active)
+                } else {
+                    "\u{26AB}" // ⚫ black circle (inactive)
+                };
                 if ui
-                    .toggle_value(&mut self.heading_color_mode, "◐")
+                    .toggle_value(
+                        &mut self.heading_color_mode,
+                        egui::RichText::new(color_icon).font(toolbar_font.clone()),
+                    )
                     .on_hover_text("Heading colours")
                     .changed()
                 {
@@ -537,23 +550,34 @@ impl eframe::App for RustdownApp {
                     self.doc.preview_cache.clear();
                 }
                 ui.separator();
-                if ui.button("¶").on_hover_text("Format document").clicked() {
+                if ui
+                    .button(egui::RichText::new("\u{2630}").font(toolbar_font.clone()))
+                    .on_hover_text("Format document")
+                    .clicked()
+                {
                     self.format_document();
                 }
-                ui.toggle_value(&mut self.nav.visible, "☰")
+                let nav_icon = egui::RichText::new("\u{2302}").font(toolbar_font.clone()); // ⌂ house/nav
+                ui.toggle_value(&mut self.nav.visible, nav_icon)
                     .on_hover_text("Navigation");
 
                 ui.separator();
 
-                ui.label(self.doc.path_label());
+                ui.label(egui::RichText::new(self.doc.path_label()).font(toolbar_font.clone()));
                 let stats = self.doc.stats();
 
                 ui.separator();
-                ui.label(format!("{} lines", stats.lines));
+                ui.label(
+                    egui::RichText::new(format!("{} lines", stats.lines))
+                        .font(toolbar_font.clone()),
+                );
 
                 if self.doc.dirty {
                     ui.separator();
-                    ui.colored_label(ui.visuals().warn_fg_color, "Modified");
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        egui::RichText::new("Modified").font(toolbar_font.clone()),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2299,9 +2323,9 @@ mod tests {
 
     #[test]
     fn mode_icons_and_tooltips() {
-        assert_eq!(Mode::Edit.icon(), "✎");
-        assert_eq!(Mode::Preview.icon(), "👁");
-        assert_eq!(Mode::SideBySide.icon(), "◫");
+        assert_eq!(Mode::Edit.icon(), "\u{270F}\u{FE0E}");
+        assert_eq!(Mode::Preview.icon(), "\u{25B6}\u{FE0E}");
+        assert_eq!(Mode::SideBySide.icon(), "\u{2261}");
         assert_eq!(Mode::Edit.tooltip(), "Edit");
         assert_eq!(Mode::Preview.tooltip(), "Preview");
         assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");

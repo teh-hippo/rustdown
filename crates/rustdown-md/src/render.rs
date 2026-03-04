@@ -766,10 +766,12 @@ fn render_table(
     let num_cols = header.len().max(1);
     let available = ui.available_width();
     let col_width = (available / num_cols as f32).max(40.0);
+    let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
-    egui::Grid::new("md_table")
+    egui::Grid::new(ui.next_auto_id())
         .striped(true)
         .min_col_width(col_width)
+        .min_row_height(body_size * 1.4)
         .show(ui, |ui| {
             for (i, cell) in header.iter().enumerate() {
                 let align = alignments.get(i).copied().unwrap_or(Alignment::None);
