@@ -13,6 +13,7 @@ enum FmtIdx {
     Weak,
     InlineCode,
     Heading(usize),
+    Table,
 }
 
 pub fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) -> egui::Color32 {
@@ -35,12 +36,14 @@ fn resolve_format(
     weak: &egui::TextFormat,
     inline_code: &egui::TextFormat,
     heading_formats: &[egui::TextFormat; 6],
+    table_format: &egui::TextFormat,
 ) -> egui::TextFormat {
     match idx {
         FmtIdx::Base => base.clone(),
         FmtIdx::Weak => weak.clone(),
         FmtIdx::InlineCode => inline_code.clone(),
         FmtIdx::Heading(level) => heading_formats[level - 1].clone(),
+        FmtIdx::Table => table_format.clone(),
     }
 }
 
@@ -87,8 +90,12 @@ pub fn markdown_layout_job(
     });
 
     let mut inline_code = base.clone();
-    inline_code.font_id = code_font;
+    inline_code.font_id = code_font.clone();
     inline_code.background = visuals.faint_bg_color;
+
+    let mut table_format = base.clone();
+    table_format.font_id = code_font;
+    table_format.color = visuals.weak_text_color();
 
     // Pending run: consecutive lines with the same format are batched into
     // a single section to minimize section count.
@@ -99,7 +106,14 @@ pub fn markdown_layout_job(
     let flush =
         |job: &mut egui::text::LayoutJob, fmt: &Option<FmtIdx>, start: usize, end: usize| {
             if let Some(idx) = *fmt {
-                let format = resolve_format(idx, &base, &weak, &inline_code, &heading_formats);
+                let format = resolve_format(
+                    idx,
+                    &base,
+                    &weak,
+                    &inline_code,
+                    &heading_formats,
+                    &table_format,
+                );
                 push_section(job, start..end, format);
             }
         };
@@ -121,7 +135,14 @@ pub fn markdown_layout_job(
             push_section(
                 &mut job,
                 line_start..line_end,
-                resolve_format(FmtIdx::Weak, &base, &weak, &inline_code, &heading_formats),
+                resolve_format(
+                    FmtIdx::Weak,
+                    &base,
+                    &weak,
+                    &inline_code,
+                    &heading_formats,
+                    &table_format,
+                ),
             );
             continue;
         }
@@ -149,6 +170,18 @@ pub fn markdown_layout_job(
                 pending_end = line_end;
                 continue;
             }
+        }
+
+        // Table rows: lines starting with `|` (pipe-delimited).
+        if trimmed.as_bytes().first() == Some(&b'|') {
+            let kind = FmtIdx::Table;
+            if pending_fmt != Some(kind) {
+                flush(&mut job, &pending_fmt, pending_start, pending_end);
+                pending_fmt = Some(kind);
+                pending_start = line_start;
+            }
+            pending_end = line_end;
+            continue;
         }
 
         if memchr::memchr(b'`', line.as_bytes()).is_none() {
@@ -401,5 +434,30 @@ mod tests {
         let b_sec = section_for_snippet(&job, "b");
         assert_eq!(a_sec.format.background, visuals.faint_bg_color);
         assert_eq!(b_sec.format.background, visuals.faint_bg_color);
+    }
+
+    #[test]
+    fn table_rows_get_monospace_weak_format() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let header_sec = section_for_snippet(&job, "| A | B |");
+        assert_eq!(header_sec.format.color, visuals.weak_text_color());
+        assert_eq!(
+            header_sec.format.font_id,
+            egui::TextStyle::Monospace.resolve(&style)
+        );
+    }
+
+    #[test]
+    fn table_rows_are_batched_into_single_section() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "| A |\n| B |\n| C |\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        // All three pipe-lines should be batched into one Table section.
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].byte_range, 0..source.len());
     }
 }
