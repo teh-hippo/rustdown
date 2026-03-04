@@ -831,7 +831,7 @@ fn render_table(
             ui.end_row();
 
             for row in rows {
-                for (i, cell) in row.iter().enumerate() {
+                for (i, cell) in row.iter().take(num_cols).enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                     render_table_cell(ui, cell, style, align, false);
                 }
@@ -1444,6 +1444,29 @@ Normal paragraph.
             }
             other => panic!("expected Table, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn render_table_column_mismatch_no_panic() {
+        // Rows with more columns than header should render without panic
+        // (extra columns are silently dropped).
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("table_mismatch");
+
+        let md = "\
+| A | B |
+|---|---|
+| 1 | 2 | 3 | 4 |
+| x |
+";
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
     }
 
     // ── Lists ──────────────────────────────────────────────────────

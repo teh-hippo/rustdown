@@ -885,14 +885,39 @@ mod tests {
 
     #[test]
     fn parse_image() {
-        // pulldown_cmark wraps images in paragraphs at the inline level;
-        // verify the parser handles them without crashing and produces a block.
+        // Standalone images (only child of a paragraph) should produce Block::Image.
         let blocks = parse_markdown("![alt text](https://img.png \"title\")");
         assert_eq!(blocks.len(), 1);
-        // The image is represented as a Paragraph (inline image) or Image block.
+        match &blocks[0] {
+            Block::Image { url, alt } => {
+                assert_eq!(url, "https://img.png");
+                assert_eq!(alt, "alt text");
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_image_without_alt() {
+        let blocks = parse_markdown("![](image.png)");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Image { url, alt } => {
+                assert_eq!(url, "image.png");
+                assert!(alt.is_empty());
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_image_inline_with_text() {
+        // Image mixed with text in the same paragraph stays as Paragraph.
+        let blocks = parse_markdown("See this: ![pic](img.png) in text.");
+        assert_eq!(blocks.len(), 1);
         assert!(
-            matches!(&blocks[0], Block::Paragraph(_) | Block::Image { .. }),
-            "expected paragraph or image block"
+            matches!(&blocks[0], Block::Paragraph(_)),
+            "image mixed with text should stay as paragraph"
         );
     }
 
