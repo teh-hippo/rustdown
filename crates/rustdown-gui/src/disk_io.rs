@@ -17,16 +17,16 @@ const ATOMIC_WRITE_MAX_ATTEMPTS: u128 = 10;
 const MERGE_SIDECAR_MAX_FILES: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DiskRevision {
-    pub(crate) modified: SystemTime,
-    pub(crate) len: u64,
+pub struct DiskRevision {
+    pub modified: SystemTime,
+    pub len: u64,
     #[cfg(unix)]
-    pub(crate) dev: u64,
+    pub dev: u64,
     #[cfg(unix)]
-    pub(crate) inode: u64,
+    pub inode: u64,
 }
 
-pub(crate) fn disk_revision(path: &Path) -> io::Result<DiskRevision> {
+pub fn disk_revision(path: &Path) -> io::Result<DiskRevision> {
     let meta = fs::metadata(path)?;
     let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     Ok(DiskRevision {
@@ -39,7 +39,7 @@ pub(crate) fn disk_revision(path: &Path) -> io::Result<DiskRevision> {
     })
 }
 
-pub(crate) fn read_stable_utf8(path: &Path) -> io::Result<(String, DiskRevision)> {
+pub fn read_stable_utf8(path: &Path) -> io::Result<(String, DiskRevision)> {
     let mut last_err = None;
     for _ in 0..STABLE_READ_RETRIES {
         let before = disk_revision(path)?;
@@ -72,7 +72,7 @@ pub(crate) fn read_stable_utf8(path: &Path) -> io::Result<(String, DiskRevision)
     Err(last_err.unwrap_or_else(|| io::Error::other("file changed while reading")))
 }
 
-pub(crate) fn atomic_write_utf8(path: &Path, contents: &str) -> io::Result<()> {
+pub fn atomic_write_utf8(path: &Path, contents: &str) -> io::Result<()> {
     let dir = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
@@ -146,7 +146,7 @@ pub(crate) fn atomic_write_utf8(path: &Path, contents: &str) -> io::Result<()> {
     ))
 }
 
-pub(crate) fn next_merge_sidecar_path(original: &Path) -> io::Result<PathBuf> {
+pub fn next_merge_sidecar_path(original: &Path) -> io::Result<PathBuf> {
     let dir = match original.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),

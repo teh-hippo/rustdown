@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
 #[derive(Default)]
-pub(crate) struct SearchState {
-    pub(crate) visible: bool,
-    pub(crate) replace_mode: bool,
-    pub(crate) query: String,
-    pub(crate) replacement: String,
-    pub(crate) last_replace_count: Option<usize>,
+pub struct SearchState {
+    pub visible: bool,
+    pub replace_mode: bool,
+    pub query: String,
+    pub replacement: String,
+    pub last_replace_count: Option<usize>,
     /// Cached match-count state (private — only accessed via `match_count()`).
     match_count_query: String,
     match_count_seq: u64,
@@ -15,14 +15,14 @@ pub(crate) struct SearchState {
 
 impl SearchState {
     /// Create a `SearchState` pre-populated with the given query.
-    pub(crate) fn with_query(query: &str) -> Self {
+    pub fn with_query(query: &str) -> Self {
         Self {
             query: query.to_owned(),
             ..Self::default()
         }
     }
 
-    pub(crate) fn match_count(&mut self, haystack: &str, haystack_seq: u64) -> usize {
+    pub fn match_count(&mut self, haystack: &str, haystack_seq: u64) -> usize {
         if self.match_count_seq == haystack_seq && self.match_count_query == self.query {
             return self.match_count;
         }
@@ -37,7 +37,7 @@ impl SearchState {
 }
 
 #[must_use]
-pub(crate) fn find_match_count(haystack: &str, needle: &str) -> usize {
+pub fn find_match_count(haystack: &str, needle: &str) -> usize {
     if needle.is_empty() {
         return 0;
     }
@@ -48,7 +48,7 @@ pub(crate) fn find_match_count(haystack: &str, needle: &str) -> usize {
 }
 
 #[must_use]
-pub(crate) fn replace_all_occurrences<'a>(
+pub fn replace_all_occurrences<'a>(
     haystack: &'a str,
     needle: &str,
     replacement: &str,

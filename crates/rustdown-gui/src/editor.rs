@@ -3,7 +3,8 @@ use eframe::egui;
 /// Build a `(row_y, row_start_byte)` table from galley rows.
 /// Computed once per galley rebuild; enables O(log n) scroll ↔ byte lookups.
 /// Uses a single-pass O(n) char scan instead of O(n²) repeated `.nth()`.
-pub(crate) fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> {
+#[allow(clippy::cast_possible_truncation)] // byte offsets are < 4GB for any realistic markdown file
+pub fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> {
     let mut result = Vec::with_capacity(galley.rows.len());
     let mut char_iter = text.char_indices().peekable();
     let mut chars_consumed = 0usize;
@@ -29,7 +30,8 @@ pub(crate) fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(
 
 /// Map a byte offset to the Y coordinate of the row containing it.
 /// O(log n) binary search.
-pub(crate) fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
+#[allow(clippy::cast_possible_truncation)] // byte offsets are < 4GB
+pub fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
     if rows.is_empty() {
         return 0.0;
     }
@@ -42,7 +44,7 @@ pub(crate) fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f
 
 /// Map a Y coordinate to the byte offset at the start of the row at that
 /// position.  O(log n) binary search.
-pub(crate) fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
+pub fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
     if rows.is_empty() {
         return 0;
     }
@@ -54,7 +56,7 @@ pub(crate) fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
 
 /// Convert a character index to a byte offset in `text`.
 #[cfg(test)]
-pub(crate) fn char_index_to_byte(text: &str, char_index: usize) -> usize {
+pub fn char_index_to_byte(text: &str, char_index: usize) -> usize {
     text.char_indices()
         .nth(char_index)
         .map_or(text.len(), |(i, _)| i)

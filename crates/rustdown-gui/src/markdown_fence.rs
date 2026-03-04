@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FenceState {
+pub struct FenceState {
     marker: u8,
     marker_len: usize,
 }
 
-pub(crate) fn consume_fence_delimiter(line: &str, state: &mut Option<FenceState>) -> bool {
+pub fn consume_fence_delimiter(line: &str, state: &mut Option<FenceState>) -> bool {
     let Some((marker, marker_len, rest)) = parse_fence_marker(line) else {
         return false;
     };

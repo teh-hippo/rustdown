@@ -6,7 +6,7 @@
 use std::{io, path::Path, sync::Arc, time::Instant};
 
 use eframe::egui;
-use egui_commonmark::CommonMarkCache;
+use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme,
@@ -25,6 +25,7 @@ fn run_frame(ctx: &egui::Context, app: &mut RustdownApp) {
 ///
 /// Returns `Ok(())` if all assertions pass.  Prints timing and results to
 /// stdout in key=value format for easy agentic parsing.
+#[allow(clippy::too_many_lines)] // diagnostics harness — linear flow
 pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
     let Some(path) = path else {
         return Err(io::Error::new(
@@ -40,8 +41,6 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
     let text = Arc::new(text);
     let base_text = text.clone();
     let stats = DocumentStats::from_text(text.as_str());
-    let md_cache = CommonMarkCache::default();
-
     let ctx = egui::Context::default();
     crate::ui_style::configure_fonts(&ctx).map_err(io::Error::other)?;
     crate::ui_style::configure_style(&ctx);
@@ -58,7 +57,7 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
         stats_dirty: false,
         preview_dirty: false,
         dirty: false,
-        md_cache,
+        preview_cache: MarkdownCache::default(),
         last_edit_at: None,
         edit_seq: 1,
         editor_galley_cache: None,

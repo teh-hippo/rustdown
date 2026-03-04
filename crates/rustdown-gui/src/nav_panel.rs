@@ -61,41 +61,51 @@ const NAV_PANEL_MIN_WIDTH: f32 = 140.0;
 const NAV_PANEL_DEFAULT_WIDTH: f32 = 220.0;
 const NAV_INDENT_PX: f32 = 12.0;
 
-/// Empirical scale factor mapping scroll-y pixels to source bytes in preview
-/// mode.  The exact value does not matter - the mapping only needs to be
-/// monotonically increasing so the highlighted heading advances as the user
-/// scrolls.  Both `preview_byte_to_scroll_y` and `preview_scroll_y_to_byte`
-/// use this constant to stay consistent.
-const PREVIEW_SCROLL_SCALE_PX: f32 = 800.0;
-
 /// Compute the scroll-area [`egui::Id`] used by the code editor.
 pub fn editor_scroll_id() -> egui::Id {
     egui::Id::new("editor").with("editor_scroll")
 }
 
-/// Compute the scroll-area [`egui::Id`] used by the preview pane.
-pub fn preview_scroll_id() -> egui::Id {
-    egui::Id::new("preview_markdown").with("_scroll_area")
-}
-
 /// Convert `byte_offset` to an estimated preview scroll-y value.
+/// Uses the actual total rendered height for accurate mapping.
 /// Returns `0.0` when the outline is empty or all headings are at offset 0.
-pub fn preview_byte_to_scroll_y(outline: &[HeadingEntry], byte_offset: usize) -> f32 {
+#[allow(clippy::cast_precision_loss)] // byte offsets are small relative to f32 range
+pub fn preview_byte_to_scroll_y(
+    outline: &[HeadingEntry],
+    byte_offset: usize,
+    total_height: f32,
+) -> f32 {
     let max_offset = match outline.last() {
         Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
         _ => return 0.0,
     };
-    (byte_offset as f32 * (PREVIEW_SCROLL_SCALE_PX / max_offset)).max(0.0)
+    if total_height <= 0.0 {
+        return 0.0;
+    }
+    (byte_offset as f32 / max_offset * total_height).max(0.0)
 }
 
 /// Convert a preview scroll-y value to an estimated byte offset.
 /// Returns `0` when the outline is empty.
-pub fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
+#[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn preview_scroll_y_to_byte(
+    outline: &[HeadingEntry],
+    scroll_y: f32,
+    total_height: f32,
+) -> usize {
     let max_offset = match outline.last() {
         Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
         _ => return 0,
     };
-    (scroll_y * (max_offset / PREVIEW_SCROLL_SCALE_PX)).max(0.0) as usize
+    if total_height <= 0.0 {
+        return 0;
+    }
+    (scroll_y / total_height * max_offset).max(0.0) as usize
 }
 
 impl NavState {
@@ -108,6 +118,11 @@ impl NavState {
         self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
         self.expanded.clear();
+    }
+
+    /// Force the next `refresh_outline` call to re-extract headings.
+    pub const fn invalidate_outline(&mut self) {
+        self.outline_seq = u64::MAX;
     }
 
     /// Update `active_index` from a byte position in the document.
@@ -497,15 +512,15 @@ mod tests {
         let outline = nav_outline::extract_headings(&md);
         assert!(outline.len() >= 2);
         let mid_offset = outline[1].byte_offset;
-        let y = preview_byte_to_scroll_y(&outline, mid_offset);
-        let byte = preview_scroll_y_to_byte(&outline, y);
+        let y = preview_byte_to_scroll_y(&outline, mid_offset, 5000.0);
+        let byte = preview_scroll_y_to_byte(&outline, y, 5000.0);
         assert_eq!(byte, mid_offset);
     }
 
     #[test]
     fn preview_scroll_empty_outline() {
-        assert_eq!(preview_byte_to_scroll_y(&[], 100), 0.0);
-        assert_eq!(preview_scroll_y_to_byte(&[], 100.0), 0);
+        assert_eq!(preview_byte_to_scroll_y(&[], 100, 1000.0), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&[], 100.0, 1000.0), 0);
     }
 
     #[test]
@@ -654,9 +669,10 @@ mod tests {
     fn preview_scroll_byte_to_y_monotonic() {
         let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
         let outline = nav_outline::extract_headings(md);
+        let total_h = 3000.0;
         let mut prev_y = 0.0_f32;
         for h in &outline {
-            let y = preview_byte_to_scroll_y(&outline, h.byte_offset);
+            let y = preview_byte_to_scroll_y(&outline, h.byte_offset, total_h);
             assert!(y >= prev_y, "scroll-y should be monotonically increasing");
             prev_y = y;
         }
@@ -671,9 +687,10 @@ mod tests {
             + &"z".repeat(200)
             + "\n### C\n";
         let outline = nav_outline::extract_headings(&md);
+        let total_h = 5000.0;
         for h in &outline {
-            let y = preview_byte_to_scroll_y(&outline, h.byte_offset);
-            let byte = preview_scroll_y_to_byte(&outline, y);
+            let y = preview_byte_to_scroll_y(&outline, h.byte_offset, total_h);
+            let byte = preview_scroll_y_to_byte(&outline, y, total_h);
             assert_eq!(
                 byte, h.byte_offset,
                 "round-trip failed for offset {}",
@@ -686,7 +703,7 @@ mod tests {
     fn preview_scroll_single_heading() {
         let md = "# Only Heading\n";
         let outline = nav_outline::extract_headings(md);
-        assert_eq!(preview_byte_to_scroll_y(&outline, 0), 0.0);
-        assert_eq!(preview_scroll_y_to_byte(&outline, 0.0), 0);
+        assert_eq!(preview_byte_to_scroll_y(&outline, 0, 1000.0), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&outline, 0.0, 1000.0), 0);
     }
 }

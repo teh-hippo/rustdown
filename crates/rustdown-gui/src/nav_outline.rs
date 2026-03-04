@@ -31,6 +31,7 @@ impl HeadingEntry {
 /// Produces a flat list ordered by document position.
 /// Each entry records the heading level, its plain-text label, and the byte
 /// offset where the heading markup begins.
+#[allow(clippy::cast_possible_truncation)] // heading offsets < 4GB, label len < 65K
 pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
     // Only enable the options needed for heading detection — avoids
     // expensive table/footnote parsing that extract_headings never uses.
@@ -208,7 +209,7 @@ mod tests {
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 6);
         for (i, h) in headings.iter().enumerate() {
-            assert_eq!(h.level, (i + 1) as u8);
+            assert_eq!(usize::from(h.level), i + 1);
         }
     }
 

@@ -17,8 +17,8 @@ use std::{
 };
 
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use notify::{Event, RecursiveMode, Watcher};
+use rustdown_md::{MarkdownStyle, MarkdownViewer};
 
 mod diagnostics;
 mod disk_io;
@@ -297,7 +297,7 @@ fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
 }
 
 #[must_use]
-pub(crate) fn default_image_uri_scheme(path: Option<&Path>) -> String {
+pub fn default_image_uri_scheme(path: Option<&Path>) -> String {
     let Some(parent) = path.and_then(Path::parent) else {
         return "file://".to_owned();
     };
@@ -363,9 +363,9 @@ impl Mode {
     #[must_use]
     const fn icon(self) -> &'static str {
         match self {
-            Self::Edit => "✎",
-            Self::Preview => "👁",
-            Self::SideBySide => "◫",
+            Self::Edit => "Ed",
+            Self::Preview => "Pr",
+            Self::SideBySide => "S|S",
         }
     }
 
@@ -426,6 +426,7 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 }
 
 impl eframe::App for RustdownApp {
+    #[allow(clippy::too_many_lines)] // main update loop — inherently long
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
         self.refresh_stats_if_due(ctx);
@@ -515,10 +516,15 @@ impl eframe::App for RustdownApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let mut clear_error = false;
 
+            // Use a smaller font for the toolbar.
+            let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
+            let toolbar_font = egui::FontId::proportional(toolbar_size);
+
             ui.horizontal(|ui| {
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
+                    let label = egui::RichText::new(mode.icon()).font(toolbar_font.clone());
                     if ui
-                        .selectable_label(self.mode == mode, mode.icon())
+                        .selectable_label(self.mode == mode, label)
                         .on_hover_text(mode.tooltip())
                         .clicked()
                     {
@@ -527,32 +533,51 @@ impl eframe::App for RustdownApp {
                 }
 
                 ui.separator();
+                let color_rt = egui::RichText::new("Aa").font(toolbar_font.clone());
+                let color_rt = if self.heading_color_mode {
+                    color_rt.color(egui::Color32::from_rgb(0xFF, 0xB8, 0x6C))
+                } else {
+                    color_rt
+                };
                 if ui
-                    .toggle_value(&mut self.heading_color_mode, "◐")
+                    .toggle_value(&mut self.heading_color_mode, color_rt)
                     .on_hover_text("Heading colours")
                     .changed()
                 {
                     self.doc.editor_galley_cache = None;
-                    self.doc.md_cache.clear_scrollable();
+                    self.doc.preview_cache.clear();
                 }
                 ui.separator();
-                if ui.button("¶").on_hover_text("Format document").clicked() {
+                if ui
+                    .button(egui::RichText::new("Fmt").font(toolbar_font.clone()))
+                    .on_hover_text("Format document")
+                    .clicked()
+                {
                     self.format_document();
                 }
-                ui.toggle_value(&mut self.nav.visible, "☰")
-                    .on_hover_text("Navigation");
+                ui.toggle_value(
+                    &mut self.nav.visible,
+                    egui::RichText::new("Nav").font(toolbar_font.clone()),
+                )
+                .on_hover_text("Navigation");
 
                 ui.separator();
 
-                ui.label(self.doc.path_label());
+                ui.label(egui::RichText::new(self.doc.path_label()).font(toolbar_font.clone()));
                 let stats = self.doc.stats();
 
                 ui.separator();
-                ui.label(format!("{} lines", stats.lines));
+                ui.label(
+                    egui::RichText::new(format!("{} lines", stats.lines))
+                        .font(toolbar_font.clone()),
+                );
 
                 if self.doc.dirty {
                     ui.separator();
-                    ui.colored_label(ui.visuals().warn_fg_color, "Modified");
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        egui::RichText::new("Modified").font(toolbar_font.clone()),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -657,6 +682,7 @@ impl RustdownApp {
     /// Render the nav panel, side-by-side preview panel, central panel, and
     /// process any pending nav-scroll actions.  Extracted so the debug harness
     /// can reuse the same layout sequence.
+    #[allow(clippy::cast_possible_truncation)] // PANEL_EDGE_PADDING=8.0, fits in i8
     fn show_content_panels(&mut self, ctx: &egui::Context) {
         let panel_frame = egui::Frame::new()
             .fill(ctx.style().visuals.panel_fill)
@@ -731,7 +757,7 @@ impl RustdownApp {
         self.bump_edit_seq();
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.stats_dirty = false;
-        self.doc.md_cache.clear_scrollable();
+        self.doc.preview_cache.clear();
         self.doc.preview_dirty = false;
         self.doc.dirty = !matches!(kind, ReloadKind::Clean);
         if matches!(kind, ReloadKind::Clean | ReloadKind::ConflictResolved) {
@@ -1127,7 +1153,7 @@ impl RustdownApp {
         }
 
         if mode == Mode::Edit {
-            self.doc.md_cache.clear_scrollable();
+            self.doc.preview_cache.clear();
             self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
         }
@@ -1143,15 +1169,6 @@ impl RustdownApp {
         matches!(self.mode, Mode::Edit | Mode::SideBySide)
     }
 
-    /// Scroll-area ID for the currently active primary pane.
-    fn active_scroll_id(&self) -> egui::Id {
-        if self.uses_editor() {
-            nav_panel::editor_scroll_id()
-        } else {
-            nav_panel::preview_scroll_id()
-        }
-    }
-
     /// Convert a byte offset to a scroll-y value in the currently active pane.
     fn byte_to_scroll_y(&self, byte_offset: usize) -> Option<f32> {
         if self.uses_editor() {
@@ -1160,29 +1177,21 @@ impl RustdownApp {
             Some(nav_panel::preview_byte_to_scroll_y(
                 &self.nav.outline,
                 byte_offset,
+                self.doc.preview_cache.total_height,
             ))
         }
     }
 
-    /// Convert a scroll-y value to a byte offset in the currently active pane.
-    fn scroll_y_to_byte(&self, y: f32) -> Option<usize> {
-        if self.uses_editor() {
-            self.editor_y_to_byte(y)
-        } else {
-            Some(nav_panel::preview_scroll_y_to_byte(&self.nav.outline, y))
-        }
-    }
-
     /// Determine the current scroll position as a byte offset in the source
-    /// text.  Works in both editor and preview modes.
+    /// text.  Only reliable in editor modes (scroll state isn't accessible for
+    /// preview pane).
     fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
-        if self.uses_editor() {
-            self.ensure_row_byte_offsets();
-        } else {
-            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
+        if !self.uses_editor() {
+            return None;
         }
-        let state = egui::scroll_area::State::load(ctx, self.active_scroll_id())?;
-        self.scroll_y_to_byte(state.offset.y)
+        self.ensure_row_byte_offsets();
+        let state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())?;
+        self.editor_y_to_byte(state.offset.y)
     }
 
     #[allow(clippy::unused_self)]
@@ -1197,7 +1206,8 @@ impl RustdownApp {
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
         let title = format!(
-            "rustdown - {}{}",
+            "rustdown v{} - {}{}",
+            app_version(),
             self.doc.title(),
             if self.doc.dirty { "*" } else { "" },
         );
@@ -1353,19 +1363,16 @@ impl RustdownApp {
             };
 
             let editor_size = ui.available_size();
-            let nav_scroll_y = &mut self.nav.pending_scroll_y;
-            let response = egui::ScrollArea::both()
+            let scroll_to = self.nav.pending_scroll_y.take();
+            let mut scroll_area = egui::ScrollArea::both()
                 .id_salt("editor_scroll")
-                .auto_shrink([false; 2])
+                .auto_shrink([false; 2]);
+            if let Some(y) = scroll_to {
+                scroll_area = scroll_area.vertical_scroll_offset(y);
+            }
+            let response = scroll_area
                 .show(ui, |ui| {
-                    let r = ui.add_sized(editor_size, editor.layouter(&mut layouter));
-                    // Consume any pending smooth-scroll target from the nav panel.
-                    if let Some(y) = nav_scroll_y.take() {
-                        let target =
-                            egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0));
-                        ui.scroll_to_rect(target, Some(egui::Align::TOP));
-                    }
-                    r
+                    ui.add_sized(editor_size, editor.layouter(&mut layouter))
                 })
                 .inner;
             (response.changed(), seq.get())
@@ -1386,31 +1393,27 @@ impl RustdownApp {
         }
 
         if self.doc.preview_dirty {
-            self.doc.md_cache.clear_scrollable();
+            self.doc.preview_cache.clear();
             self.doc.preview_dirty = false;
         }
 
-        CommonMarkViewer::new()
-            .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
-            .show_scrollable(
-                "preview_markdown",
-                ui,
-                &mut self.doc.md_cache,
-                self.doc.text.as_str(),
-            );
+        let style = if self.heading_color_mode {
+            MarkdownStyle::colored(ui.visuals())
+        } else {
+            MarkdownStyle::from_visuals(ui.visuals())
+        };
 
-        // Consume any pending nav-scroll target.  show_scrollable owns its
-        // ScrollArea so we apply the offset directly to stored state.
-        if self.mode == Mode::Preview
-            && let Some(y) = self.nav.pending_scroll_y.take()
-        {
-            let scroll_id = nav_panel::preview_scroll_id();
-            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
-                state.offset = egui::vec2(state.offset.x, y);
-                state.store(ui.ctx(), scroll_id);
-                ui.ctx().request_repaint();
-            }
-        }
+        // Consume any pending nav-scroll target and pass it directly to the
+        // ScrollArea, avoiding the ID-mismatch problem with external state lookup.
+        let scroll_y = self.nav.pending_scroll_y.take();
+
+        MarkdownViewer::new("preview_markdown").show_scrollable(
+            ui,
+            &mut self.doc.preview_cache,
+            &style,
+            self.doc.text.as_str(),
+            scroll_y,
+        );
     }
 
     /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
@@ -1435,11 +1438,14 @@ impl RustdownApp {
     /// Read the current scroll offset and update the active heading in the
     /// nav panel.  Must run *after* the scroll areas render.
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
-        if self.uses_editor() {
-            self.ensure_row_byte_offsets();
+        // Only works in editor modes where we can read the scroll area state
+        // via a known ID.  Preview mode scroll state isn't accessible externally.
+        if !self.uses_editor() {
+            return;
         }
-        if let Some(state) = egui::scroll_area::State::load(ctx, self.active_scroll_id())
-            && let Some(byte_pos) = self.scroll_y_to_byte(state.offset.y)
+        self.ensure_row_byte_offsets();
+        if let Some(state) = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
+            && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
         {
             self.nav.update_active_from_position(byte_pos);
         }
@@ -1468,14 +1474,15 @@ impl RustdownApp {
         self.last_sync_editor_byte = Some(editor_byte);
 
         // Map editor byte offset to preview scroll-y.
-        let preview_y = nav_panel::preview_byte_to_scroll_y(&self.nav.outline, editor_byte);
+        let preview_y = nav_panel::preview_byte_to_scroll_y(
+            &self.nav.outline,
+            editor_byte,
+            self.doc.preview_cache.total_height,
+        );
 
-        let scroll_id = nav_panel::preview_scroll_id();
-        if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
-            state.offset = egui::vec2(state.offset.x, preview_y);
-            state.store(ctx, scroll_id);
-            ctx.request_repaint();
-        }
+        // Store as pending — show_preview will consume it via vertical_scroll_offset.
+        self.nav.pending_scroll_y = Some(preview_y);
+        ctx.request_repaint();
     }
 
     /// Map a byte offset to a Y position using the cached row byte offsets.
@@ -1526,11 +1533,13 @@ impl RustdownApp {
             stats_dirty: false,
             preview_dirty: false,
             dirty: false,
-            md_cache: CommonMarkCache::default(),
+            preview_cache: rustdown_md::MarkdownCache::default(),
             last_edit_at: None,
-            edit_seq: 0,
+            edit_seq: 1, // Start at 1 so nav refresh triggers (default outline_seq may be 0)
             editor_galley_cache: None,
         };
+        // Force nav outline refresh on next frame.
+        self.nav.invalidate_outline();
     }
 
     fn apply_action(&mut self, action: PendingAction) {
@@ -2293,9 +2302,9 @@ mod tests {
 
     #[test]
     fn mode_icons_and_tooltips() {
-        assert_eq!(Mode::Edit.icon(), "✎");
-        assert_eq!(Mode::Preview.icon(), "👁");
-        assert_eq!(Mode::SideBySide.icon(), "◫");
+        assert_eq!(Mode::Edit.icon(), "Ed");
+        assert_eq!(Mode::Preview.icon(), "Pr");
+        assert_eq!(Mode::SideBySide.icon(), "S|S");
         assert_eq!(Mode::Edit.tooltip(), "Edit");
         assert_eq!(Mode::Preview.tooltip(), "Preview");
         assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");
@@ -2470,24 +2479,6 @@ mod tests {
             ..RustdownApp::default()
         };
         assert!(!app.uses_editor());
-    }
-
-    #[test]
-    fn active_scroll_id_varies_by_mode() {
-        let app = RustdownApp::default();
-        let edit_id = app.active_scroll_id();
-        let preview_app = RustdownApp {
-            mode: Mode::Preview,
-            ..RustdownApp::default()
-        };
-        let preview_id = preview_app.active_scroll_id();
-        assert_ne!(edit_id, preview_id);
-        // SideBySide uses the editor scroll ID.
-        let sbs_app = RustdownApp {
-            mode: Mode::SideBySide,
-            ..RustdownApp::default()
-        };
-        assert_eq!(sbs_app.active_scroll_id(), edit_id);
     }
 
     #[test]

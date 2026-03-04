@@ -6,7 +6,7 @@ use std::{
 };
 
 use eframe::egui;
-use egui_commonmark::CommonMarkCache;
+use rustdown_md::MarkdownCache;
 
 use crate::disk_io::read_stable_utf8;
 use crate::highlight;
@@ -16,6 +16,7 @@ use crate::{
     find_match_count,
 };
 
+#[allow(clippy::cast_precision_loss)] // iterations.max(1) is small
 fn avg_duration_us(total: Duration, iterations: usize) -> f64 {
     total.as_secs_f64() * 1_000_000.0 / iterations.max(1) as f64
 }
@@ -29,7 +30,7 @@ fn measure_iterations(iterations: usize, mut f: impl FnMut()) -> Duration {
 }
 
 #[must_use]
-pub(crate) fn diagnostics_raw_input() -> egui::RawInput {
+pub fn diagnostics_raw_input() -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -48,7 +49,8 @@ fn estimate_text_heap_bytes(text: &Arc<String>, base_text: &Arc<String>) -> usiz
         }
 }
 
-pub(crate) fn run_open_pipeline_diagnostics(
+#[allow(clippy::too_many_lines)] // diagnostics harness — linear flow
+pub fn run_open_pipeline_diagnostics(
     path: Option<&Path>,
     diagnostics_iterations: usize,
 ) -> io::Result<()> {
@@ -77,10 +79,6 @@ pub(crate) fn run_open_pipeline_diagnostics(
     let stats = DocumentStats::from_text(std::hint::black_box(text.as_str()));
     let stats_ms = stats_start.elapsed();
 
-    let cache_start = Instant::now();
-    let md_cache = std::hint::black_box(CommonMarkCache::default());
-    let cache_ms = cache_start.elapsed();
-
     let egui_start = Instant::now();
     let ctx = egui::Context::default();
     ui_style::configure_fonts(&ctx).map_err(io::Error::other)?;
@@ -106,8 +104,7 @@ pub(crate) fn run_open_pipeline_diagnostics(
     let make_document = |image_uri_scheme: String,
                          text: Arc<String>,
                          base_text: Arc<String>,
-                         edit_seq: u64,
-                         md_cache: CommonMarkCache|
+                         edit_seq: u64|
      -> Document {
         Document {
             path: Some(path.to_path_buf()),
@@ -119,7 +116,7 @@ pub(crate) fn run_open_pipeline_diagnostics(
             stats_dirty: false,
             preview_dirty: false,
             dirty: false,
-            md_cache,
+            preview_cache: MarkdownCache::default(),
             last_edit_at: None,
             edit_seq,
             editor_galley_cache: None,
@@ -129,12 +126,11 @@ pub(crate) fn run_open_pipeline_diagnostics(
                     image_uri_scheme: String,
                     text: Arc<String>,
                     base_text: Arc<String>,
-                    edit_seq: u64,
-                    md_cache: CommonMarkCache|
+                    edit_seq: u64|
      -> RustdownApp {
         RustdownApp {
             mode,
-            doc: make_document(image_uri_scheme, text, base_text, edit_seq, md_cache),
+            doc: make_document(image_uri_scheme, text, base_text, edit_seq),
             ..Default::default()
         }
     };
@@ -145,7 +141,6 @@ pub(crate) fn run_open_pipeline_diagnostics(
         text,
         base_text,
         0,
-        md_cache,
     );
     let raw = diagnostics_raw_input();
 
@@ -168,7 +163,6 @@ pub(crate) fn run_open_pipeline_diagnostics(
         app.doc.text.clone(),
         app.doc.base_text.clone(),
         app.doc.edit_seq,
-        CommonMarkCache::default(),
     );
     let raw = diagnostics_raw_input();
     let preview_frame1_start = Instant::now();
@@ -244,7 +238,6 @@ pub(crate) fn run_open_pipeline_diagnostics(
             text.clone(),
             text,
             0,
-            CommonMarkCache::default(),
         )
     };
     let edit_iterations = diagnostics_iterations.min(256);
@@ -291,7 +284,6 @@ pub(crate) fn run_open_pipeline_diagnostics(
     metric!("t_read_ms", read_ms.as_millis());
     metric!("t_clone_base_ms", clone_ms.as_millis());
     metric!("t_stats_ms", stats_ms.as_millis());
-    metric!("t_md_cache_ms", cache_ms.as_millis());
     metric!("t_egui_setup_ms", egui_ms.as_millis());
     metric!("t_highlight_job_ms", highlight_job_ms.as_millis());
     metric!("t_highlight_layout_ms", highlight_layout_ms.as_millis());
