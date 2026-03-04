@@ -13,6 +13,7 @@ use crate::style::MarkdownStyle;
 #[derive(Default)]
 pub struct MarkdownCache {
     text_hash: u64,
+    text_len: usize,
     blocks: Vec<Block>,
     /// Estimated pixel height for each top-level block (same len as `blocks`).
     heights: Vec<f32>,
@@ -30,6 +31,7 @@ impl MarkdownCache {
     /// Invalidate the cache so the next render re-parses.
     pub fn clear(&mut self) {
         self.text_hash = 0;
+        self.text_len = 0;
         self.blocks.clear();
         self.heights.clear();
         self.cum_y.clear();
@@ -39,14 +41,23 @@ impl MarkdownCache {
     }
 
     fn ensure_parsed(&mut self, source: &str) {
-        let hash = simple_hash(source);
-        if self.text_hash != hash {
-            self.blocks = parse_markdown(source);
+        // Fast length check before computing hash.
+        let len = source.len();
+        if len == self.text_len {
+            let hash = simple_hash(source);
+            if self.text_hash == hash {
+                return;
+            }
             self.text_hash = hash;
-            self.heights.clear();
-            self.cum_y.clear();
-            self.total_height = 0.0;
+        } else {
+            self.text_len = len;
+            self.text_hash = simple_hash(source);
         }
+        self.blocks = parse_markdown(source);
+        // Invalidate height cache (keep Vec capacity).
+        self.heights.clear();
+        self.cum_y.clear();
+        self.total_height = 0.0;
     }
 
     fn ensure_heights(&mut self, body_size: f32, wrap_width: f32, style: &MarkdownStyle) {
@@ -482,29 +493,27 @@ fn render_styled_text_ex(
     let base_color = color_override
         .or(style.body_color)
         .unwrap_or_else(|| ui.visuals().text_color());
+    let wrap_width = ui.available_width();
 
-    let mut job = egui::text::LayoutJob {
-        text: String::new(),
-        sections: Vec::with_capacity(st.spans.len().max(1)),
-        wrap: egui::text::TextWrapping {
-            max_width: ui.available_width(),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    job.text.clone_from(&st.text);
-
-    if st.spans.is_empty() {
-        job.sections.push(egui::text::LayoutSection {
-            leading_space: 0.0,
-            byte_range: 0..st.text.len(),
-            format: egui::TextFormat {
-                font_id: egui::FontId::new(size, egui::FontFamily::Proportional),
-                color: base_color,
+    let job = if st.spans.is_empty() {
+        // Fast path: single format for entire text, no span resolution.
+        egui::text::LayoutJob::simple(
+            st.text.clone(),
+            egui::FontId::new(size, egui::FontFamily::Proportional),
+            base_color,
+            wrap_width,
+        )
+    } else {
+        let mut job = egui::text::LayoutJob {
+            text: st.text.clone(),
+            sections: Vec::with_capacity(st.spans.len()),
+            wrap: egui::text::TextWrapping {
+                max_width: wrap_width,
                 ..Default::default()
             },
-        });
-    } else {
+            ..Default::default()
+        };
+
         for span in &st.spans {
             let sf = SpanFormat::resolve(&span.kind, style, base_color, ui);
             let span_size = if matches!(span.kind, SpanKind::Code) {
@@ -531,7 +540,8 @@ fn render_styled_text_ex(
                 format,
             });
         }
-    }
+        job
+    };
 
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     ui.label(galley);
