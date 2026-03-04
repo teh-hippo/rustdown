@@ -1085,11 +1085,20 @@ impl Mode {
     }
 
     #[must_use]
-    const fn label(self) -> &'static str {
+    const fn icon(self) -> &'static str {
+        match self {
+            Self::Edit => "✎",
+            Self::Preview => "👁",
+            Self::SideBySide => "◫",
+        }
+    }
+
+    #[must_use]
+    const fn tooltip(self) -> &'static str {
         match self {
             Self::Edit => "Edit",
             Self::Preview => "Preview",
-            Self::SideBySide => "Side-by-side",
+            Self::SideBySide => "Side-by-Side",
         }
     }
 }
@@ -1277,7 +1286,8 @@ impl eframe::App for RustdownApp {
             ui.horizontal(|ui| {
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
                     if ui
-                        .selectable_label(self.mode == mode, mode.label())
+                        .selectable_label(self.mode == mode, mode.icon())
+                        .on_hover_text(mode.tooltip())
                         .clicked()
                     {
                         self.set_mode(mode);
@@ -1286,17 +1296,19 @@ impl eframe::App for RustdownApp {
 
                 ui.separator();
                 if ui
-                    .toggle_value(&mut self.heading_color_mode, "Color")
+                    .toggle_value(&mut self.heading_color_mode, "◐")
+                    .on_hover_text("Heading colours")
                     .changed()
                 {
                     self.doc.editor_galley_cache = None;
                     self.doc.md_cache.clear_scrollable();
                 }
                 ui.separator();
-                if ui.button("Format").clicked() {
+                if ui.button("¶").on_hover_text("Format document").clicked() {
                     self.format_document();
                 }
-                ui.toggle_value(&mut self.nav.visible, "Nav");
+                ui.toggle_value(&mut self.nav.visible, "☰")
+                    .on_hover_text("Navigation");
 
                 ui.separator();
 
@@ -1424,6 +1436,7 @@ impl RustdownApp {
         self.resolve_nav_scroll_target(ctx);
 
         if self.nav.visible {
+            self.nav.heading_color_mode = self.heading_color_mode;
             self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
         }
         self.nav.show(ctx);
@@ -3084,10 +3097,13 @@ mod tests {
     }
 
     #[test]
-    fn mode_labels() {
-        assert_eq!(Mode::Edit.label(), "Edit");
-        assert_eq!(Mode::Preview.label(), "Preview");
-        assert_eq!(Mode::SideBySide.label(), "Side-by-side");
+    fn mode_icons_and_tooltips() {
+        assert_eq!(Mode::Edit.icon(), "✎");
+        assert_eq!(Mode::Preview.icon(), "👁");
+        assert_eq!(Mode::SideBySide.icon(), "◫");
+        assert_eq!(Mode::Edit.tooltip(), "Edit");
+        assert_eq!(Mode::Preview.tooltip(), "Preview");
+        assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");
     }
 
     #[test]

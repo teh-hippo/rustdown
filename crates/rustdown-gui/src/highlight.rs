@@ -15,7 +15,11 @@ enum FmtIdx {
     Heading(usize),
 }
 
-fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) -> egui::Color32 {
+pub(crate) fn heading_color(
+    visuals: &egui::Visuals,
+    level: usize,
+    color_mode: bool,
+) -> egui::Color32 {
     if !color_mode {
         return visuals.hyperlink_color;
     }

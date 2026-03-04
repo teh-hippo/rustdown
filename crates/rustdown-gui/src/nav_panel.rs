@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use eframe::egui;
 
+use crate::highlight;
 use crate::nav_outline::{self, HeadingEntry};
 
 /// What the nav panel wants the host to scroll to.
@@ -25,14 +27,10 @@ pub struct NavState {
     outline_seq: u64,
     /// Maximum heading depth to display (1..=6, default 4).
     pub max_depth: u8,
-    /// Cached visible-index list, rebuilt when `max_depth` or outline changes.
-    visible_indices: Vec<usize>,
-    /// Cached top-level positions within `visible_indices`.
-    top_positions: Vec<usize>,
-    /// The `(outline_seq, max_depth)` that produced the cached indices.
-    vis_cache_key: (u64, u8),
-    /// Which top-level (min-level) heading *position* is expanded (accordion).
-    expanded_pos: Option<usize>,
+    /// Whether heading colour mode is active.
+    pub heading_color_mode: bool,
+    /// Set of outline indices whose children are expanded.
+    expanded: HashSet<usize>,
     /// The heading index the user is currently scrolled to.
     active_index: Option<usize>,
     /// Pending scroll request for the host to execute.
@@ -50,10 +48,8 @@ impl Default for NavState {
             outline_source: Arc::new(String::new()),
             outline_seq: u64::MAX,
             max_depth: 4,
-            visible_indices: Vec::new(),
-            top_positions: Vec::new(),
-            vis_cache_key: (u64::MAX, 0),
-            expanded_pos: None,
+            heading_color_mode: false,
+            expanded: HashSet::new(),
             active_index: None,
             pending_scroll: None,
             pending_scroll_y: None,
@@ -111,8 +107,7 @@ impl NavState {
         self.outline = nav_outline::extract_headings(source.as_str());
         self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
-        self.expanded_pos = None;
-        self.vis_cache_key = (u64::MAX, 0); // invalidate vis cache
+        self.expanded.clear();
     }
 
     /// Update `active_index` from a byte position in the document.
@@ -175,47 +170,26 @@ impl NavState {
         });
         ui.separator();
 
-        // Rebuild cached indices only when outline or depth changes.
-        let cache_key = (self.outline_seq, self.max_depth);
-        if self.vis_cache_key != cache_key {
-            let max_depth = self.max_depth;
-            self.visible_indices.clear();
-            self.visible_indices.extend(
-                self.outline
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, h)| h.level <= max_depth)
-                    .map(|(i, _)| i),
-            );
-            let min_level = self
-                .visible_indices
-                .iter()
-                .map(|&i| self.outline[i].level)
-                .min()
-                .unwrap_or(1);
-            self.top_positions.clear();
-            self.top_positions.extend(
-                self.visible_indices
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &gi)| self.outline[gi].level == min_level)
-                    .map(|(pos, _)| pos),
-            );
-            self.vis_cache_key = cache_key;
-        }
-
         let min_level = self
-            .visible_indices
+            .outline
             .iter()
-            .map(|&i| self.outline[i].level)
+            .filter(|h| h.level <= self.max_depth)
+            .map(|h| h.level)
             .min()
             .unwrap_or(1);
 
         let source = Arc::clone(&self.outline_source);
+        let max_depth = self.max_depth;
+        let heading_color_mode = self.heading_color_mode;
+
+        // Compute visible headings: a heading is visible if it's at min_level
+        // or all its ancestors are expanded.
+        let visible = compute_visible_headings(&self.outline, &self.expanded, max_depth, min_level);
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                if self.visible_indices.is_empty() {
+                if visible.is_empty() {
                     ui.weak("No headings found.");
                     return;
                 }
@@ -223,22 +197,23 @@ impl NavState {
                     ui,
                     &RenderContext {
                         outline: &self.outline,
-                        visible: &self.visible_indices,
-                        top_positions: &self.top_positions,
+                        visible: &visible,
                         min_level,
-                        expanded_pos: self.expanded_pos,
+                        max_depth,
+                        expanded: &self.expanded,
                         active_index: self.active_index,
                         source: &source,
+                        heading_color_mode,
                     },
                 );
                 if let Some(action) = result {
                     self.pending_scroll = Some(NavScrollTarget::ByteOffset(action.byte_offset));
-                    if let Some(toggle) = action.toggle_pos {
-                        self.expanded_pos = if self.expanded_pos == Some(toggle) {
-                            None
+                    if let Some(toggle_idx) = action.toggle_idx {
+                        if self.expanded.contains(&toggle_idx) {
+                            self.expanded.remove(&toggle_idx);
                         } else {
-                            Some(toggle)
-                        };
+                            self.expanded.insert(toggle_idx);
+                        }
                     }
                 }
             });
@@ -268,7 +243,7 @@ impl NavState {
 
 struct ClickAction {
     byte_offset: usize,
-    toggle_pos: Option<usize>,
+    toggle_idx: Option<usize>,
 }
 
 struct RowStyle {
@@ -282,80 +257,81 @@ struct RowStyle {
 struct RenderContext<'a> {
     outline: &'a [HeadingEntry],
     visible: &'a [usize],
-    top_positions: &'a [usize],
     min_level: u8,
-    expanded_pos: Option<usize>,
+    max_depth: u8,
+    expanded: &'a HashSet<usize>,
     active_index: Option<usize>,
     source: &'a str,
+    heading_color_mode: bool,
+}
+
+/// Compute which outline indices are visible given the current expanded set.
+fn compute_visible_headings(
+    outline: &[HeadingEntry],
+    expanded: &HashSet<usize>,
+    max_depth: u8,
+    min_level: u8,
+) -> Vec<usize> {
+    let mut visible = Vec::new();
+    let mut is_visible = vec![false; outline.len()];
+
+    for (idx, h) in outline.iter().enumerate() {
+        if h.level > max_depth {
+            continue;
+        }
+        if h.level <= min_level {
+            is_visible[idx] = true;
+            visible.push(idx);
+            continue;
+        }
+        // Find direct parent: nearest preceding heading with level < h.level
+        let parent_ok = (0..idx)
+            .rev()
+            .find(|&i| outline[i].level < h.level && outline[i].level <= max_depth)
+            .is_some_and(|parent_idx| is_visible[parent_idx] && expanded.contains(&parent_idx));
+
+        if parent_ok {
+            is_visible[idx] = true;
+            visible.push(idx);
+        }
+    }
+    visible
+}
+
+/// Check whether heading at `idx` has any children within `max_depth`.
+fn has_visible_children(outline: &[HeadingEntry], max_depth: u8, idx: usize) -> bool {
+    let level = outline[idx].level;
+    for h in &outline[idx + 1..] {
+        if h.level <= level {
+            break;
+        }
+        if h.level <= max_depth {
+            return true;
+        }
+    }
+    false
 }
 
 fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickAction> {
     let mut result = None;
 
-    // Render orphan entries before the first top-level heading (if any).
-    let first_top_vis = cx
-        .top_positions
-        .first()
-        .copied()
-        .unwrap_or(cx.visible.len());
-    for &gi in &cx.visible[..first_top_vis] {
+    for &gi in cx.visible {
         let h = &cx.outline[gi];
+        let has_children = has_visible_children(cx.outline, cx.max_depth, gi);
+        let is_expanded = cx.expanded.contains(&gi);
+
         let style = RowStyle {
             indent: f32::from(h.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
-            is_active: cx.active_index == Some(gi),
-            has_children: false,
-            is_expanded: false,
-        };
-        if render_heading_row(ui, h, &style, cx.source).clicked() {
-            result = Some(ClickAction {
-                byte_offset: h.byte_offset,
-                toggle_pos: None,
-            });
-        }
-    }
-
-    for (rank, &vis_pos) in cx.top_positions.iter().enumerate() {
-        let gi = cx.visible[vis_pos];
-        let heading = &cx.outline[gi];
-        let is_expanded = cx.expanded_pos == Some(rank);
-
-        let next_vis = cx
-            .top_positions
-            .get(rank + 1)
-            .copied()
-            .unwrap_or(cx.visible.len());
-        let has_children = next_vis > vis_pos + 1;
-
-        let style = RowStyle {
-            indent: f32::from(heading.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
             is_active: cx.active_index == Some(gi),
             has_children,
             is_expanded,
         };
 
-        if render_heading_row(ui, heading, &style, cx.source).clicked() {
+        if render_heading_row(ui, h, &style, cx.source, cx.heading_color_mode).clicked() {
             result = Some(ClickAction {
-                byte_offset: heading.byte_offset,
-                toggle_pos: if has_children { Some(rank) } else { None },
+                byte_offset: h.byte_offset,
+                toggle_idx: if has_children { Some(gi) } else { None },
             });
-        }
-
-        if is_expanded && has_children {
-            for &child_vis in &cx.visible[vis_pos + 1..next_vis] {
-                let child = &cx.outline[child_vis];
-                let child_style = RowStyle {
-                    indent: f32::from(child.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
-                    is_active: cx.active_index == Some(child_vis),
-                    has_children: false,
-                    is_expanded: false,
-                };
-                if render_heading_row(ui, child, &child_style, cx.source).clicked() {
-                    result = Some(ClickAction {
-                        byte_offset: child.byte_offset,
-                        toggle_pos: None,
-                    });
-                }
-            }
         }
     }
 
@@ -367,6 +343,7 @@ fn render_heading_row(
     heading: &HeadingEntry,
     style: &RowStyle,
     source: &str,
+    heading_color_mode: bool,
 ) -> egui::Response {
     ui.horizontal(|ui| {
         ui.add_space(style.indent);
@@ -379,14 +356,25 @@ fn render_heading_row(
         }
 
         let label = heading.label(source);
-        let text = egui::RichText::new(label).small();
-        let text = if style.is_active { text.strong() } else { text };
+        let mut text = egui::RichText::new(label).small();
+        if style.is_active {
+            text = text.strong();
+        }
+        if heading_color_mode {
+            let color = highlight::heading_color(ui.visuals(), heading.level as usize, true);
+            text = text.color(color);
+        }
 
-        ui.add(
+        let response = ui.add(
             egui::Label::new(text)
                 .truncate()
                 .sense(egui::Sense::click()),
-        )
+        );
+        // Show pointer cursor on hover instead of text-select cursor.
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        response
     })
     .inner
 }
@@ -423,12 +411,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_outline_resets_accordion() {
+    fn refresh_outline_resets_expanded() {
         let mut state = make_state("# A\n## B\n");
-        state.expanded_pos = Some(0);
+        state.expanded.insert(0);
         let s = Arc::new("# A\n## B\n### C\n".to_owned());
         state.refresh_outline(&s, 2);
-        assert_eq!(state.expanded_pos, None);
+        assert!(state.expanded.is_empty());
     }
 
     #[test]
@@ -533,5 +521,51 @@ mod tests {
         let last = state.active_index;
         // Scrolling further should advance to a later (or equal) heading.
         assert!(last >= first);
+    }
+
+    #[test]
+    fn compute_visible_only_top_level_when_collapsed() {
+        let md = "# A\n## B\n### C\n# D\n## E\n";
+        let outline = nav_outline::extract_headings(md);
+        let expanded = HashSet::new();
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        // Only H1 headings visible when nothing is expanded.
+        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 1]);
+    }
+
+    #[test]
+    fn compute_visible_expand_shows_direct_children_only() {
+        let md = "# A\n## B\n### C\n# D\n";
+        let outline = nav_outline::extract_headings(md);
+        // Expand A (index 0) — should reveal B but not C.
+        let mut expanded = HashSet::new();
+        expanded.insert(0);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 2, 1]); // A, B, D
+
+        // Now also expand B — should reveal C.
+        expanded.insert(1);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 2, 3, 1]); // A, B, C, D
+    }
+
+    #[test]
+    fn has_visible_children_detects_children() {
+        let md = "# A\n## B\n# C\n";
+        let outline = nav_outline::extract_headings(md);
+        assert!(has_visible_children(&outline, 4, 0)); // A has child B
+        assert!(!has_visible_children(&outline, 4, 1)); // B has no children
+        assert!(!has_visible_children(&outline, 4, 2)); // C has no children
+    }
+
+    #[test]
+    fn has_visible_children_respects_max_depth() {
+        let md = "# A\n### C\n";
+        let outline = nav_outline::extract_headings(md);
+        assert!(has_visible_children(&outline, 4, 0)); // C is within depth
+        assert!(!has_visible_children(&outline, 1, 0)); // C exceeds max_depth=1
     }
 }
