@@ -23,6 +23,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 mod diagnostics;
 mod disk_io;
 mod document;
+mod editor;
 mod format;
 mod highlight;
 mod live_merge;
@@ -479,63 +480,6 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
         return clamped_zoom_factor(current_zoom);
     }
     clamped_zoom_factor(current_zoom * factor)
-}
-
-/// Convert a character index to a byte offset in `text`.
-#[cfg(test)]
-fn char_index_to_byte(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(i, _)| i)
-}
-
-/// Build a `(row_y, row_start_byte)` table from galley rows.
-/// Computed once per galley rebuild; enables O(log n) scroll ↔ byte lookups.
-/// Uses a single-pass O(n) char scan instead of O(n²) repeated `.nth()`.
-fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u32)> {
-    let mut result = Vec::with_capacity(galley.rows.len());
-    let mut char_iter = text.char_indices().peekable();
-    let mut chars_consumed = 0usize;
-    let mut target_char = 0usize;
-
-    for row in &galley.rows {
-        // Advance the iterator to the target character index.
-        while chars_consumed < target_char {
-            if char_iter.next().is_none() {
-                break;
-            }
-            chars_consumed += 1;
-        }
-        let byte_offset = char_iter.peek().map_or(text.len(), |&(i, _)| i);
-        result.push((row.rect().min.y, byte_offset as u32));
-
-        target_char += row.glyphs.len();
-        if row.ends_with_newline {
-            target_char += 1;
-        }
-    }
-    result
-}
-
-fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
-    if rows.is_empty() {
-        return 0.0;
-    }
-    let offset = byte_offset as u32;
-    let idx = rows
-        .partition_point(|(_, b)| *b <= offset)
-        .saturating_sub(1);
-    rows[idx].0
-}
-
-fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
-    if rows.is_empty() {
-        return 0;
-    }
-    let idx = rows
-        .partition_point(|(row_y, _)| *row_y <= y)
-        .saturating_sub(1);
-    rows[idx].1 as usize
 }
 
 impl eframe::App for RustdownApp {
@@ -1448,7 +1392,7 @@ impl RustdownApp {
                 let layout_job_copy = job.clone();
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                 let row_byte_offsets = if nav_visible {
-                    build_row_byte_offsets(&galley, string)
+                    editor::build_row_byte_offsets(&galley, string)
                 } else {
                     Vec::new()
                 };
@@ -1594,21 +1538,25 @@ impl RustdownApp {
     /// O(log n) binary search instead of O(n) char scan.
     fn editor_byte_to_y(&self, byte_offset: usize) -> Option<f32> {
         let cache = self.doc.editor_galley_cache.as_ref()?;
-        Some(row_byte_offset_to_y(&cache.row_byte_offsets, byte_offset))
+        Some(editor::row_byte_offset_to_y(
+            &cache.row_byte_offsets,
+            byte_offset,
+        ))
     }
 
     /// Map a Y scroll position to a byte offset using the cached row byte
     /// offsets.  O(log n) binary search.
     fn editor_y_to_byte(&self, y: f32) -> Option<usize> {
         let cache = self.doc.editor_galley_cache.as_ref()?;
-        Some(row_y_to_byte_offset(&cache.row_byte_offsets, y))
+        Some(editor::row_y_to_byte_offset(&cache.row_byte_offsets, y))
     }
 
     fn ensure_row_byte_offsets(&mut self) {
         if let Some(cache) = self.doc.editor_galley_cache.as_mut()
             && cache.row_byte_offsets.is_empty()
         {
-            cache.row_byte_offsets = build_row_byte_offsets(&cache.galley, self.doc.text.as_str());
+            cache.row_byte_offsets =
+                editor::build_row_byte_offsets(&cache.galley, self.doc.text.as_str());
         }
     }
 
@@ -2364,45 +2312,6 @@ mod tests {
         assert_eq!(sidecar_text, expected_sidecar);
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn char_index_to_byte_handles_ascii_and_multibyte() {
-        assert_eq!(char_index_to_byte("hello", 0), 0);
-        assert_eq!(char_index_to_byte("hello", 3), 3);
-        assert_eq!(char_index_to_byte("hello", 5), 5);
-        // Beyond length returns text.len().
-        assert_eq!(char_index_to_byte("hello", 100), 5);
-        // Multibyte: e-acute is 2 bytes in UTF-8.
-        assert_eq!(char_index_to_byte("h\u{00e9}llo", 0), 0);
-        assert_eq!(char_index_to_byte("h\u{00e9}llo", 1), 1);
-        assert_eq!(char_index_to_byte("h\u{00e9}llo", 2), 3);
-    }
-
-    #[test]
-    fn row_byte_offset_to_y_binary_search() {
-        let rows = vec![(0.0_f32, 0_u32), (20.0, 10), (40.0, 25), (60.0, 50)];
-        assert_eq!(row_byte_offset_to_y(&rows, 0), 0.0);
-        assert_eq!(row_byte_offset_to_y(&rows, 5), 0.0);
-        assert_eq!(row_byte_offset_to_y(&rows, 10), 20.0);
-        assert_eq!(row_byte_offset_to_y(&rows, 15), 20.0);
-        assert_eq!(row_byte_offset_to_y(&rows, 30), 40.0);
-        assert_eq!(row_byte_offset_to_y(&rows, 100), 60.0);
-        // Empty rows.
-        assert_eq!(row_byte_offset_to_y(&[], 10), 0.0);
-    }
-
-    #[test]
-    fn row_y_to_byte_offset_binary_search() {
-        let rows = vec![(0.0_f32, 0_u32), (20.0, 10), (40.0, 25)];
-        assert_eq!(row_y_to_byte_offset(&rows, 0.0), 0);
-        assert_eq!(row_y_to_byte_offset(&rows, 10.0), 0);
-        assert_eq!(row_y_to_byte_offset(&rows, 20.0), 10);
-        assert_eq!(row_y_to_byte_offset(&rows, 35.0), 10);
-        assert_eq!(row_y_to_byte_offset(&rows, 40.0), 25);
-        assert_eq!(row_y_to_byte_offset(&rows, 100.0), 25);
-        // Empty rows.
-        assert_eq!(row_y_to_byte_offset(&[], 50.0), 0);
     }
 
     #[test]
