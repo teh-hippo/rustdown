@@ -32,7 +32,9 @@ impl HeadingEntry {
 /// Each entry records the heading level, its plain-text label, and the byte
 /// offset where the heading markup begins.
 pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
-    let parser = Parser::new_ext(source, Options::all());
+    // Only enable the options needed for heading detection — avoids
+    // expensive table/footnote parsing that extract_headings never uses.
+    let parser = Parser::new_ext(source, Options::ENABLE_HEADING_ATTRIBUTES);
 
     let mut entries = Vec::new();
     let mut in_heading: Option<(u8, usize)> = None; // (level, byte_offset)
