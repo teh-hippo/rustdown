@@ -1228,7 +1228,8 @@ impl RustdownApp {
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
         let title = format!(
-            "rustdown - {}{}",
+            "rustdown v{} - {}{}",
+            app_version(),
             self.doc.title(),
             if self.doc.dirty { "*" } else { "" },
         );
