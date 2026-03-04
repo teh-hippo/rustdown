@@ -369,13 +369,7 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
     }
 }
 
-fn render_image(
-    ui: &mut egui::Ui,
-    url: &str,
-    alt: &str,
-    style: &MarkdownStyle,
-    body_size: f32,
-) {
+fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
     // Resolve relative URLs against the configured base URI.
     let resolved = if url.contains("://") || style.image_base_uri.is_empty() {
         url.to_owned()
@@ -1954,6 +1948,471 @@ Normal paragraph.
         for i in 0..22 {
             let y = step * i as f32;
             let _ = headless_render_scrollable(md, Some(y));
+        }
+    }
+
+    // ── Ordered list digit_count / num_width calculation ───────────
+
+    /// Mirror the digit-count logic from `render_ordered_list` so we can
+    /// unit-test it without needing a UI context.
+    #[allow(clippy::cast_precision_loss)]
+    fn digit_count_for(start: u64, item_count: usize) -> u32 {
+        let max_num = start.saturating_add(item_count.saturating_sub(1) as u64);
+        if max_num == 0 {
+            1
+        } else {
+            (max_num as f64).log10().floor() as u32 + 1
+        }
+    }
+
+    #[test]
+    fn ordered_list_digit_count_single_digit() {
+        // 1..=9 → 1 digit
+        assert_eq!(digit_count_for(1, 1), 1); // max_num = 1
+        assert_eq!(digit_count_for(1, 9), 1); // max_num = 9
+        assert_eq!(digit_count_for(5, 3), 1); // max_num = 7
+    }
+
+    #[test]
+    fn ordered_list_digit_count_double_digit() {
+        // 10..=99 → 2 digits
+        assert_eq!(digit_count_for(1, 10), 2); // max_num = 10
+        assert_eq!(digit_count_for(1, 99), 2); // max_num = 99
+        assert_eq!(digit_count_for(50, 5), 2); // max_num = 54
+    }
+
+    #[test]
+    fn ordered_list_digit_count_triple_digit() {
+        assert_eq!(digit_count_for(1, 100), 3); // max_num = 100
+        assert_eq!(digit_count_for(1, 999), 3); // max_num = 999
+        assert_eq!(digit_count_for(998, 2), 3); // max_num = 999
+    }
+
+    #[test]
+    fn ordered_list_digit_count_large_numbers() {
+        assert_eq!(digit_count_for(1, 1000), 4); // max_num = 1000
+        assert_eq!(digit_count_for(1, 10_000), 5); // max_num = 10_000
+        assert_eq!(digit_count_for(999_999, 2), 7); // max_num = 1_000_000
+    }
+
+    #[test]
+    fn ordered_list_digit_count_zero_start() {
+        // start=0, 1 item → max_num=0 → special case → 1 digit
+        assert_eq!(digit_count_for(0, 1), 1);
+        // start=0, 10 items → max_num=9 → 1 digit
+        assert_eq!(digit_count_for(0, 10), 1);
+        // start=0, 11 items → max_num=10 → 2 digits
+        assert_eq!(digit_count_for(0, 11), 2);
+    }
+
+    #[test]
+    fn ordered_list_digit_count_empty_list() {
+        // 0 items: saturating_sub(1) clamps to 0, so max_num = start
+        assert_eq!(digit_count_for(1, 0), 1);
+        assert_eq!(digit_count_for(100, 0), 3);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn ordered_list_num_width_grows_with_digits() {
+        let body_size = 14.0_f32;
+        let widths: Vec<f32> = [1u32, 2, 3, 4, 5]
+            .iter()
+            .map(|&dc| body_size * 0.6f32.mul_add(dc as f32, 1.0))
+            .collect();
+        for i in 0..widths.len() - 1 {
+            assert!(
+                widths[i] < widths[i + 1],
+                "num_width should grow with more digits: {} vs {}",
+                widths[i],
+                widths[i + 1]
+            );
+        }
+    }
+
+    // ── Table column width heuristic ───────────────────────────────
+
+    /// Exercise the column-width heuristic from `render_table` in isolation.
+    /// Returns normalised column widths for the given header/rows.
+    #[allow(clippy::cast_precision_loss)]
+    fn compute_col_widths(header: &[&str], rows: &[Vec<&str>], available: f32) -> Vec<f32> {
+        let body_size = 14.0_f32;
+        let avg_char_w = body_size * 0.55;
+        let num_cols = header.len().max(1);
+        let spacing = 8.0 * num_cols.saturating_sub(1) as f32; // default item_spacing.x ≈ 8
+        let usable = (available - spacing).max(0.0);
+
+        let mut col_widths: Vec<f32> = (0..num_cols)
+            .map(|ci| {
+                let hdr_len = header.get(ci).map_or(0, |c| c.len());
+                let max_row_len = rows
+                    .iter()
+                    .map(|r| r.get(ci).map_or(0, |c| c.len()))
+                    .max()
+                    .unwrap_or(0);
+                let char_len = hdr_len.max(max_row_len).max(3) as f32;
+                (char_len * avg_char_w + 12.0).min(usable / num_cols as f32 * 3.0)
+            })
+            .collect();
+
+        let total_est: f32 = col_widths.iter().sum();
+        if total_est > 0.0 {
+            let scale = usable / total_est;
+            for w in &mut col_widths {
+                *w = (*w * scale).max(40.0);
+            }
+        }
+        col_widths
+    }
+
+    #[test]
+    fn table_col_widths_equal_length_columns() {
+        let widths = compute_col_widths(&["Name", "City"], &[vec!["Alice", "Tokyo"]], 800.0);
+        assert_eq!(widths.len(), 2);
+        // Equal content → widths should be approximately equal
+        let diff = (widths[0] - widths[1]).abs();
+        assert!(
+            diff < 1.0,
+            "equal-length columns should have similar widths, got {widths:?}"
+        );
+    }
+
+    #[test]
+    fn table_col_widths_one_long_column() {
+        let widths = compute_col_widths(
+            &["A", "B", "Description"],
+            &[vec![
+                "x",
+                "y",
+                "This is a much longer description column than the others",
+            ]],
+            800.0,
+        );
+        assert_eq!(widths.len(), 3);
+        // The long column should be wider than the short ones
+        assert!(
+            widths[2] > widths[0],
+            "long column should be wider: {widths:?}"
+        );
+        assert!(
+            widths[2] > widths[1],
+            "long column should be wider: {widths:?}"
+        );
+        // But capped — should not exceed 3× the equal share
+        let equal_share = (800.0 - 16.0) / 3.0; // approx usable/num_cols
+        assert!(
+            widths[2] <= equal_share * 3.0 + 1.0,
+            "column width should be capped: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn table_col_widths_single_column() {
+        let widths = compute_col_widths(&["Only"], &[vec!["data"]], 600.0);
+        assert_eq!(widths.len(), 1);
+        // Single column should fill the usable width
+        assert!(
+            widths[0] > 100.0,
+            "single column should be wide: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn table_col_widths_empty_cells() {
+        let widths = compute_col_widths(
+            &["A", "B", "C"],
+            &[vec!["", "", ""], vec!["x", "", ""]],
+            800.0,
+        );
+        assert_eq!(widths.len(), 3);
+        // All columns should meet the 40px minimum after normalisation
+        for (i, w) in widths.iter().enumerate() {
+            assert!(*w >= 40.0, "column {i} should be at least 40px, got {w}");
+        }
+    }
+
+    #[test]
+    fn table_col_widths_sum_to_usable() {
+        let available = 800.0_f32;
+        let widths = compute_col_widths(&["A", "B", "C"], &[vec!["foo", "bar", "baz"]], available);
+        let spacing = 8.0 * 2.0; // 3 cols, 2 gaps
+        let usable = available - spacing;
+        let total: f32 = widths.iter().sum();
+        // Total should be close to usable (may exceed slightly due to 40px minimum)
+        assert!(
+            total >= usable - 1.0,
+            "total width {total} should be >= usable {usable}"
+        );
+    }
+
+    // ── Image URL resolution ───────────────────────────────────────
+
+    #[test]
+    fn image_url_absolute_stays_unchanged() {
+        let url = "https://example.com/pic.png";
+        let base_uri = "";
+        // Logic from render_image: absolute URLs contain "://"
+        let resolved = if url.contains("://") || base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{base_uri}{url}")
+        };
+        assert_eq!(resolved, "https://example.com/pic.png");
+    }
+
+    #[test]
+    fn image_url_relative_with_base_uri() {
+        let url = "images/pic.png";
+        let base_uri = "file:///home/user/docs/";
+        let resolved = if url.contains("://") || base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{base_uri}{url}")
+        };
+        assert_eq!(resolved, "file:///home/user/docs/images/pic.png");
+    }
+
+    #[test]
+    fn image_url_relative_with_empty_base_uri() {
+        let url = "images/pic.png";
+        let base_uri = "";
+        let resolved = if url.contains("://") || base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{base_uri}{url}")
+        };
+        // Empty base URI → relative path stays as-is
+        assert_eq!(resolved, "images/pic.png");
+    }
+
+    #[test]
+    fn image_url_absolute_ignores_base_uri() {
+        // Even with a base URI set, absolute URLs should not be prefixed
+        let url = "http://cdn.example.com/img.jpg";
+        let base_uri = "file:///local/base/";
+        let resolved = if url.contains("://") || base_uri.is_empty() {
+            url.to_owned()
+        } else {
+            format!("{base_uri}{url}")
+        };
+        assert_eq!(resolved, "http://cdn.example.com/img.jpg");
+    }
+
+    #[test]
+    fn image_render_uses_base_uri() {
+        // Verify via headless render that image blocks parse and render
+        // with a style that has a base URI set.
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let mut style = MarkdownStyle::colored(&egui::Visuals::dark());
+        style.image_base_uri = "file:///base/dir/".to_owned();
+        let viewer = MarkdownViewer::new("img_base");
+
+        let md = "![alt](relative/pic.png)";
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show(ui, &mut cache, &style, md);
+            });
+        });
+
+        // Parse produces an Image block with the raw relative URL
+        assert_eq!(cache.blocks.len(), 1);
+        match &cache.blocks[0] {
+            Block::Image { url, .. } => {
+                assert_eq!(url, "relative/pic.png");
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
+
+    // ── Height estimation: comprehensive ───────────────────────────
+
+    #[test]
+    fn estimate_height_heading_scales_with_level() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let text = StyledText {
+            text: "Heading".to_owned(),
+            spans: vec![],
+        };
+        let mut prev_h = f32::MAX;
+        // H1 should be tallest, H6 shortest (or equal)
+        for level in 1..=6u8 {
+            let block = Block::Heading {
+                level,
+                text: text.clone(),
+            };
+            let h = estimate_block_height(&block, 14.0, 400.0, &style);
+            assert!(h > 0.0, "heading level {level} height should be > 0");
+            assert!(
+                h <= prev_h + 0.01,
+                "H{level} ({h}) should be <= H{} ({prev_h})",
+                level - 1
+            );
+            prev_h = h;
+        }
+    }
+
+    #[test]
+    fn estimate_height_longer_text_is_taller() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let short = Block::Paragraph(StyledText {
+            text: "Hi".to_owned(),
+            spans: vec![],
+        });
+        let long = Block::Paragraph(StyledText {
+            text: "A".repeat(500),
+            spans: vec![],
+        });
+        let h_short = estimate_block_height(&short, 14.0, 400.0, &style);
+        let h_long = estimate_block_height(&long, 14.0, 400.0, &style);
+        assert!(
+            h_long > h_short,
+            "longer text ({h_long}) should be taller than short ({h_short})"
+        );
+    }
+
+    #[test]
+    fn estimate_height_code_block_more_lines_taller() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let small = Block::Code {
+            language: String::new(),
+            code: "line1".to_owned(),
+        };
+        let large = Block::Code {
+            language: String::new(),
+            code: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+                .to_owned(),
+        };
+        let h_small = estimate_block_height(&small, 14.0, 400.0, &style);
+        let h_large = estimate_block_height(&large, 14.0, 400.0, &style);
+        assert!(
+            h_large > h_small,
+            "10-line code ({h_large}) should be taller than 1-line ({h_small})"
+        );
+    }
+
+    #[test]
+    fn estimate_height_nested_quote_taller_than_simple() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let simple = Block::Quote(vec![Block::Paragraph(StyledText {
+            text: "one".to_owned(),
+            spans: vec![],
+        })]);
+        let nested = Block::Quote(vec![
+            Block::Paragraph(StyledText {
+                text: "one".to_owned(),
+                spans: vec![],
+            }),
+            Block::Quote(vec![Block::Paragraph(StyledText {
+                text: "two".to_owned(),
+                spans: vec![],
+            })]),
+        ]);
+        let h_simple = estimate_block_height(&simple, 14.0, 400.0, &style);
+        let h_nested = estimate_block_height(&nested, 14.0, 400.0, &style);
+        assert!(
+            h_nested > h_simple,
+            "nested quote ({h_nested}) should be taller than simple ({h_simple})"
+        );
+    }
+
+    #[test]
+    fn estimate_height_list_more_items_taller() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let make_item = |text: &str| ListItem {
+            content: StyledText {
+                text: text.to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+            checked: None,
+        };
+        let short = Block::UnorderedList(vec![make_item("a")]);
+        let long = Block::UnorderedList(vec![
+            make_item("a"),
+            make_item("b"),
+            make_item("c"),
+            make_item("d"),
+            make_item("e"),
+        ]);
+        let h_short = estimate_block_height(&short, 14.0, 400.0, &style);
+        let h_long = estimate_block_height(&long, 14.0, 400.0, &style);
+        assert!(
+            h_long > h_short,
+            "5-item list ({h_long}) should be taller than 1-item ({h_short})"
+        );
+    }
+
+    #[test]
+    fn estimate_height_table_more_rows_taller() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let cell = |s: &str| StyledText {
+            text: s.to_owned(),
+            spans: vec![],
+        };
+        let small = Block::Table(Box::new(TableData {
+            header: vec![cell("H")],
+            alignments: vec![Alignment::None],
+            rows: vec![vec![cell("r1")]],
+        }));
+        let large = Block::Table(Box::new(TableData {
+            header: vec![cell("H")],
+            alignments: vec![Alignment::None],
+            rows: (0..20).map(|i| vec![cell(&format!("row {i}"))]).collect(),
+        }));
+        let h_small = estimate_block_height(&small, 14.0, 400.0, &style);
+        let h_large = estimate_block_height(&large, 14.0, 400.0, &style);
+        assert!(
+            h_large > h_small,
+            "20-row table ({h_large}) should be taller than 1-row ({h_small})"
+        );
+    }
+
+    #[test]
+    fn estimate_height_all_block_types_positive() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let cell = |s: &str| StyledText {
+            text: s.to_owned(),
+            spans: vec![],
+        };
+        let blocks: Vec<Block> = vec![
+            Block::Heading {
+                level: 1,
+                text: cell("h"),
+            },
+            Block::Paragraph(cell("p")),
+            Block::Code {
+                language: String::new(),
+                code: "code".to_owned(),
+            },
+            Block::Quote(vec![Block::Paragraph(cell("q"))]),
+            Block::UnorderedList(vec![ListItem {
+                content: cell("ul"),
+                children: vec![],
+                checked: None,
+            }]),
+            Block::OrderedList {
+                start: 1,
+                items: vec![ListItem {
+                    content: cell("ol"),
+                    children: vec![],
+                    checked: None,
+                }],
+            },
+            Block::ThematicBreak,
+            Block::Table(Box::new(TableData {
+                header: vec![cell("H")],
+                alignments: vec![],
+                rows: vec![vec![cell("r")]],
+            })),
+            Block::Image {
+                url: "img.png".to_owned(),
+                alt: String::new(),
+            },
+        ];
+        for block in &blocks {
+            let h = estimate_block_height(block, 14.0, 400.0, &style);
+            assert!(h > 0.0, "height for {block:?} should be positive, got {h}");
         }
     }
 }

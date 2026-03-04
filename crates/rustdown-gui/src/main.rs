@@ -1451,8 +1451,7 @@ impl RustdownApp {
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
-            if let Some(state) =
-                egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
+            if let Some(state) = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
                 && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
             {
                 self.nav.update_active_from_position(byte_pos);
