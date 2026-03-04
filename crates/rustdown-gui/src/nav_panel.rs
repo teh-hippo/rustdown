@@ -66,11 +66,6 @@ pub fn editor_scroll_id() -> egui::Id {
     egui::Id::new("editor").with("editor_scroll")
 }
 
-/// Compute the scroll-area [`egui::Id`] used by the preview pane.
-pub fn preview_scroll_id() -> egui::Id {
-    egui::Id::new("preview_markdown").with("_scroll_area")
-}
-
 /// Convert `byte_offset` to an estimated preview scroll-y value.
 /// Uses the actual total rendered height for accurate mapping.
 /// Returns `0.0` when the outline is empty or all headings are at offset 0.
@@ -92,6 +87,7 @@ pub fn preview_byte_to_scroll_y(
 
 /// Convert a preview scroll-y value to an estimated byte offset.
 /// Returns `0` when the outline is empty.
+#[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

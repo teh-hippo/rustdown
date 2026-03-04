@@ -1169,15 +1169,6 @@ impl RustdownApp {
         matches!(self.mode, Mode::Edit | Mode::SideBySide)
     }
 
-    /// Scroll-area ID for the currently active primary pane.
-    fn active_scroll_id(&self) -> egui::Id {
-        if self.uses_editor() {
-            nav_panel::editor_scroll_id()
-        } else {
-            nav_panel::preview_scroll_id()
-        }
-    }
-
     /// Convert a byte offset to a scroll-y value in the currently active pane.
     fn byte_to_scroll_y(&self, byte_offset: usize) -> Option<f32> {
         if self.uses_editor() {
@@ -1191,29 +1182,16 @@ impl RustdownApp {
         }
     }
 
-    /// Convert a scroll-y value to a byte offset in the currently active pane.
-    fn scroll_y_to_byte(&self, y: f32) -> Option<usize> {
-        if self.uses_editor() {
-            self.editor_y_to_byte(y)
-        } else {
-            Some(nav_panel::preview_scroll_y_to_byte(
-                &self.nav.outline,
-                y,
-                self.doc.preview_cache.total_height,
-            ))
-        }
-    }
-
     /// Determine the current scroll position as a byte offset in the source
-    /// text.  Works in both editor and preview modes.
+    /// text.  Only reliable in editor modes (scroll state isn't accessible for
+    /// preview pane).
     fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
-        if self.uses_editor() {
-            self.ensure_row_byte_offsets();
-        } else {
-            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
+        if !self.uses_editor() {
+            return None;
         }
-        let state = egui::scroll_area::State::load(ctx, self.active_scroll_id())?;
-        self.scroll_y_to_byte(state.offset.y)
+        self.ensure_row_byte_offsets();
+        let state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())?;
+        self.editor_y_to_byte(state.offset.y)
     }
 
     #[allow(clippy::unused_self)]
@@ -1385,19 +1363,16 @@ impl RustdownApp {
             };
 
             let editor_size = ui.available_size();
-            let nav_scroll_y = &mut self.nav.pending_scroll_y;
-            let response = egui::ScrollArea::both()
+            let scroll_to = self.nav.pending_scroll_y.take();
+            let mut scroll_area = egui::ScrollArea::both()
                 .id_salt("editor_scroll")
-                .auto_shrink([false; 2])
+                .auto_shrink([false; 2]);
+            if let Some(y) = scroll_to {
+                scroll_area = scroll_area.vertical_scroll_offset(y);
+            }
+            let response = scroll_area
                 .show(ui, |ui| {
-                    let r = ui.add_sized(editor_size, editor.layouter(&mut layouter));
-                    // Consume any pending smooth-scroll target from the nav panel.
-                    if let Some(y) = nav_scroll_y.take() {
-                        let target =
-                            egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0));
-                        ui.scroll_to_rect(target, Some(egui::Align::TOP));
-                    }
-                    r
+                    ui.add_sized(editor_size, editor.layouter(&mut layouter))
                 })
                 .inner;
             (response.changed(), seq.get())
@@ -1428,25 +1403,17 @@ impl RustdownApp {
             MarkdownStyle::from_visuals(ui.visuals())
         };
 
+        // Consume any pending nav-scroll target and pass it directly to the
+        // ScrollArea, avoiding the ID-mismatch problem with external state lookup.
+        let scroll_y = self.nav.pending_scroll_y.take();
+
         MarkdownViewer::new("preview_markdown").show_scrollable(
             ui,
             &mut self.doc.preview_cache,
             &style,
             self.doc.text.as_str(),
+            scroll_y,
         );
-
-        // Consume any pending nav-scroll target.  show_scrollable owns its
-        // ScrollArea so we apply the offset directly to stored state.
-        if self.mode == Mode::Preview
-            && let Some(y) = self.nav.pending_scroll_y.take()
-        {
-            let scroll_id = nav_panel::preview_scroll_id();
-            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), scroll_id) {
-                state.offset = egui::vec2(state.offset.x, y);
-                state.store(ui.ctx(), scroll_id);
-                ui.ctx().request_repaint();
-            }
-        }
     }
 
     /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
@@ -1471,11 +1438,14 @@ impl RustdownApp {
     /// Read the current scroll offset and update the active heading in the
     /// nav panel.  Must run *after* the scroll areas render.
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
-        if self.uses_editor() {
-            self.ensure_row_byte_offsets();
+        // Only works in editor modes where we can read the scroll area state
+        // via a known ID.  Preview mode scroll state isn't accessible externally.
+        if !self.uses_editor() {
+            return;
         }
-        if let Some(state) = egui::scroll_area::State::load(ctx, self.active_scroll_id())
-            && let Some(byte_pos) = self.scroll_y_to_byte(state.offset.y)
+        self.ensure_row_byte_offsets();
+        if let Some(state) = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
+            && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
         {
             self.nav.update_active_from_position(byte_pos);
         }
@@ -1510,12 +1480,9 @@ impl RustdownApp {
             self.doc.preview_cache.total_height,
         );
 
-        let scroll_id = nav_panel::preview_scroll_id();
-        if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
-            state.offset = egui::vec2(state.offset.x, preview_y);
-            state.store(ctx, scroll_id);
-            ctx.request_repaint();
-        }
+        // Store as pending — show_preview will consume it via vertical_scroll_offset.
+        self.nav.pending_scroll_y = Some(preview_y);
+        ctx.request_repaint();
     }
 
     /// Map a byte offset to a Y position using the cached row byte offsets.
@@ -2512,24 +2479,6 @@ mod tests {
             ..RustdownApp::default()
         };
         assert!(!app.uses_editor());
-    }
-
-    #[test]
-    fn active_scroll_id_varies_by_mode() {
-        let app = RustdownApp::default();
-        let edit_id = app.active_scroll_id();
-        let preview_app = RustdownApp {
-            mode: Mode::Preview,
-            ..RustdownApp::default()
-        };
-        let preview_id = preview_app.active_scroll_id();
-        assert_ne!(edit_id, preview_id);
-        // SideBySide uses the editor scroll ID.
-        let sbs_app = RustdownApp {
-            mode: Mode::SideBySide,
-            ..RustdownApp::default()
-        };
-        assert_eq!(sbs_app.active_scroll_id(), edit_id);
     }
 
     #[test]

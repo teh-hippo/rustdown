@@ -114,12 +114,15 @@ impl MarkdownViewer {
     ///
     /// Only blocks overlapping the visible viewport are actually rendered;
     /// off-screen blocks are replaced by empty space allocations.
+    ///
+    /// If `scroll_to_y` is `Some(y)`, the scroll area will jump to that offset.
     pub fn show_scrollable(
         &self,
         ui: &mut egui::Ui,
         cache: &mut MarkdownCache,
         style: &MarkdownStyle,
         source: &str,
+        scroll_to_y: Option<f32>,
     ) {
         cache.ensure_parsed(source);
 
@@ -131,49 +134,55 @@ impl MarkdownViewer {
             return;
         }
 
-        egui::ScrollArea::vertical()
+        let mut scroll_area = egui::ScrollArea::vertical()
             .id_salt(self.id_salt)
-            .auto_shrink([false, false])
-            .show_viewport(ui, |ui, viewport| {
-                // Allocate total height so scroll thumb is correct.
-                ui.set_min_height(cache.total_height);
+            .auto_shrink([false, false]);
 
-                let vis_top = viewport.min.y;
-                let vis_bottom = viewport.max.y;
+        if let Some(y) = scroll_to_y {
+            scroll_area = scroll_area.vertical_scroll_offset(y);
+        }
 
-                // Binary search for first visible block.
-                let first = match cache.cum_y.binary_search_by(|y| {
-                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    Ok(i) => i,
-                    Err(i) => i.saturating_sub(1),
-                };
+        scroll_area.show_viewport(ui, |ui, viewport| {
+            // Allocate total height so scroll thumb is correct.
+            ui.set_min_height(cache.total_height);
 
-                // Allocate space for all blocks above viewport.
-                if first > 0 {
-                    let skip_h = cache.cum_y[first];
-                    ui.add_space(skip_h);
+            let vis_top = viewport.min.y;
+            let vis_bottom = viewport.max.y;
+
+            // Binary search for first visible block.
+            let first = match cache
+                .cum_y
+                .binary_search_by(|y| y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+
+            // Allocate space for all blocks above viewport.
+            if first > 0 {
+                let skip_h = cache.cum_y[first];
+                ui.add_space(skip_h);
+            }
+
+            // Render visible blocks.
+            let mut idx = first;
+            while idx < cache.blocks.len() {
+                let block_y = cache.cum_y[idx];
+                if block_y > vis_bottom {
+                    break;
                 }
+                render_block(ui, &cache.blocks[idx], style, 0);
+                idx += 1;
+            }
 
-                // Render visible blocks.
-                let mut idx = first;
-                while idx < cache.blocks.len() {
-                    let block_y = cache.cum_y[idx];
-                    if block_y > vis_bottom {
-                        break;
-                    }
-                    render_block(ui, &cache.blocks[idx], style, 0);
-                    idx += 1;
+            // Allocate space for blocks below viewport.
+            if idx < cache.blocks.len() {
+                let remaining = cache.total_height - cache.cum_y[idx];
+                if remaining > 0.0 {
+                    ui.add_space(remaining);
                 }
-
-                // Allocate space for blocks below viewport.
-                if idx < cache.blocks.len() {
-                    let remaining = cache.total_height - cache.cum_y[idx];
-                    if remaining > 0.0 {
-                        ui.add_space(remaining);
-                    }
-                }
-            });
+            }
+        });
     }
 
     /// Render markdown inline (no scroll area, no culling).
