@@ -363,9 +363,9 @@ impl Mode {
     #[must_use]
     const fn icon(self) -> &'static str {
         match self {
-            Self::Edit => "\u{270F}\u{FE0E}",    // ✏︎ pencil (text presentation)
-            Self::Preview => "\u{25B6}\u{FE0E}", // ▶︎ play/preview (text presentation)
-            Self::SideBySide => "\u{2261}",      // ≡ triple bar (columns)
+            Self::Edit => "\u{270E}",       // ✎ lower-right pencil
+            Self::Preview => "\u{25B7}",    // ▷ white right-pointing triangle
+            Self::SideBySide => "\u{2590}", // ▐ right half block
         }
     }
 
@@ -534,9 +534,9 @@ impl eframe::App for RustdownApp {
 
                 ui.separator();
                 let color_icon = if self.heading_color_mode {
-                    "\u{1F3A8}" // 🎨 palette (active)
+                    "\u{25D0}" // ◐ circle with left half black (active)
                 } else {
-                    "\u{26AB}" // ⚫ black circle (inactive)
+                    "\u{25CB}" // ○ white circle (inactive)
                 };
                 if ui
                     .toggle_value(
@@ -551,13 +551,13 @@ impl eframe::App for RustdownApp {
                 }
                 ui.separator();
                 if ui
-                    .button(egui::RichText::new("\u{2630}").font(toolbar_font.clone()))
+                    .button(egui::RichText::new("\u{00B6}").font(toolbar_font.clone()))
                     .on_hover_text("Format document")
                     .clicked()
                 {
                     self.format_document();
                 }
-                let nav_icon = egui::RichText::new("\u{2302}").font(toolbar_font.clone()); // ⌂ house/nav
+                let nav_icon = egui::RichText::new("\u{2630}").font(toolbar_font.clone()); // ☰ hamburger
                 ui.toggle_value(&mut self.nav.visible, nav_icon)
                     .on_hover_text("Navigation");
 
@@ -1186,6 +1186,7 @@ impl RustdownApp {
             Some(nav_panel::preview_byte_to_scroll_y(
                 &self.nav.outline,
                 byte_offset,
+                self.doc.preview_cache.total_height,
             ))
         }
     }
@@ -1195,7 +1196,11 @@ impl RustdownApp {
         if self.uses_editor() {
             self.editor_y_to_byte(y)
         } else {
-            Some(nav_panel::preview_scroll_y_to_byte(&self.nav.outline, y))
+            Some(nav_panel::preview_scroll_y_to_byte(
+                &self.nav.outline,
+                y,
+                self.doc.preview_cache.total_height,
+            ))
         }
     }
 
@@ -1498,7 +1503,11 @@ impl RustdownApp {
         self.last_sync_editor_byte = Some(editor_byte);
 
         // Map editor byte offset to preview scroll-y.
-        let preview_y = nav_panel::preview_byte_to_scroll_y(&self.nav.outline, editor_byte);
+        let preview_y = nav_panel::preview_byte_to_scroll_y(
+            &self.nav.outline,
+            editor_byte,
+            self.doc.preview_cache.total_height,
+        );
 
         let scroll_id = nav_panel::preview_scroll_id();
         if let Some(mut state) = egui::scroll_area::State::load(ctx, scroll_id) {
@@ -2323,9 +2332,9 @@ mod tests {
 
     #[test]
     fn mode_icons_and_tooltips() {
-        assert_eq!(Mode::Edit.icon(), "\u{270F}\u{FE0E}");
-        assert_eq!(Mode::Preview.icon(), "\u{25B6}\u{FE0E}");
-        assert_eq!(Mode::SideBySide.icon(), "\u{2261}");
+        assert_eq!(Mode::Edit.icon(), "\u{270E}");
+        assert_eq!(Mode::Preview.icon(), "\u{25B7}");
+        assert_eq!(Mode::SideBySide.icon(), "\u{2590}");
         assert_eq!(Mode::Edit.tooltip(), "Edit");
         assert_eq!(Mode::Preview.tooltip(), "Preview");
         assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");

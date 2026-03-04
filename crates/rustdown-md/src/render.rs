@@ -241,9 +241,30 @@ fn estimate_block_height(
         }
         Block::ThematicBreak => body_size * 0.8,
         Block::Table { header, rows, .. } => {
-            let row_h = body_size * 1.6;
-            let hdr = if header.is_empty() { 0.0 } else { row_h };
-            body_size.mul_add(0.4, (rows.len() as f32).mul_add(row_h, hdr))
+            let num_cols = header.len().max(1);
+            let col_width = (wrap_width / num_cols as f32).max(40.0);
+            let base_row_h = body_size * 1.6;
+            let hdr = if header.is_empty() {
+                0.0
+            } else {
+                header
+                    .iter()
+                    .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
+                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap_or(base_row_h)
+            };
+            let rows_h: f32 = rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|c| {
+                            estimate_text_height(&c.text, body_size, col_width).max(base_row_h)
+                        })
+                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or(base_row_h)
+                })
+                .sum();
+            body_size.mul_add(0.4, hdr + rows_h)
         }
         Block::Image { .. } => body_size * 1.8,
     }
