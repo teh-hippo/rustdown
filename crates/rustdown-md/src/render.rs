@@ -51,24 +51,16 @@ impl MarkdownCache {
             return;
         }
 
-        // Length changed → definitely new content.
-        if len != self.text_len {
-            self.text_len = len;
-            self.text_ptr = ptr;
-            self.text_hash = simple_hash(source);
-            self.blocks = parse_markdown(source);
-            self.heights.clear();
-            self.cum_y.clear();
-            self.total_height = 0.0;
-            return;
-        }
-
-        // Same length, different pointer → check hash.
+        // Pointer changed — compute hash once and compare.
         let hash = simple_hash(source);
         self.text_ptr = ptr;
+        self.text_len = len;
+
         if self.text_hash == hash {
             return;
         }
+
+        // Content actually changed — re-parse.
         self.text_hash = hash;
         self.blocks = parse_markdown(source);
         self.heights.clear();
@@ -175,12 +167,7 @@ impl MarkdownViewer {
 
                 // Allocate space for blocks below viewport.
                 if idx < cache.blocks.len() {
-                    let rendered_bottom = if idx > 0 {
-                        cache.cum_y[idx - 1] + cache.heights[idx - 1]
-                    } else {
-                        0.0
-                    };
-                    let remaining = cache.total_height - rendered_bottom;
+                    let remaining = cache.total_height - cache.cum_y[idx];
                     if remaining > 0.0 {
                         ui.add_space(remaining);
                     }
@@ -613,7 +600,7 @@ fn render_text_with_links(
                 } else {
                     rt
                 };
-                ui.hyperlink_to(rt, url);
+                ui.hyperlink_to(rt, url.as_ref());
             } else {
                 // Render as label with formatting.
                 let font_family = if span.style.code() {
@@ -740,6 +727,7 @@ fn render_ordered_list(
     indent: usize,
 ) {
     let indent_px = 20.0 * (indent as f32 + 1.0);
+    let mut num_buf = String::with_capacity(8);
 
     for (i, item) in items.iter().enumerate() {
         let num = start + i as u64;
@@ -748,7 +736,12 @@ fn render_ordered_list(
             match item.checked {
                 Some(true) => ui.label("\u{2611}"),
                 Some(false) => ui.label("\u{2610}"),
-                None => ui.label(format!("{num}.")),
+                None => {
+                    use std::fmt::Write;
+                    num_buf.clear();
+                    let _ = write!(num_buf, "{num}.");
+                    ui.label(&*num_buf)
+                }
             };
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
