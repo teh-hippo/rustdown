@@ -6,7 +6,12 @@
 
 mod parse;
 mod render;
+#[cfg(test)]
+mod stress;
 mod style;
+
+#[cfg(test)]
+mod bench;
 
 pub use render::{MarkdownCache, MarkdownViewer};
 pub use style::{

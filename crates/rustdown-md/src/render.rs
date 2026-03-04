@@ -14,13 +14,14 @@ use crate::style::MarkdownStyle;
 pub struct MarkdownCache {
     text_hash: u64,
     text_len: usize,
-    blocks: Vec<Block>,
+    text_ptr: usize,
+    pub(crate) blocks: Vec<Block>,
     /// Estimated pixel height for each top-level block (same len as `blocks`).
-    heights: Vec<f32>,
+    pub(crate) heights: Vec<f32>,
     /// Cumulative Y offsets: `cum_y[i]` = sum of heights[0..i].
-    cum_y: Vec<f32>,
+    pub(crate) cum_y: Vec<f32>,
     /// Total estimated height of all blocks.
-    total_height: f32,
+    pub(crate) total_height: f32,
     /// The body font size used when heights were estimated.
     height_body_size: f32,
     /// The wrap width used when heights were estimated.
@@ -32,6 +33,7 @@ impl MarkdownCache {
     pub fn clear(&mut self) {
         self.text_hash = 0;
         self.text_len = 0;
+        self.text_ptr = 0;
         self.blocks.clear();
         self.heights.clear();
         self.cum_y.clear();
@@ -40,27 +42,46 @@ impl MarkdownCache {
         self.height_wrap_width = 0.0;
     }
 
-    fn ensure_parsed(&mut self, source: &str) {
-        // Fast length check before computing hash.
+    pub(crate) fn ensure_parsed(&mut self, source: &str) {
+        // Fast pointer+length check: if the source is the same allocation
+        // and length, skip hash entirely (common in frame-to-frame rendering).
+        let ptr = source.as_ptr() as usize;
         let len = source.len();
-        if len == self.text_len {
-            let hash = simple_hash(source);
-            if self.text_hash == hash {
-                return;
-            }
-            self.text_hash = hash;
-        } else {
-            self.text_len = len;
-            self.text_hash = simple_hash(source);
+        if ptr == self.text_ptr && len == self.text_len {
+            return;
         }
+
+        // Length changed → definitely new content.
+        if len != self.text_len {
+            self.text_len = len;
+            self.text_ptr = ptr;
+            self.text_hash = simple_hash(source);
+            self.blocks = parse_markdown(source);
+            self.heights.clear();
+            self.cum_y.clear();
+            self.total_height = 0.0;
+            return;
+        }
+
+        // Same length, different pointer → check hash.
+        let hash = simple_hash(source);
+        self.text_ptr = ptr;
+        if self.text_hash == hash {
+            return;
+        }
+        self.text_hash = hash;
         self.blocks = parse_markdown(source);
-        // Invalidate height cache (keep Vec capacity).
         self.heights.clear();
         self.cum_y.clear();
         self.total_height = 0.0;
     }
 
-    fn ensure_heights(&mut self, body_size: f32, wrap_width: f32, style: &MarkdownStyle) {
+    pub(crate) fn ensure_heights(
+        &mut self,
+        body_size: f32,
+        wrap_width: f32,
+        style: &MarkdownStyle,
+    ) {
         let size_bits = body_size.to_bits();
         let width_bits = wrap_width.to_bits();
         if !self.heights.is_empty()
@@ -645,7 +666,7 @@ fn render_table_cell(
 
 // ── Utilities ──────────────────────────────────────────────────────
 
-fn simple_hash(s: &str) -> u64 {
+pub(crate) fn simple_hash(s: &str) -> u64 {
     // FNV-1a 64-bit.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in s.as_bytes() {
