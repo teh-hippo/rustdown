@@ -359,9 +359,9 @@ fn render_heading_row(
                 .truncate()
                 .sense(egui::Sense::click()),
         );
-        // Show pointer cursor on hover instead of text-select cursor.
+        // Override the text-select cursor that click-sense produces.
         if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
         }
         response
     })
