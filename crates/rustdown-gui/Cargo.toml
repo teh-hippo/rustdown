@@ -27,5 +27,5 @@ eframe = { version = "0.33", default-features = false, features = [
   "wayland",
   "x11",
 ] }
-libloading = "0.8"
+libloading = "0.9"
 rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
