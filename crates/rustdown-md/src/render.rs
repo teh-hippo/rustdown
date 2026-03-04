@@ -904,6 +904,7 @@ pub fn simple_hash(s: &str) -> u64 {
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use std::fmt::Write;
@@ -1195,5 +1196,695 @@ mod tests {
         ]);
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
         assert!(h > 0.0);
+    }
+
+    // ── Headless rendering validation tests ────────────────────────
+
+    /// Create a headless egui context primed for rendering.
+    fn headless_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        // Warm up so fonts are available.
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        ctx
+    }
+
+    fn raw_input_1024x768() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1024.0, 768.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Render markdown in a headless frame and return `(blocks, total_height)`.
+    fn headless_render(source: &str) -> (Vec<Block>, f32) {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("test");
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show(ui, &mut cache, &style, source);
+            });
+        });
+
+        // Ensure heights are computed (show() does parse but not heights).
+        cache.ensure_heights(14.0, 900.0, &style);
+        let total_height = cache.total_height;
+        (cache.blocks.drain(..).collect(), total_height)
+    }
+
+    /// Render markdown in scrollable mode and return cache state.
+    fn headless_render_scrollable(source: &str, scroll_to_y: Option<f32>) -> (usize, f32) {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("test_scroll");
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, source, scroll_to_y);
+            });
+        });
+
+        (cache.blocks.len(), cache.total_height)
+    }
+
+    // ── Images ─────────────────────────────────────────────────────
+
+    #[test]
+    fn render_image_with_alt() {
+        let md = "![Alt text](image.png)";
+        let (blocks, _) = headless_render(md);
+        assert_eq!(blocks.len(), 1, "expected 1 block for image");
+        match &blocks[0] {
+            Block::Image { url, alt } => {
+                assert_eq!(url, "image.png");
+                assert_eq!(alt, "Alt text");
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_image_without_alt() {
+        let md = "![](https://example.com/pic.jpg)";
+        let (blocks, _) = headless_render(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Image { url, alt } => {
+                assert_eq!(url, "https://example.com/pic.jpg");
+                assert!(alt.is_empty());
+            }
+            other => panic!("expected Image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_multiple_images_no_panic() {
+        let md = "\
+![Tiny](tiny.png)
+
+![Small](small.png)
+
+![Large](large.png)
+
+![Missing](not-found.png)
+";
+        let (blocks, height) = headless_render(md);
+        assert!(blocks.len() >= 4, "expected at least 4 image blocks");
+        assert!(height > 0.0);
+    }
+
+    // ── Heading colours ────────────────────────────────────────────
+
+    #[test]
+    fn heading_colors_applied_in_colored_style() {
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        for (i, expected) in crate::DARK_HEADING_COLORS.iter().enumerate() {
+            assert_eq!(
+                style.headings[i].color, *expected,
+                "heading {i} colour should match DARK palette"
+            );
+        }
+    }
+
+    #[test]
+    fn heading_font_scales_descend() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        for i in 0..5 {
+            assert!(
+                style.headings[i].font_scale >= style.headings[i + 1].font_scale,
+                "heading {i} scale should be >= heading {} scale",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn all_heading_levels_render_without_panic() {
+        let md = "\
+# H1 heading
+## H2 heading
+### H3 heading
+#### H4 heading
+##### H5 heading
+###### H6 heading
+
+Normal paragraph.
+";
+        let (blocks, height) = headless_render(md);
+        let heading_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Heading { .. }))
+            .count();
+        assert_eq!(heading_count, 6, "expected 6 headings");
+        assert!(height > 0.0);
+    }
+
+    // ── Tables ─────────────────────────────────────────────────────
+
+    #[test]
+    fn render_simple_table() {
+        let md = "\
+| Name  | Age |
+|-------|-----|
+| Alice | 30  |
+| Bob   | 25  |
+";
+        let (blocks, height) = headless_render(md);
+        let table_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Table { .. }))
+            .count();
+        assert_eq!(table_count, 1);
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_wide_table_no_panic() {
+        let md = "\
+| A | B | C | D | E | F | G | H | I | J | K | L |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+| a | b | c | d | e | f | g | h | i | j | k | l |
+";
+        let (blocks, height) = headless_render(md);
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| matches!(b, Block::Table { .. }))
+                .count(),
+            1
+        );
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_table_with_empty_cells() {
+        let md = "\
+| Feature | Yes | No |
+|---------|-----|----|
+| A       | ✅  |    |
+|         |     |    |
+| C       |     | ❌ |
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Table { rows, .. } => {
+                assert_eq!(rows.len(), 3, "expected 3 data rows");
+                // Row 2 should have empty text
+                assert!(
+                    rows[1][0].text.trim().is_empty(),
+                    "middle row col 0 should be empty"
+                );
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_table_with_code_in_cells() {
+        let md = "\
+| Function | Type |
+|----------|------|
+| `parse`  | `fn()`|
+";
+        let (blocks, _) = headless_render(md);
+        assert!(matches!(&blocks[0], Block::Table { .. }));
+    }
+
+    #[test]
+    fn render_minimal_table() {
+        let md = "\
+| A |
+|---|
+| 1 |
+";
+        let (blocks, _) = headless_render(md);
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn render_table_alignment() {
+        let md = "\
+| Left | Center | Right |
+|:-----|:------:|------:|
+| l    | c      | r     |
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Table { alignments, .. } => {
+                assert_eq!(alignments[0], Alignment::Left);
+                assert_eq!(alignments[1], Alignment::Center);
+                assert_eq!(alignments[2], Alignment::Right);
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    // ── Lists ──────────────────────────────────────────────────────
+
+    #[test]
+    fn render_simple_bullet_list() {
+        let md = "\
+- Item one
+- Item two
+- Item three
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 3);
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_nested_bullet_list() {
+        let md = "\
+- Top
+  - Middle
+    - Deep
+      - Deepest
+  - Back to middle
+- Back to top
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+        // Top-level list should have 2 items
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2, "expected 2 top-level items");
+                // First item should have nested children
+                assert!(
+                    !items[0].children.is_empty(),
+                    "first item should have children"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_ordered_list_double_digits() {
+        let md = "\
+1. First
+2. Second
+3. Third
+4. Fourth
+5. Fifth
+6. Sixth
+7. Seventh
+8. Eighth
+9. Ninth
+10. Tenth
+11. Eleventh
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 1);
+                assert_eq!(items.len(), 11);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_task_list() {
+        let md = "\
+- [x] Done
+- [ ] Not done
+- Regular
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_mixed_list_types() {
+        let md = "\
+1. Ordered parent
+   - Unordered child
+   - Another child
+2. Second ordered
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    // ── Code blocks ────────────────────────────────────────────────
+
+    #[test]
+    fn render_small_code_block() {
+        let md = "```rust\nfn main() {}\n```";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Code { language, code } => {
+                assert_eq!(language, "rust");
+                assert!(code.contains("fn main()"));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_large_code_block_no_panic() {
+        let mut code_lines = String::from("```python\n");
+        for i in 0..200 {
+            writeln!(code_lines, "line_{i} = {i} * 2").ok();
+        }
+        code_lines.push_str("```\n");
+
+        let (blocks, height) = headless_render(&code_lines);
+        assert!(matches!(&blocks[0], Block::Code { .. }));
+        assert!(
+            height > 100.0,
+            "large code block should have significant height"
+        );
+    }
+
+    #[test]
+    fn render_code_in_heading() {
+        let md = "## The `render()` Function";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 2);
+                assert!(text.text.contains("render()"));
+                // Should have code span
+                assert!(
+                    text.spans.iter().any(|s| s.style.code()),
+                    "heading should contain code span"
+                );
+            }
+            other => panic!("expected Heading, got {other:?}"),
+        }
+    }
+
+    // ── Blockquotes ────────────────────────────────────────────────
+
+    #[test]
+    fn render_nested_blockquote() {
+        let md = "\
+> Level 1
+> > Level 2
+> > > Level 3
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    // ── Unicode & special characters ───────────────────────────────
+
+    #[test]
+    fn render_emoji_no_panic() {
+        let md = "\
+# 🎨 Emoji Heading
+
+🚀 Rocket 💡 Lightbulb 🔧 Wrench ⚙️ Gear
+
+- 🔴 Red
+- 🟢 Green
+- 🔵 Blue
+";
+        let (blocks, height) = headless_render(md);
+        assert!(blocks.len() >= 3);
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_cjk_no_panic() {
+        let md = "\
+## 日本語テスト
+
+中文测试 (Chinese test)
+
+한국어 테스트 (Korean test)
+";
+        let (blocks, _) = headless_render(md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn render_math_symbols_no_panic() {
+        let md = "∑(i=1 to n) of xᵢ² = α·β + γ/δ ± ε\n\n∀x ∈ ℝ, ∃y : x² + y² = r²";
+        let (blocks, _) = headless_render(md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn render_rtl_no_panic() {
+        let md = "بسم الله الرحمن الرحيم\n\nשלום עולם";
+        let (blocks, _) = headless_render(md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn render_zero_width_chars_no_panic() {
+        // ZWJ, soft hyphen, NBSP
+        let md = "zero\u{200D}width\u{200D}joiner\n\nsoft\u{00AD}hyphen\n\nnon\u{00A0}breaking";
+        let (blocks, _) = headless_render(md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn render_box_drawing_no_panic() {
+        let md = "\
+```
+┌─────────┐
+│ Content  │
+├─────────┤
+│ ▲ ▼ ◆ ● │
+└─────────┘
+```
+";
+        let (blocks, _) = headless_render(md);
+        assert!(!blocks.is_empty());
+    }
+
+    // ── Horizontal rules ───────────────────────────────────────────
+
+    #[test]
+    fn render_thematic_breaks() {
+        let md = "Above\n\n---\n\nMiddle\n\n***\n\nBelow";
+        let (blocks, _) = headless_render(md);
+        let break_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ThematicBreak))
+            .count();
+        assert_eq!(break_count, 2);
+    }
+
+    // ── Scrollable rendering ───────────────────────────────────────
+
+    #[test]
+    fn scrollable_render_basic() {
+        let md = "# Title\n\nParagraph text.\n\n## Section 2\n\nMore text.";
+        let (block_count, total_height) = headless_render_scrollable(md, None);
+        assert!(block_count >= 4);
+        assert!(total_height > 0.0);
+    }
+
+    #[test]
+    fn scrollable_render_with_scroll_offset() {
+        let mut doc = String::with_capacity(10_000);
+        for i in 0..50 {
+            write!(doc, "## Section {i}\n\nContent for section {i}.\n\n").ok();
+        }
+        let (_, total_height) = headless_render_scrollable(&doc, None);
+        assert!(total_height > 200.0);
+
+        // Scroll to middle — should not panic
+        let (_, _) = headless_render_scrollable(&doc, Some(total_height / 2.0));
+        // Scroll to near end — should not panic
+        let (_, _) = headless_render_scrollable(&doc, Some(total_height - 50.0));
+        // Scroll past end — should not panic
+        let (_, _) = headless_render_scrollable(&doc, Some(total_height + 1000.0));
+    }
+
+    #[test]
+    fn scrollable_render_empty_doc() {
+        let (block_count, total_height) = headless_render_scrollable("", None);
+        assert_eq!(block_count, 0);
+        assert!((total_height - 0.0).abs() < f32::EPSILON);
+    }
+
+    // ── Stress tests with headless rendering ───────────────────────
+
+    #[test]
+    fn render_stress_large_mixed_doc() {
+        let doc = crate::stress::large_mixed_doc(100);
+        let (blocks, height) = headless_render(&doc);
+        assert!(blocks.len() > 50, "100KB doc should have many blocks");
+        assert!(height > 500.0);
+    }
+
+    #[test]
+    fn render_stress_unicode_doc() {
+        let doc = crate::stress::unicode_stress_doc(50);
+        let (blocks, height) = headless_render(&doc);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_stress_table_heavy_doc() {
+        let doc = crate::stress::table_heavy_doc(50);
+        let (blocks, height) = headless_render(&doc);
+        let table_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Table { .. }))
+            .count();
+        assert!(table_count > 0, "table-heavy doc should have tables");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_stress_emoji_doc() {
+        let doc = crate::stress::emoji_heavy_doc(50);
+        let (blocks, height) = headless_render(&doc);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_stress_task_list_doc() {
+        let doc = crate::stress::task_list_doc(50);
+        let (blocks, height) = headless_render(&doc);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_stress_pathological_doc() {
+        let doc = crate::stress::pathological_doc(50);
+        let (blocks, height) = headless_render(&doc);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_stress_minimal_edge_cases() {
+        for (label, doc) in crate::stress::minimal_docs() {
+            let (_, height) = headless_render(&doc);
+            assert!(
+                height >= 0.0,
+                "minimal doc '{label}' should render with non-negative height"
+            );
+        }
+    }
+
+    // ── Viewport culling correctness ───────────────────────────────
+
+    #[test]
+    fn viewport_culling_height_matches_inline() {
+        let mut doc = String::with_capacity(5_000);
+        for i in 0..20 {
+            write!(
+                doc,
+                "## Section {i}\n\nParagraph content for section {i}.\n\n"
+            )
+            .ok();
+        }
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache1 = MarkdownCache::default();
+        let mut cache2 = MarkdownCache::default();
+
+        cache1.ensure_parsed(&doc);
+        cache2.ensure_parsed(&doc);
+
+        cache1.ensure_heights(14.0, 900.0, &style);
+        cache2.ensure_heights(14.0, 900.0, &style);
+
+        // Both caches should agree on total height
+        assert!(
+            (cache1.total_height - cache2.total_height).abs() < f32::EPSILON,
+            "two caches parsing the same content should produce the same total height"
+        );
+        assert_eq!(cache1.blocks.len(), cache2.blocks.len());
+    }
+
+    #[test]
+    fn cum_y_monotonically_increases() {
+        let doc = crate::stress::large_mixed_doc(50);
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 900.0, &style);
+
+        for i in 1..cache.cum_y.len() {
+            assert!(
+                cache.cum_y[i] >= cache.cum_y[i - 1],
+                "cum_y should be monotonically non-decreasing at index {i}"
+            );
+        }
+    }
+
+    // ── Combined stress test (the full markdown file) ──────────────
+
+    #[test]
+    fn render_comprehensive_stress_test() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let (blocks, height) = headless_render(md);
+        assert!(
+            blocks.len() > 30,
+            "stress test should produce many blocks, got {}",
+            blocks.len()
+        );
+        assert!(
+            height > 1000.0,
+            "comprehensive stress test should have significant height"
+        );
+
+        // Verify key block types are present
+        let has_heading = blocks.iter().any(|b| matches!(b, Block::Heading { .. }));
+        let has_table = blocks.iter().any(|b| matches!(b, Block::Table { .. }));
+        let has_code = blocks.iter().any(|b| matches!(b, Block::Code { .. }));
+        let has_list = blocks.iter().any(|b| matches!(b, Block::UnorderedList(_)));
+        let has_ordered = blocks
+            .iter()
+            .any(|b| matches!(b, Block::OrderedList { .. }));
+        let has_quote = blocks.iter().any(|b| matches!(b, Block::Quote(_)));
+        let has_hr = blocks.iter().any(|b| matches!(b, Block::ThematicBreak));
+        let has_image = blocks.iter().any(|b| matches!(b, Block::Image { .. }));
+
+        assert!(has_heading, "stress test should have headings");
+        assert!(has_table, "stress test should have tables");
+        assert!(has_code, "stress test should have code blocks");
+        assert!(has_list, "stress test should have unordered lists");
+        assert!(has_ordered, "stress test should have ordered lists");
+        assert!(has_quote, "stress test should have blockquotes");
+        assert!(has_hr, "stress test should have thematic breaks");
+        assert!(has_image, "stress test should have images");
+    }
+
+    #[test]
+    fn scrollable_stress_test_all_positions() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let (_, total_height) = headless_render_scrollable(md, None);
+        assert!(total_height > 0.0);
+
+        // Scroll through document at intervals — none should panic
+        let step = total_height / 20.0;
+        for i in 0..22 {
+            let y = step * i as f32;
+            let _ = headless_render_scrollable(md, Some(y));
+        }
     }
 }

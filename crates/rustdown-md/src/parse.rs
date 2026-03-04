@@ -248,6 +248,13 @@ fn parse_paragraph(
     blocks: &mut Vec<Block>,
     fmt_buf: &mut Vec<InlineFlag>,
 ) -> usize {
+    // Check if this paragraph is a standalone image (the only inline content
+    // inside the paragraph is a single Image tag). If so, emit Block::Image
+    // instead of a paragraph containing alt text.
+    if let Some(consumed) = try_parse_standalone_image(events, blocks) {
+        return consumed;
+    }
+
     let mut styled = StyledText::default();
     let mut consumed = 1;
     fmt_buf.clear();
@@ -265,6 +272,66 @@ fn parse_paragraph(
     }
     blocks.push(Block::Paragraph(styled));
     consumed
+}
+
+/// If the paragraph's *only* child is a single `Image` tag, emit
+/// `Block::Image` and return the number of events consumed (including
+/// the opening `Start(Paragraph)` and closing `End(Paragraph)`).
+fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> Option<usize> {
+    // events[0] is Start(Paragraph). Expect:
+    //   [0] Start(Paragraph)
+    //   [1] Start(Image { dest_url, .. })
+    //   ... inline text events (alt text) ...
+    //   [k] End(Image)
+    //   [k+1] End(Paragraph)
+    if events.len() < 4 {
+        return None;
+    }
+    let (dest_url, _title) = match &events[1] {
+        Event::Start(Tag::Image {
+            dest_url, title, ..
+        }) => (dest_url.to_string(), title.to_string()),
+        _ => return None,
+    };
+
+    // Collect alt text from inline events between Start(Image) and End(Image).
+    let mut alt = String::new();
+    let mut i = 2;
+    while i < events.len() {
+        match &events[i] {
+            Event::End(TagEnd::Image) => {
+                i += 1;
+                break;
+            }
+            Event::Text(t) => {
+                alt.push_str(t);
+                i += 1;
+            }
+            Event::Code(c) => {
+                alt.push_str(c);
+                i += 1;
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                alt.push(' ');
+                i += 1;
+            }
+            // Formatting tags inside alt text — skip the tag but keep scanning
+            Event::Start(Tag::Strong | Tag::Emphasis | Tag::Strikethrough)
+            | Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough) => {
+                i += 1;
+            }
+            _ => return None, // unexpected event → not a standalone image
+        }
+    }
+
+    // The very next event must be End(Paragraph).
+    if i >= events.len() || !matches!(&events[i], Event::End(TagEnd::Paragraph)) {
+        return None;
+    }
+    i += 1; // consume End(Paragraph)
+
+    blocks.push(Block::Image { url: dest_url, alt });
+    Some(i)
 }
 
 fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Block>) -> usize {
