@@ -116,17 +116,6 @@ impl NavState {
             nav_outline::active_heading_index(&self.outline, self.max_depth, byte_position);
     }
 
-    /// Update `active_index` for preview mode using a scroll-y offset.
-    pub fn update_active_from_scroll_y(&mut self, scroll_y: f32) {
-        if self.outline.is_empty() {
-            self.active_index = None;
-            return;
-        }
-        let estimated_byte = preview_scroll_y_to_byte(&self.outline, scroll_y);
-        self.active_index =
-            nav_outline::active_heading_index(&self.outline, self.max_depth, estimated_byte);
-    }
-
     /// Decrease `max_depth` by one (clamped to 1).
     pub fn decrease_depth(&mut self) {
         self.max_depth = self.max_depth.saturating_sub(1).max(1);
@@ -511,15 +500,14 @@ mod tests {
     }
 
     #[test]
-    fn update_active_from_scroll_y_advances() {
+    fn update_active_advances_through_headings() {
         let mut state = make_state("# A\n\ntext\n\n## B\n\nmore\n\n### C\n");
-        state.update_active_from_scroll_y(0.0);
+        state.update_active_from_position(0);
         let first = state.active_index;
         let last_offset = state.outline.last().map_or(0, |h| h.byte_offset);
-        let big_y = preview_byte_to_scroll_y(&state.outline, last_offset);
-        state.update_active_from_scroll_y(big_y);
+        state.update_active_from_position(last_offset);
         let last = state.active_index;
-        // Scrolling further should advance to a later (or equal) heading.
+        // A later byte position should advance to a later (or equal) heading.
         assert!(last >= first);
     }
 

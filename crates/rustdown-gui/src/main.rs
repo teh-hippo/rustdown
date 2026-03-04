@@ -926,6 +926,18 @@ impl egui::TextBuffer for TrackedTextBuffer<'_, '_> {
 }
 
 #[derive(Debug)]
+/// How the document should be flagged after applying disk text.
+#[derive(Clone, Copy)]
+enum ReloadKind {
+    /// Clean reload from disk: buffer is clean, clear last edit timestamp.
+    Clean,
+    /// Merge result: buffer is dirty (contains merged edits), keep editing.
+    Merged,
+    /// Conflict resolution choice: buffer is dirty, clear last edit.
+    ConflictResolved,
+}
+
+#[derive(Debug)]
 enum DiskReloadOutcome {
     Replace {
         disk_text: String,
@@ -1496,8 +1508,7 @@ impl RustdownApp {
         text: Arc<String>,
         base_text: Arc<String>,
         disk_rev: DiskRevision,
-        dirty: bool,
-        clear_last_edit: bool,
+        kind: ReloadKind,
     ) {
         self.doc.text = text;
         self.doc.base_text = base_text;
@@ -1507,8 +1518,8 @@ impl RustdownApp {
         self.doc.stats_dirty = false;
         self.doc.md_cache.clear_scrollable();
         self.doc.preview_dirty = false;
-        self.doc.dirty = dirty;
-        if clear_last_edit {
+        self.doc.dirty = !matches!(kind, ReloadKind::Clean);
+        if matches!(kind, ReloadKind::Clean | ReloadKind::ConflictResolved) {
             self.doc.last_edit_at = None;
         }
         self.doc.editor_galley_cache = None;
@@ -1801,8 +1812,7 @@ impl RustdownApp {
                                 disk_text.clone(),
                                 disk_text,
                                 disk_rev,
-                                false,
-                                true,
+                                ReloadKind::Clean,
                             );
                         }
                         Ok(DiskReloadOutcome::MergeClean {
@@ -1814,8 +1824,7 @@ impl RustdownApp {
                                 Arc::new(merged_text),
                                 Arc::new(disk_text),
                                 disk_rev,
-                                true,
-                                false,
+                                ReloadKind::Merged,
                             );
                         }
                         Ok(DiskReloadOutcome::MergeConflict {
@@ -1849,7 +1858,7 @@ impl RustdownApp {
 
         if !self.doc.dirty {
             let disk_text = Arc::new(disk_text);
-            self.apply_disk_text_state(disk_text.clone(), disk_text, disk_rev, false, true);
+            self.apply_disk_text_state(disk_text.clone(), disk_text, disk_rev, ReloadKind::Clean);
             return;
         }
 
@@ -1863,8 +1872,7 @@ impl RustdownApp {
                     Arc::new(merged),
                     Arc::new(disk_text),
                     disk_rev,
-                    true,
-                    false,
+                    ReloadKind::Merged,
                 );
             }
             Merge3Outcome::Conflicted {
@@ -1915,25 +1923,51 @@ impl RustdownApp {
         }
     }
 
-    /// Determine the current scroll position as a byte offset in the source
-    /// text.  Works in both editor and preview modes.
-    fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
-        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
-        let scroll_id = if uses_editor {
+    /// Returns `true` when the current mode renders the code editor.
+    const fn uses_editor(&self) -> bool {
+        matches!(self.mode, Mode::Edit | Mode::SideBySide)
+    }
+
+    /// Scroll-area ID for the currently active primary pane.
+    fn active_scroll_id(&self) -> egui::Id {
+        if self.uses_editor() {
             nav_panel::editor_scroll_id()
         } else {
             nav_panel::preview_scroll_id()
-        };
-        let state = egui::scroll_area::State::load(ctx, scroll_id)?;
-        let y = state.offset.y;
-        if uses_editor {
-            self.ensure_row_byte_offsets();
+        }
+    }
+
+    /// Convert a byte offset to a scroll-y value in the currently active pane.
+    fn byte_to_scroll_y(&self, byte_offset: usize) -> Option<f32> {
+        if self.uses_editor() {
+            self.editor_byte_to_y(byte_offset)
+        } else {
+            Some(nav_panel::preview_byte_to_scroll_y(
+                &self.nav.outline,
+                byte_offset,
+            ))
+        }
+    }
+
+    /// Convert a scroll-y value to a byte offset in the currently active pane.
+    fn scroll_y_to_byte(&self, y: f32) -> Option<usize> {
+        if self.uses_editor() {
             self.editor_y_to_byte(y)
         } else {
-            // Refresh outline if needed for accurate byte mapping.
-            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
             Some(nav_panel::preview_scroll_y_to_byte(&self.nav.outline, y))
         }
+    }
+
+    /// Determine the current scroll position as a byte offset in the source
+    /// text.  Works in both editor and preview modes.
+    fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
+        if self.uses_editor() {
+            self.ensure_row_byte_offsets();
+        } else {
+            self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
+        }
+        let state = egui::scroll_area::State::load(ctx, self.active_scroll_id())?;
+        self.scroll_y_to_byte(state.offset.y)
     }
 
     #[allow(clippy::unused_self)]
@@ -2170,22 +2204,12 @@ impl RustdownApp {
         let Some(target) = self.nav.pending_scroll.take() else {
             return;
         };
-        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
-        if uses_editor {
+        if self.uses_editor() {
             self.ensure_row_byte_offsets();
         }
         let target_y = match target {
             NavScrollTarget::Top => Some(0.0_f32),
-            NavScrollTarget::ByteOffset(byte_offset) => {
-                if uses_editor {
-                    self.editor_byte_to_y(byte_offset)
-                } else {
-                    Some(nav_panel::preview_byte_to_scroll_y(
-                        &self.nav.outline,
-                        byte_offset,
-                    ))
-                }
-            }
+            NavScrollTarget::ByteOffset(byte_offset) => self.byte_to_scroll_y(byte_offset),
         };
         self.nav.pending_scroll_y = target_y;
         ctx.request_repaint();
@@ -2194,24 +2218,13 @@ impl RustdownApp {
     /// Read the current scroll offset and update the active heading in the
     /// nav panel.  Must run *after* the scroll areas render.
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
-        let uses_editor = matches!(self.mode, Mode::Edit | Mode::SideBySide);
-        if uses_editor {
+        if self.uses_editor() {
             self.ensure_row_byte_offsets();
         }
-        let scroll_area_id = if uses_editor {
-            nav_panel::editor_scroll_id()
-        } else {
-            nav_panel::preview_scroll_id()
-        };
-        if let Some(state) = egui::scroll_area::State::load(ctx, scroll_area_id) {
-            let y = state.offset.y;
-            if uses_editor {
-                if let Some(pos) = self.editor_y_to_byte(y) {
-                    self.nav.update_active_from_position(pos);
-                }
-            } else if !self.doc.text.is_empty() {
-                self.nav.update_active_from_scroll_y(y);
-            }
+        if let Some(state) = egui::scroll_area::State::load(ctx, self.active_scroll_id())
+            && let Some(byte_pos) = self.scroll_y_to_byte(state.offset.y)
+        {
+            self.nav.update_active_from_position(byte_pos);
         }
     }
 
@@ -2501,8 +2514,7 @@ impl RustdownApp {
                     Arc::new(conflict.conflict_marked),
                     Arc::new(conflict.disk_text),
                     conflict.disk_rev,
-                    true,
-                    false,
+                    ReloadKind::ConflictResolved,
                 );
             }
             ConflictChoice::KeepMineWriteSidecar => {
@@ -2511,8 +2523,7 @@ impl RustdownApp {
                     Arc::new(conflict.ours_wins),
                     Arc::new(conflict.disk_text),
                     conflict.disk_rev,
-                    true,
-                    false,
+                    ReloadKind::ConflictResolved,
                 );
                 if let Some(doc_path) = self.doc.path.clone() {
                     self.write_merge_sidecar(doc_path.as_path(), conflict_marked.as_str());
@@ -2531,8 +2542,7 @@ impl RustdownApp {
                     disk_text.clone(),
                     disk_text,
                     conflict.disk_rev,
-                    false,
-                    false,
+                    ReloadKind::Clean,
                 );
             }
             ConflictChoice::OverwriteDisk => {

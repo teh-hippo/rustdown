@@ -80,6 +80,9 @@ fn push_section(
     }
 }
 
+/// Font-size scale factors for heading levels H1–H6 relative to body text.
+const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
+
 #[must_use]
 pub(crate) fn markdown_layout_job(
     style: &egui::Style,
@@ -98,7 +101,7 @@ pub(crate) fn markdown_layout_job(
     let code_font = egui::TextStyle::Monospace.resolve(style);
     let base = egui::TextFormat::simple(base_font.clone(), visuals.text_color());
     let weak = egui::TextFormat::simple(base_font, visuals.weak_text_color());
-    let heading_scales = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
+    let heading_scales = HEADING_FONT_SCALES;
     let heading_formats = std::array::from_fn(|idx| {
         let mut format = base.clone();
         format.font_id.size *= heading_scales[idx];
