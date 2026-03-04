@@ -133,6 +133,7 @@ impl MarkdownViewer {
 
         egui::ScrollArea::vertical()
             .id_salt(self.id_salt)
+            .auto_shrink([false, false])
             .show_viewport(ui, |ui, viewport| {
                 // Allocate total height so scroll thumb is correct.
                 ui.set_min_height(cache.total_height);
