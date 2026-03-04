@@ -3338,6 +3338,78 @@ mod tests {
     }
 
     #[test]
+    fn set_mode_same_mode_is_noop() {
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp::default();
+        app.set_mode(Mode::Edit, &ctx);
+        assert_eq!(app.mode, Mode::Edit);
+        // No pending scroll should be set for same-mode transition.
+        assert!(app.nav.pending_scroll.is_none());
+    }
+
+    #[test]
+    fn uses_editor_returns_correct_value() {
+        let app = RustdownApp::default();
+        assert!(app.uses_editor()); // default mode is Edit
+        let app = RustdownApp {
+            mode: Mode::SideBySide,
+            ..RustdownApp::default()
+        };
+        assert!(app.uses_editor());
+        let app = RustdownApp {
+            mode: Mode::Preview,
+            ..RustdownApp::default()
+        };
+        assert!(!app.uses_editor());
+    }
+
+    #[test]
+    fn active_scroll_id_varies_by_mode() {
+        let app = RustdownApp::default();
+        let edit_id = app.active_scroll_id();
+        let preview_app = RustdownApp {
+            mode: Mode::Preview,
+            ..RustdownApp::default()
+        };
+        let preview_id = preview_app.active_scroll_id();
+        assert_ne!(edit_id, preview_id);
+        // SideBySide uses the editor scroll ID.
+        let sbs_app = RustdownApp {
+            mode: Mode::SideBySide,
+            ..RustdownApp::default()
+        };
+        assert_eq!(sbs_app.active_scroll_id(), edit_id);
+    }
+
+    #[test]
+    fn reload_kind_flags() {
+        // Verify ReloadKind semantics via apply_disk_text_state.
+        let mut app = RustdownApp::default();
+        let text = Arc::new("test".to_owned());
+        let rev = DiskRevision {
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            len: 4,
+            #[cfg(unix)]
+            dev: 0,
+            #[cfg(unix)]
+            inode: 0,
+        };
+
+        app.apply_disk_text_state(text.clone(), text.clone(), rev, ReloadKind::Clean);
+        assert!(!app.doc.dirty);
+        assert!(app.doc.last_edit_at.is_none());
+
+        app.doc.last_edit_at = Some(Instant::now());
+        app.apply_disk_text_state(text.clone(), text.clone(), rev, ReloadKind::Merged);
+        assert!(app.doc.dirty);
+        assert!(app.doc.last_edit_at.is_some()); // Not cleared for Merged.
+
+        app.apply_disk_text_state(text.clone(), text, rev, ReloadKind::ConflictResolved);
+        assert!(app.doc.dirty);
+        assert!(app.doc.last_edit_at.is_none()); // Cleared for ConflictResolved.
+    }
+
+    #[test]
     fn load_document_resets_state() {
         let dir = make_temp_dir("rustdown-load-doc-test");
         let path = dir.join("test.md");

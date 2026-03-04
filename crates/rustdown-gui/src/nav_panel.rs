@@ -556,4 +556,128 @@ mod tests {
         assert!(has_visible_children(&outline, 4, 0)); // C is within depth
         assert!(!has_visible_children(&outline, 1, 0)); // C exceeds max_depth=1
     }
+
+    #[test]
+    fn compute_visible_deeply_nested() {
+        // 4 levels deep: expand all ancestors to reveal the deepest.
+        let md = "# A\n## B\n### C\n#### D\n";
+        let outline = nav_outline::extract_headings(md);
+        let mut expanded = HashSet::new();
+        // Nothing expanded: only H1 visible.
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0]);
+        // Expand A: B visible.
+        expanded.insert(0);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0, 1]);
+        // Expand B: C visible.
+        expanded.insert(1);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0, 1, 2]);
+        // Expand C: D visible.
+        expanded.insert(2);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn compute_visible_skipped_levels() {
+        // H1 followed directly by H3 (skipping H2).
+        let md = "# A\n### C\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let mut expanded = HashSet::new();
+        // Expand A: both C and B are direct children (C at level 3, B at level 2).
+        expanded.insert(0);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn compute_visible_collapse_parent_hides_grandchildren() {
+        let md = "# A\n## B\n### C\n";
+        let outline = nav_outline::extract_headings(md);
+        let mut expanded = HashSet::new();
+        expanded.insert(0);
+        expanded.insert(1);
+        // All visible.
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0, 1, 2]);
+        // Collapse A: B and C should be hidden even though B is still "expanded".
+        expanded.remove(&0);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert_eq!(visible, vec![0]);
+    }
+
+    #[test]
+    fn compute_visible_empty_outline() {
+        let outline: Vec<HeadingEntry> = Vec::new();
+        let expanded = HashSet::new();
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn compute_visible_all_same_level() {
+        // All headings at the same level: all visible, none expandable.
+        let md = "## A\n## B\n## C\n";
+        let outline = nav_outline::extract_headings(md);
+        let expanded = HashSet::new();
+        let visible = compute_visible_headings(&outline, &expanded, 4, 2);
+        assert_eq!(visible, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn compute_visible_max_depth_filters() {
+        let md = "# A\n## B\n### C\n#### D\n";
+        let outline = nav_outline::extract_headings(md);
+        let mut expanded = HashSet::new();
+        expanded.insert(0);
+        expanded.insert(1);
+        expanded.insert(2);
+        // max_depth=2 hides C and D.
+        let visible = compute_visible_headings(&outline, &expanded, 2, 1);
+        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 2]);
+    }
+
+    #[test]
+    fn preview_scroll_byte_to_y_monotonic() {
+        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
+        let outline = nav_outline::extract_headings(md);
+        let mut prev_y = 0.0_f32;
+        for h in &outline {
+            let y = preview_byte_to_scroll_y(&outline, h.byte_offset);
+            assert!(y >= prev_y, "scroll-y should be monotonically increasing");
+            prev_y = y;
+        }
+    }
+
+    #[test]
+    fn preview_scroll_round_trip_all_headings() {
+        let md = "x".repeat(200)
+            + "\n# A\n"
+            + &"y".repeat(200)
+            + "\n## B\n"
+            + &"z".repeat(200)
+            + "\n### C\n";
+        let outline = nav_outline::extract_headings(&md);
+        for h in &outline {
+            let y = preview_byte_to_scroll_y(&outline, h.byte_offset);
+            let byte = preview_scroll_y_to_byte(&outline, y);
+            assert_eq!(
+                byte, h.byte_offset,
+                "round-trip failed for offset {}",
+                h.byte_offset
+            );
+        }
+    }
+
+    #[test]
+    fn preview_scroll_single_heading() {
+        let md = "# Only Heading\n";
+        let outline = nav_outline::extract_headings(md);
+        assert_eq!(preview_byte_to_scroll_y(&outline, 0), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&outline, 0.0), 0);
+    }
 }
