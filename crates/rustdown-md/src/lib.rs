@@ -9,4 +9,6 @@ mod render;
 mod style;
 
 pub use render::{MarkdownCache, MarkdownViewer};
-pub use style::MarkdownStyle;
+pub use style::{
+    DARK_HEADING_COLORS, HEADING_FONT_SCALES, HeadingStyle, LIGHT_HEADING_COLORS, MarkdownStyle,
+};
