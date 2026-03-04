@@ -20,26 +20,10 @@ pub fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) ->
         return visuals.hyperlink_color;
     }
 
-    let dark_palette = [
-        egui::Color32::from_rgb(0xFF, 0xB8, 0x6C),
-        egui::Color32::from_rgb(0x8B, 0xE9, 0xFD),
-        egui::Color32::from_rgb(0x50, 0xFA, 0x7B),
-        egui::Color32::from_rgb(0xBD, 0x93, 0xF9),
-        egui::Color32::from_rgb(0xFF, 0x79, 0xC6),
-        egui::Color32::from_rgb(0xF1, 0xFA, 0x8C),
-    ];
-    let light_palette = [
-        egui::Color32::from_rgb(0x9C, 0x3D, 0x00),
-        egui::Color32::from_rgb(0x00, 0x5F, 0x9A),
-        egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
-        egui::Color32::from_rgb(0x6A, 0x1B, 0x9A),
-        egui::Color32::from_rgb(0xAD, 0x14, 0x57),
-        egui::Color32::from_rgb(0x5D, 0x40, 0x37),
-    ];
     let palette = if visuals.dark_mode {
-        &dark_palette
+        &rustdown_md::DARK_HEADING_COLORS
     } else {
-        &light_palette
+        &rustdown_md::LIGHT_HEADING_COLORS
     };
     palette[level.saturating_sub(1).min(palette.len() - 1)]
 }
@@ -76,9 +60,6 @@ fn push_section(
     }
 }
 
-/// Font-size scale factors for heading levels H1–H6 relative to body text.
-const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
-
 #[must_use]
 pub fn markdown_layout_job(
     style: &egui::Style,
@@ -97,7 +78,7 @@ pub fn markdown_layout_job(
     let code_font = egui::TextStyle::Monospace.resolve(style);
     let base = egui::TextFormat::simple(base_font.clone(), visuals.text_color());
     let weak = egui::TextFormat::simple(base_font, visuals.weak_text_color());
-    let heading_scales = HEADING_FONT_SCALES;
+    let heading_scales = rustdown_md::HEADING_FONT_SCALES;
     let heading_formats = std::array::from_fn(|idx| {
         let mut format = base.clone();
         format.font_id.size *= heading_scales[idx];

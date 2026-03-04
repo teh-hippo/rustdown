@@ -519,12 +519,12 @@ impl eframe::App for RustdownApp {
             // Use a smaller font for the toolbar.
             let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
             let toolbar_font = egui::FontId::proportional(toolbar_size);
+            let tb = |text: &str| egui::RichText::new(text).font(toolbar_font.clone());
 
             ui.horizontal(|ui| {
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
-                    let label = egui::RichText::new(mode.icon()).font(toolbar_font.clone());
                     if ui
-                        .selectable_label(self.mode == mode, label)
+                        .selectable_label(self.mode == mode, tb(mode.icon()))
                         .on_hover_text(mode.tooltip())
                         .clicked()
                     {
@@ -533,11 +533,10 @@ impl eframe::App for RustdownApp {
                 }
 
                 ui.separator();
-                let color_rt = egui::RichText::new("Aa").font(toolbar_font.clone());
                 let color_rt = if self.heading_color_mode {
-                    color_rt.color(egui::Color32::from_rgb(0xFF, 0xB8, 0x6C))
+                    tb("Aa").color(egui::Color32::from_rgb(0xFF, 0xB8, 0x6C))
                 } else {
-                    color_rt
+                    tb("Aa")
                 };
                 if ui
                     .toggle_value(&mut self.heading_color_mode, color_rt)
@@ -549,21 +548,18 @@ impl eframe::App for RustdownApp {
                 }
                 ui.separator();
                 if ui
-                    .button(egui::RichText::new("Fmt").font(toolbar_font.clone()))
+                    .button(tb("Fmt"))
                     .on_hover_text("Format document")
                     .clicked()
                 {
                     self.format_document();
                 }
-                ui.toggle_value(
-                    &mut self.nav.visible,
-                    egui::RichText::new("Nav").font(toolbar_font.clone()),
-                )
-                .on_hover_text("Navigation");
+                ui.toggle_value(&mut self.nav.visible, tb("Nav"))
+                    .on_hover_text("Navigation");
 
                 ui.separator();
 
-                ui.label(egui::RichText::new(self.doc.path_label()).font(toolbar_font.clone()));
+                ui.label(tb(&self.doc.path_label()));
                 let stats = self.doc.stats();
 
                 ui.separator();
@@ -574,10 +570,7 @@ impl eframe::App for RustdownApp {
 
                 if self.doc.dirty {
                     ui.separator();
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        egui::RichText::new("Modified").font(toolbar_font.clone()),
-                    );
+                    ui.colored_label(ui.visuals().warn_fg_color, tb("Modified"));
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

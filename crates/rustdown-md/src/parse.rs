@@ -113,11 +113,6 @@ impl SpanStyle {
     pub const fn set_code(&mut self) {
         self.flags |= FLAG_CODE;
     }
-
-    #[allow(dead_code)]
-    pub const fn is_plain(&self) -> bool {
-        self.flags == 0 && self.link.is_none()
-    }
 }
 
 /// An inline formatting span within a `StyledText`.
