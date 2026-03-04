@@ -5,7 +5,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A single renderable block produced by parsing.
 #[derive(Clone, Debug)]
-pub(crate) enum Block {
+pub enum Block {
     Heading {
         level: u8,
         text: StyledText,
@@ -36,7 +36,7 @@ pub(crate) enum Block {
 
 /// Alignment for table columns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Alignment {
+pub enum Alignment {
     None,
     Left,
     Center,
@@ -45,26 +45,26 @@ pub(crate) enum Alignment {
 
 /// A single list item (may contain nested blocks).
 #[derive(Clone, Debug)]
-pub(crate) struct ListItem {
-    pub(crate) content: StyledText,
-    pub(crate) children: Vec<Block>,
+pub struct ListItem {
+    pub content: StyledText,
+    pub children: Vec<Block>,
     /// Task-list checkbox state: `Some(true)` = checked, `Some(false)` = unchecked, `None` = normal item.
-    pub(crate) checked: Option<bool>,
+    pub checked: Option<bool>,
 }
 
 /// Styled text: a string with inline formatting spans.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct StyledText {
-    pub(crate) text: String,
-    pub(crate) spans: Vec<Span>,
+pub struct StyledText {
+    pub text: String,
+    pub spans: Vec<Span>,
 }
 
 /// Inline formatting flags that can be combined (e.g., bold + italic).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SpanStyle {
+pub struct SpanStyle {
     /// Bitfield: bit 0 = strong, 1 = emphasis, 2 = strikethrough, 3 = code.
     flags: u8,
-    pub(crate) link: Option<String>,
+    pub link: Option<String>,
 }
 
 const FLAG_STRONG: u8 = 1;
@@ -73,57 +73,57 @@ const FLAG_STRIKETHROUGH: u8 = 4;
 const FLAG_CODE: u8 = 8;
 
 impl SpanStyle {
-    pub(crate) const fn plain() -> Self {
+    pub const fn plain() -> Self {
         Self {
             flags: 0,
             link: None,
         }
     }
 
-    pub(crate) const fn strong(&self) -> bool {
+    pub const fn strong(&self) -> bool {
         self.flags & FLAG_STRONG != 0
     }
 
-    pub(crate) const fn set_strong(&mut self) {
+    pub const fn set_strong(&mut self) {
         self.flags |= FLAG_STRONG;
     }
 
-    pub(crate) const fn emphasis(&self) -> bool {
+    pub const fn emphasis(&self) -> bool {
         self.flags & FLAG_EMPHASIS != 0
     }
 
-    pub(crate) const fn set_emphasis(&mut self) {
+    pub const fn set_emphasis(&mut self) {
         self.flags |= FLAG_EMPHASIS;
     }
 
-    pub(crate) const fn strikethrough(&self) -> bool {
+    pub const fn strikethrough(&self) -> bool {
         self.flags & FLAG_STRIKETHROUGH != 0
     }
 
-    pub(crate) const fn set_strikethrough(&mut self) {
+    pub const fn set_strikethrough(&mut self) {
         self.flags |= FLAG_STRIKETHROUGH;
     }
 
-    pub(crate) const fn code(&self) -> bool {
+    pub const fn code(&self) -> bool {
         self.flags & FLAG_CODE != 0
     }
 
-    pub(crate) const fn set_code(&mut self) {
+    pub const fn set_code(&mut self) {
         self.flags |= FLAG_CODE;
     }
 
     #[allow(dead_code)]
-    pub(crate) const fn is_plain(&self) -> bool {
+    pub const fn is_plain(&self) -> bool {
         self.flags == 0 && self.link.is_none()
     }
 }
 
 /// An inline formatting span within a `StyledText`.
 #[derive(Clone, Debug)]
-pub(crate) struct Span {
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) style: SpanStyle,
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub style: SpanStyle,
 }
 
 impl StyledText {
@@ -146,7 +146,7 @@ impl StyledText {
 }
 
 /// Parse markdown source into blocks.
-pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
+pub fn parse_markdown(source: &str) -> Vec<Block> {
     let opts = Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_HEADING_ATTRIBUTES
@@ -686,7 +686,7 @@ mod tests {
         for (i, block) in blocks.iter().enumerate() {
             match block {
                 Block::Heading { level, .. } => {
-                    assert_eq!(*level, (i as u8) + 1);
+                    assert_eq!(usize::from(*level), i + 1);
                 }
                 other => panic!("expected heading at index {i}, got {other:?}"),
             }

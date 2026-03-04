@@ -15,11 +15,7 @@ enum FmtIdx {
     Heading(usize),
 }
 
-pub(crate) fn heading_color(
-    visuals: &egui::Visuals,
-    level: usize,
-    color_mode: bool,
-) -> egui::Color32 {
+pub fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) -> egui::Color32 {
     if !color_mode {
         return visuals.hyperlink_color;
     }
@@ -84,7 +80,7 @@ fn push_section(
 const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
 
 #[must_use]
-pub(crate) fn markdown_layout_job(
+pub fn markdown_layout_job(
     style: &egui::Style,
     visuals: &egui::Visuals,
     source: &str,

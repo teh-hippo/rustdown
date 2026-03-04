@@ -17,6 +17,7 @@ use crate::{
     find_match_count,
 };
 
+#[allow(clippy::cast_precision_loss)] // iterations.max(1) is small
 fn avg_duration_us(total: Duration, iterations: usize) -> f64 {
     total.as_secs_f64() * 1_000_000.0 / iterations.max(1) as f64
 }
@@ -30,7 +31,7 @@ fn measure_iterations(iterations: usize, mut f: impl FnMut()) -> Duration {
 }
 
 #[must_use]
-pub(crate) fn diagnostics_raw_input() -> egui::RawInput {
+pub fn diagnostics_raw_input() -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -49,7 +50,8 @@ fn estimate_text_heap_bytes(text: &Arc<String>, base_text: &Arc<String>) -> usiz
         }
 }
 
-pub(crate) fn run_open_pipeline_diagnostics(
+#[allow(clippy::too_many_lines)] // diagnostics harness — linear flow
+pub fn run_open_pipeline_diagnostics(
     path: Option<&Path>,
     diagnostics_iterations: usize,
 ) -> io::Result<()> {

@@ -298,7 +298,7 @@ fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
 }
 
 #[must_use]
-pub(crate) fn default_image_uri_scheme(path: Option<&Path>) -> String {
+pub fn default_image_uri_scheme(path: Option<&Path>) -> String {
     let Some(parent) = path.and_then(Path::parent) else {
         return "file://".to_owned();
     };
@@ -427,6 +427,7 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 }
 
 impl eframe::App for RustdownApp {
+    #[allow(clippy::too_many_lines)] // main update loop — inherently long
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
         self.refresh_stats_if_due(ctx);
@@ -659,6 +660,7 @@ impl RustdownApp {
     /// Render the nav panel, side-by-side preview panel, central panel, and
     /// process any pending nav-scroll actions.  Extracted so the debug harness
     /// can reuse the same layout sequence.
+    #[allow(clippy::cast_possible_truncation)] // PANEL_EDGE_PADDING=8.0, fits in i8
     fn show_content_panels(&mut self, ctx: &egui::Context) {
         let panel_frame = egui::Frame::new()
             .fill(ctx.style().visuals.panel_fill)

@@ -15,13 +15,13 @@ pub struct MarkdownCache {
     text_hash: u64,
     text_len: usize,
     text_ptr: usize,
-    pub(crate) blocks: Vec<Block>,
+    pub blocks: Vec<Block>,
     /// Estimated pixel height for each top-level block (same len as `blocks`).
-    pub(crate) heights: Vec<f32>,
+    pub heights: Vec<f32>,
     /// Cumulative Y offsets: `cum_y[i]` = sum of heights[0..i].
-    pub(crate) cum_y: Vec<f32>,
+    pub cum_y: Vec<f32>,
     /// Total estimated height of all blocks.
-    pub(crate) total_height: f32,
+    pub total_height: f32,
     /// The body font size used when heights were estimated.
     height_body_size: f32,
     /// The wrap width used when heights were estimated.
@@ -42,7 +42,7 @@ impl MarkdownCache {
         self.height_wrap_width = 0.0;
     }
 
-    pub(crate) fn ensure_parsed(&mut self, source: &str) {
+    pub fn ensure_parsed(&mut self, source: &str) {
         // Fast pointer+length check: if the source is the same allocation
         // and length, skip hash entirely (common in frame-to-frame rendering).
         let ptr = source.as_ptr() as usize;
@@ -76,12 +76,7 @@ impl MarkdownCache {
         self.total_height = 0.0;
     }
 
-    pub(crate) fn ensure_heights(
-        &mut self,
-        body_size: f32,
-        wrap_width: f32,
-        style: &MarkdownStyle,
-    ) {
+    pub fn ensure_heights(&mut self, body_size: f32, wrap_width: f32, style: &MarkdownStyle) {
         let size_bits = body_size.to_bits();
         let width_bits = wrap_width.to_bits();
         if !self.heights.is_empty()
@@ -210,6 +205,7 @@ impl MarkdownViewer {
 
 /// Estimate pixel height for a top-level block without actually laying it out.
 /// Errs on the side of *over*-estimating so that blocks are never clipped.
+#[allow(clippy::cast_precision_loss)] // UI math — counts are small
 fn estimate_block_height(
     block: &Block,
     body_size: f32,
@@ -267,6 +263,7 @@ fn estimate_block_height(
 
 /// Rough text height estimate using byte-level newline counting.
 /// Avoids `.lines()` iteration for better throughput on large texts.
+#[allow(clippy::cast_precision_loss)] // UI math — counts are small
 fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     if text.is_empty() {
         return font_size;
@@ -317,31 +314,13 @@ fn render_blocks(ui: &mut egui::Ui, blocks: &[Block], style: &MarkdownStyle, ind
     }
 }
 
+#[allow(clippy::cast_precision_loss)] // UI math — indent/count values are small
 fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent: usize) {
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
     match block {
         Block::Heading { level, text } => {
-            let idx = (*level as usize).saturating_sub(1).min(5);
-            let hs = &style.headings[idx];
-            let size = body_size * hs.font_scale;
-
-            ui.add_space(size * 0.3);
-            render_styled_text_ex(ui, text, style, Some(size), Some(hs.color));
-            ui.add_space(size * 0.15);
-
-            if *level <= 2 {
-                let rect = ui.available_rect_before_wrap();
-                let y = rect.min.y;
-                let color = style
-                    .hr_color
-                    .unwrap_or_else(|| ui.visuals().weak_text_color());
-                ui.painter().line_segment(
-                    [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-                    egui::Stroke::new(1.0, color),
-                );
-                ui.add_space(4.0);
-            }
+            render_heading(ui, *level, text, style, body_size);
         }
 
         Block::Paragraph(text) => {
@@ -353,56 +332,11 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
         }
 
         Block::Code { language, code } => {
-            let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
-            let available = ui.available_width();
-            if !language.is_empty() {
-                ui.label(egui::RichText::new(language.as_str()).small().weak());
-            }
-            egui::Frame::NONE
-                .fill(bg)
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::same(6))
-                .show(ui, |ui| {
-                    ui.set_min_width(available - 12.0);
-                    egui::ScrollArea::horizontal().show(ui, |ui| {
-                        let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
-                        ui.label(
-                            egui::RichText::new(code.trim_end())
-                                .font(mono)
-                                .color(ui.visuals().text_color()),
-                        );
-                    });
-                });
-            ui.add_space(body_size * 0.4);
+            render_code_block(ui, language, code, style, body_size);
         }
 
         Block::Quote(inner) => {
-            let bar_color = style
-                .blockquote_bar
-                .unwrap_or_else(|| ui.visuals().weak_text_color());
-
-            let rect_before = ui.available_rect_before_wrap();
-            let bar_x = rect_before.min.x + 4.0;
-
-            let inner_response = ui
-                .allocate_ui_with_layout(
-                    egui::vec2(ui.available_width() - 20.0, 0.0),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.indent("bq", |ui| {
-                            render_blocks(ui, inner, style, indent + 1);
-                        });
-                    },
-                )
-                .response;
-
-            let bar_top = inner_response.rect.min.y;
-            let bar_bottom = inner_response.rect.max.y;
-            ui.painter().line_segment(
-                [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
-                egui::Stroke::new(3.0, bar_color),
-            );
-            ui.add_space(body_size * 0.3);
+            render_blockquote(ui, inner, style, indent, body_size);
         }
 
         Block::UnorderedList(items) => {
@@ -416,17 +350,7 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
         }
 
         Block::ThematicBreak => {
-            ui.add_space(body_size * 0.3);
-            let rect = ui.available_rect_before_wrap();
-            let y = rect.min.y;
-            let color = style
-                .hr_color
-                .unwrap_or_else(|| ui.visuals().weak_text_color());
-            ui.painter().line_segment(
-                [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-                egui::Stroke::new(1.0, color),
-            );
-            ui.add_space(body_size * 0.5);
+            render_hr(ui, style, body_size);
         }
 
         Block::Table {
@@ -451,6 +375,114 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
             ui.add_space(body_size * 0.3);
         }
     }
+}
+
+fn render_heading(
+    ui: &mut egui::Ui,
+    level: u8,
+    text: &StyledText,
+    style: &MarkdownStyle,
+    body_size: f32,
+) {
+    let idx = (level as usize).saturating_sub(1).min(5);
+    let hs = &style.headings[idx];
+    let size = body_size * hs.font_scale;
+
+    ui.add_space(size * 0.3);
+    render_styled_text_ex(ui, text, style, Some(size), Some(hs.color));
+    ui.add_space(size * 0.15);
+
+    if level <= 2 {
+        let rect = ui.available_rect_before_wrap();
+        let y = rect.min.y;
+        let color = style
+            .hr_color
+            .unwrap_or_else(|| ui.visuals().weak_text_color());
+        ui.painter().line_segment(
+            [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+            egui::Stroke::new(1.0, color),
+        );
+        ui.add_space(4.0);
+    }
+}
+
+fn render_code_block(
+    ui: &mut egui::Ui,
+    language: &str,
+    code: &str,
+    style: &MarkdownStyle,
+    body_size: f32,
+) {
+    let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
+    let available = ui.available_width();
+    if !language.is_empty() {
+        ui.label(egui::RichText::new(language).small().weak());
+    }
+    egui::Frame::NONE
+        .fill(bg)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            ui.set_min_width(available - 12.0);
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
+                ui.label(
+                    egui::RichText::new(code.trim_end())
+                        .font(mono)
+                        .color(ui.visuals().text_color()),
+                );
+            });
+        });
+    ui.add_space(body_size * 0.4);
+}
+
+fn render_blockquote(
+    ui: &mut egui::Ui,
+    inner: &[Block],
+    style: &MarkdownStyle,
+    indent: usize,
+    body_size: f32,
+) {
+    let bar_color = style
+        .blockquote_bar
+        .unwrap_or_else(|| ui.visuals().weak_text_color());
+
+    let rect_before = ui.available_rect_before_wrap();
+    let bar_x = rect_before.min.x + 4.0;
+
+    let inner_response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width() - 20.0, 0.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                ui.indent("bq", |ui| {
+                    render_blocks(ui, inner, style, indent + 1);
+                });
+            },
+        )
+        .response;
+
+    let bar_top = inner_response.rect.min.y;
+    let bar_bottom = inner_response.rect.max.y;
+    ui.painter().line_segment(
+        [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
+        egui::Stroke::new(3.0, bar_color),
+    );
+    ui.add_space(body_size * 0.3);
+}
+
+fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
+    ui.add_space(body_size * 0.3);
+    let rect = ui.available_rect_before_wrap();
+    let y = rect.min.y;
+    let color = style
+        .hr_color
+        .unwrap_or_else(|| ui.visuals().weak_text_color());
+    ui.painter().line_segment(
+        [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+        egui::Stroke::new(1.0, color),
+    );
+    ui.add_space(body_size * 0.5);
 }
 
 // ── Inline text rendering ──────────────────────────────────────────
@@ -667,6 +699,7 @@ fn build_layout_job(
 
 // ── List rendering ─────────────────────────────────────────────────
 
+#[allow(clippy::cast_precision_loss)] // UI math — indent values are small
 fn render_unordered_list(
     ui: &mut egui::Ui,
     items: &[ListItem],
@@ -698,6 +731,7 @@ fn render_unordered_list(
     }
 }
 
+#[allow(clippy::cast_precision_loss)] // UI math — indent values are small
 fn render_ordered_list(
     ui: &mut egui::Ui,
     start: u64,
@@ -728,6 +762,7 @@ fn render_ordered_list(
 
 // ── Table rendering ────────────────────────────────────────────────
 
+#[allow(clippy::cast_precision_loss)] // UI math — column count is small
 fn render_table(
     ui: &mut egui::Ui,
     header: &[StyledText],
@@ -787,11 +822,15 @@ fn render_table_cell(
 /// egui has no bold font weight, so we visually distinguish strong text.
 fn strengthen_color(color: egui::Color32) -> egui::Color32 {
     let [red, green, blue, alpha] = color.to_array();
-    let boost = |val: u8| val.saturating_add((255_u16.saturating_sub(u16::from(val)) / 5) as u8);
+    let boost = |val: u8| {
+        // Max boost is (255 - 0) / 5 = 51, so this always fits in u8.
+        let delta = (u16::from(255_u8.saturating_sub(val))) / 5;
+        val.saturating_add(delta.min(255) as u8)
+    };
     egui::Color32::from_rgba_premultiplied(boost(red), boost(green), boost(blue), alpha)
 }
 
-pub(crate) fn simple_hash(s: &str) -> u64 {
+pub fn simple_hash(s: &str) -> u64 {
     // FNV-1a–inspired 64-bit hash, processing 8 bytes at a time for throughput.
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;

@@ -51,7 +51,7 @@ const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 18.0;
 const DEFAULT_SMALL_FONT_SIZE: f32 = 13.0;
 
 /// Load the primary system font and any available fallback fonts.
-pub(crate) fn configure_fonts(ctx: &egui::Context) -> Result<(), String> {
+pub fn configure_fonts(ctx: &egui::Context) -> Result<(), String> {
     let primary_font_data = load_single_font()?;
     let primary_font_name = UI_FONT_NAME.to_owned();
     let mut fonts = egui::FontDefinitions::default();
@@ -80,7 +80,7 @@ pub(crate) fn configure_fonts(ctx: &egui::Context) -> Result<(), String> {
 }
 
 /// Apply the default text sizes and visual tweaks.
-pub(crate) fn configure_style(ctx: &egui::Context) {
+pub fn configure_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
         for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
             if let Some(font_id) = style.text_styles.get_mut(&text_style) {

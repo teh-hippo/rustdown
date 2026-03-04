@@ -12,21 +12,21 @@ use rustdown_md::MarkdownCache;
 
 use crate::disk_io::DiskRevision;
 
-pub(crate) struct Document {
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) image_uri_scheme: String,
-    pub(crate) text: Arc<String>,
-    pub(crate) base_text: Arc<String>,
-    pub(crate) disk_rev: Option<DiskRevision>,
-    pub(crate) stats: DocumentStats,
-    pub(crate) stats_dirty: bool,
-    pub(crate) preview_dirty: bool,
-    pub(crate) dirty: bool,
-    pub(crate) md_cache: CommonMarkCache,
-    pub(crate) preview_cache: MarkdownCache,
-    pub(crate) last_edit_at: Option<Instant>,
-    pub(crate) edit_seq: u64,
-    pub(crate) editor_galley_cache: Option<EditorGalleyCache>,
+pub struct Document {
+    pub path: Option<PathBuf>,
+    pub image_uri_scheme: String,
+    pub text: Arc<String>,
+    pub base_text: Arc<String>,
+    pub disk_rev: Option<DiskRevision>,
+    pub stats: DocumentStats,
+    pub stats_dirty: bool,
+    pub preview_dirty: bool,
+    pub dirty: bool,
+    pub md_cache: CommonMarkCache,
+    pub preview_cache: MarkdownCache,
+    pub last_edit_at: Option<Instant>,
+    pub edit_seq: u64,
+    pub editor_galley_cache: Option<EditorGalleyCache>,
 }
 
 impl Default for Document {
@@ -53,14 +53,14 @@ impl Default for Document {
 
 impl Document {
     #[must_use]
-    pub(crate) fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
+    pub fn debounce_remaining(&self, debounce: Duration) -> Option<Duration> {
         let last = self.last_edit_at?;
         let since = last.elapsed();
         debounce.checked_sub(since)
     }
 
     #[must_use]
-    pub(crate) fn title(&self) -> Cow<'_, str> {
+    pub fn title(&self) -> Cow<'_, str> {
         self.path
             .as_ref()
             .and_then(|path| path.file_name())
@@ -68,26 +68,26 @@ impl Document {
     }
 
     #[must_use]
-    pub(crate) fn path_label(&self) -> Cow<'_, str> {
+    pub fn path_label(&self) -> Cow<'_, str> {
         self.path
             .as_ref()
             .map_or_else(|| Cow::Borrowed("Unsaved"), |path| path.to_string_lossy())
     }
 
     #[must_use]
-    pub(crate) const fn stats(&self) -> DocumentStats {
+    pub const fn stats(&self) -> DocumentStats {
         self.stats
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DocumentStats {
-    pub(crate) lines: usize,
+pub struct DocumentStats {
+    pub lines: usize,
 }
 
 impl DocumentStats {
     #[must_use]
-    pub(crate) fn from_text(text: &str) -> Self {
+    pub fn from_text(text: &str) -> Self {
         let lines = if text.is_empty() {
             1
         } else {
@@ -103,24 +103,24 @@ impl Default for DocumentStats {
     }
 }
 
-pub(crate) fn bytecount_newlines(text: &str) -> usize {
+pub fn bytecount_newlines(text: &str) -> usize {
     memchr::memchr_iter(b'\n', text.as_bytes()).count()
 }
 
 #[derive(Clone)]
-pub(crate) struct EditorGalleyCache {
-    pub(crate) content_seq: u64,
-    pub(crate) content_color_mode: bool,
-    pub(crate) wrap_width_bits: u32,
-    pub(crate) zoom_factor_bits: u32,
-    pub(crate) layout_job: egui::text::LayoutJob,
-    pub(crate) galley: Arc<egui::Galley>,
-    pub(crate) row_byte_offsets: Vec<(f32, u32)>,
+pub struct EditorGalleyCache {
+    pub content_seq: u64,
+    pub content_color_mode: bool,
+    pub wrap_width_bits: u32,
+    pub zoom_factor_bits: u32,
+    pub layout_job: egui::text::LayoutJob,
+    pub galley: Arc<egui::Galley>,
+    pub row_byte_offsets: Vec<(f32, u32)>,
 }
 
-pub(crate) struct TrackedTextBuffer<'a, 'b> {
-    pub(crate) text: &'a mut Arc<String>,
-    pub(crate) seq: &'b Cell<u64>,
+pub struct TrackedTextBuffer<'a, 'b> {
+    pub text: &'a mut Arc<String>,
+    pub seq: &'b Cell<u64>,
 }
 
 impl egui::TextBuffer for TrackedTextBuffer<'_, '_> {

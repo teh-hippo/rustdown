@@ -5,16 +5,16 @@ use std::{borrow::Cow, fs, path::Path};
 use crate::markdown_fence::{FenceState, consume_fence_delimiter};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EndOfLine {
+pub enum EndOfLine {
     Lf,
     CrLf,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FormatOptions {
-    pub(crate) trim_trailing_whitespace: bool,
-    pub(crate) insert_final_newline: bool,
-    pub(crate) end_of_line: Option<EndOfLine>,
+pub struct FormatOptions {
+    pub trim_trailing_whitespace: bool,
+    pub insert_final_newline: bool,
+    pub end_of_line: Option<EndOfLine>,
 }
 
 const DEFAULT_OPTIONS: FormatOptions = FormatOptions {
@@ -24,7 +24,7 @@ const DEFAULT_OPTIONS: FormatOptions = FormatOptions {
 };
 
 #[must_use]
-pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
+pub fn format_markdown(source: &str, options: FormatOptions) -> String {
     let eol = match options.end_of_line {
         Some(EndOfLine::CrLf) => "\r\n",
         #[allow(clippy::match_same_arms)]
@@ -63,7 +63,7 @@ pub(crate) fn format_markdown(source: &str, options: FormatOptions) -> String {
 }
 
 #[must_use]
-pub(crate) fn options_for_path(path: Option<&Path>) -> FormatOptions {
+pub fn options_for_path(path: Option<&Path>) -> FormatOptions {
     let mut opts = DEFAULT_OPTIONS;
     let Some(path) = path else {
         return opts;

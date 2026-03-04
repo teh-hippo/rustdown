@@ -2,7 +2,7 @@
 //! Integration benchmarks and edge-case tests for `rustdown-md`.
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::cast_precision_loss)]
 mod tests {
     use std::time::{Duration, Instant};
 

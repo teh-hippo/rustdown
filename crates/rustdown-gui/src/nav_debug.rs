@@ -26,6 +26,7 @@ fn run_frame(ctx: &egui::Context, app: &mut RustdownApp) {
 ///
 /// Returns `Ok(())` if all assertions pass.  Prints timing and results to
 /// stdout in key=value format for easy agentic parsing.
+#[allow(clippy::too_many_lines)] // diagnostics harness — linear flow
 pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
     let Some(path) = path else {
         return Err(io::Error::new(

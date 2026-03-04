@@ -1,7 +1,7 @@
 use imara_diff::{Algorithm, Diff, InternedInput};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Merge3Outcome {
+pub enum Merge3Outcome {
     Clean(String),
     Conflicted {
         conflict_marked: String,
@@ -16,7 +16,8 @@ struct Edit<'a> {
     replacement: Vec<&'a str>,
 }
 
-pub(crate) fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
+#[allow(clippy::too_many_lines)] // merge logic — linear flow with multiple phases
+pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
     if ours == theirs {
         return Merge3Outcome::Clean(ours.to_owned());
     }

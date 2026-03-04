@@ -80,6 +80,7 @@ pub fn preview_scroll_id() -> egui::Id {
 
 /// Convert `byte_offset` to an estimated preview scroll-y value.
 /// Returns `0.0` when the outline is empty or all headings are at offset 0.
+#[allow(clippy::cast_precision_loss)] // byte offsets are small relative to f32 range
 pub fn preview_byte_to_scroll_y(outline: &[HeadingEntry], byte_offset: usize) -> f32 {
     let max_offset = match outline.last() {
         Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
@@ -90,6 +91,11 @@ pub fn preview_byte_to_scroll_y(outline: &[HeadingEntry], byte_offset: usize) ->
 
 /// Convert a preview scroll-y value to an estimated byte offset.
 /// Returns `0` when the outline is empty.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn preview_scroll_y_to_byte(outline: &[HeadingEntry], scroll_y: f32) -> usize {
     let max_offset = match outline.last() {
         Some(h) if h.byte_offset > 0 => h.byte_offset as f32,
