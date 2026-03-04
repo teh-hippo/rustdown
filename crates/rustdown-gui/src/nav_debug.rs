@@ -7,6 +7,7 @@ use std::{io, path::Path, sync::Arc, time::Instant};
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
+use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme,
@@ -59,6 +60,7 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
         preview_dirty: false,
         dirty: false,
         md_cache,
+        preview_cache: MarkdownCache::default(),
         last_edit_at: None,
         edit_seq: 1,
         editor_galley_cache: None,

@@ -17,8 +17,9 @@ use std::{
 };
 
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_commonmark::CommonMarkCache;
 use notify::{Event, RecursiveMode, Watcher};
+use rustdown_md::{MarkdownStyle, MarkdownViewer};
 
 mod diagnostics;
 mod disk_io;
@@ -534,6 +535,7 @@ impl eframe::App for RustdownApp {
                 {
                     self.doc.editor_galley_cache = None;
                     self.doc.md_cache.clear_scrollable();
+                    self.doc.preview_cache.clear();
                 }
                 ui.separator();
                 if ui.button("¶").on_hover_text("Format document").clicked() {
@@ -732,6 +734,7 @@ impl RustdownApp {
         self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
         self.doc.stats_dirty = false;
         self.doc.md_cache.clear_scrollable();
+        self.doc.preview_cache.clear();
         self.doc.preview_dirty = false;
         self.doc.dirty = !matches!(kind, ReloadKind::Clean);
         if matches!(kind, ReloadKind::Clean | ReloadKind::ConflictResolved) {
@@ -1128,6 +1131,7 @@ impl RustdownApp {
 
         if mode == Mode::Edit {
             self.doc.md_cache.clear_scrollable();
+            self.doc.preview_cache.clear();
             self.doc.preview_dirty = false;
             self.doc.last_edit_at = None;
         }
@@ -1386,18 +1390,22 @@ impl RustdownApp {
         }
 
         if self.doc.preview_dirty {
-            self.doc.md_cache.clear_scrollable();
+            self.doc.preview_cache.clear();
             self.doc.preview_dirty = false;
         }
 
-        CommonMarkViewer::new()
-            .default_implicit_uri_scheme(self.doc.image_uri_scheme.as_str())
-            .show_scrollable(
-                "preview_markdown",
-                ui,
-                &mut self.doc.md_cache,
-                self.doc.text.as_str(),
-            );
+        let style = if self.heading_color_mode {
+            MarkdownStyle::colored(ui.visuals())
+        } else {
+            MarkdownStyle::from_visuals(ui.visuals())
+        };
+
+        MarkdownViewer::new("preview_markdown").show_scrollable(
+            ui,
+            &mut self.doc.preview_cache,
+            &style,
+            self.doc.text.as_str(),
+        );
 
         // Consume any pending nav-scroll target.  show_scrollable owns its
         // ScrollArea so we apply the offset directly to stored state.
@@ -1527,6 +1535,7 @@ impl RustdownApp {
             preview_dirty: false,
             dirty: false,
             md_cache: CommonMarkCache::default(),
+            preview_cache: rustdown_md::MarkdownCache::default(),
             last_edit_at: None,
             edit_seq: 0,
             editor_galley_cache: None,

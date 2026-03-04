@@ -134,8 +134,7 @@ impl MarkdownViewer {
 
                 // Binary search for first visible block.
                 let first = match cache.cum_y.binary_search_by(|y| {
-                    y.partial_cmp(&vis_top)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
                 }) {
                     Ok(i) => i,
                     Err(i) => i.saturating_sub(1),
@@ -308,9 +307,7 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
         }
 
         Block::Code { code, .. } => {
-            let bg = style
-                .code_bg
-                .unwrap_or_else(|| ui.visuals().faint_bg_color);
+            let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
             let available = ui.available_width();
             egui::Frame::NONE
                 .fill(bg)
@@ -452,9 +449,7 @@ impl SpanFormat {
             SpanKind::Code => Self {
                 font_family: egui::FontFamily::Monospace,
                 color: base_color,
-                background: style
-                    .code_bg
-                    .unwrap_or_else(|| ui.visuals().faint_bg_color),
+                background: style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
                 underline: false,
                 strikethrough: false,
                 italics: false,

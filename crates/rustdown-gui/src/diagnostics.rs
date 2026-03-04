@@ -7,6 +7,7 @@ use std::{
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
+use rustdown_md::MarkdownCache;
 
 use crate::disk_io::read_stable_utf8;
 use crate::highlight;
@@ -120,6 +121,7 @@ pub(crate) fn run_open_pipeline_diagnostics(
             preview_dirty: false,
             dirty: false,
             md_cache,
+            preview_cache: MarkdownCache::default(),
             last_edit_at: None,
             edit_seq,
             editor_galley_cache: None,

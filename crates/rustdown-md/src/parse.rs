@@ -96,9 +96,8 @@ impl StyledText {
 
 /// Parse markdown source into blocks.
 pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
-    let opts = Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_HEADING_ATTRIBUTES;
+    let opts =
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_HEADING_ATTRIBUTES;
     let parser = Parser::new_ext(source, opts);
     // Collect into Vec — required for our indexed recursive descent.
     // Pre-allocate based on source size heuristic.
@@ -130,7 +129,9 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>) -> usize {
         Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, blocks),
         Event::Start(Tag::List(start)) => parse_list(events, *start, blocks),
         Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks),
-        Event::Start(Tag::Image { dest_url, title, .. }) => {
+        Event::Start(Tag::Image {
+            dest_url, title, ..
+        }) => {
             blocks.push(Block::Image {
                 url: dest_url.to_string(),
                 alt: title.to_string(),
@@ -546,10 +547,9 @@ mod tests {
         let blocks = parse_markdown("[link](https://example.com)");
         match &blocks[0] {
             Block::Paragraph(st) => {
-                assert!(st
-                    .spans
-                    .iter()
-                    .any(|s| matches!(&s.kind, SpanKind::Link(url) if url == "https://example.com")));
+                assert!(st.spans.iter().any(
+                    |s| matches!(&s.kind, SpanKind::Link(url) if url == "https://example.com")
+                ));
             }
             other => panic!("expected paragraph, got {other:?}"),
         }

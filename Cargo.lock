@@ -2243,6 +2243,7 @@ dependencies = [
  "notify",
  "pulldown-cmark",
  "rfd",
+ "rustdown-md",
 ]
 
 [[package]]

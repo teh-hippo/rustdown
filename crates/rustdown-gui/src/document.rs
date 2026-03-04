@@ -8,6 +8,7 @@ use std::{
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
+use rustdown_md::MarkdownCache;
 
 use crate::disk_io::DiskRevision;
 
@@ -22,6 +23,7 @@ pub(crate) struct Document {
     pub(crate) preview_dirty: bool,
     pub(crate) dirty: bool,
     pub(crate) md_cache: CommonMarkCache,
+    pub(crate) preview_cache: MarkdownCache,
     pub(crate) last_edit_at: Option<Instant>,
     pub(crate) edit_seq: u64,
     pub(crate) editor_galley_cache: Option<EditorGalleyCache>,
@@ -41,6 +43,7 @@ impl Default for Document {
             preview_dirty: false,
             dirty: false,
             md_cache: CommonMarkCache::default(),
+            preview_cache: MarkdownCache::default(),
             last_edit_at: None,
             edit_seq: 0,
             editor_galley_cache: None,
