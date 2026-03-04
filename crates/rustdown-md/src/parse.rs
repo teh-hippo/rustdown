@@ -580,6 +580,183 @@ mod tests {
     }
 
     #[test]
+    fn parse_empty_input() {
+        let blocks = parse_markdown("");
+        assert_eq!(blocks.len(), 0);
+    }
+
+    #[test]
+    fn parse_indented_code_block() {
+        let blocks = parse_markdown("    fn foo() {}\n    bar()\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Code { language, code } => {
+                assert!(language.is_empty());
+                assert!(code.contains("fn foo()"));
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_heading_levels_1_to_6() {
+        let md = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 6);
+        for (i, block) in blocks.iter().enumerate() {
+            match block {
+                Block::Heading { level, .. } => {
+                    assert_eq!(*level, (i as u8) + 1);
+                }
+                other => panic!("expected heading at index {i}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_nested_blockquote() {
+        let blocks = parse_markdown("> outer\n>> inner\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Quote(outer) => {
+                assert!(!outer.is_empty());
+                // The inner blockquote should appear as a nested Quote.
+                assert!(
+                    outer.iter().any(|b| matches!(b, Block::Quote(_))),
+                    "expected a nested blockquote"
+                );
+            }
+            other => panic!("expected quote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_table_alignment() {
+        let md = "| L | C | R |\n|:---|:---:|---:|\n| a | b | c |\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Table { alignments, .. } => {
+                assert_eq!(alignments.len(), 3);
+                assert_eq!(alignments[0], Alignment::Left);
+                assert_eq!(alignments[1], Alignment::Center);
+                assert_eq!(alignments[2], Alignment::Right);
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_header_only_table() {
+        let md = "| A | B |\n|---|---|\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Table { header, rows, .. } => {
+                assert_eq!(header.len(), 2);
+                assert!(rows.is_empty());
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_list_nesting() {
+        let md = "- bullet\n  1. ordered a\n  2. ordered b\n- bullet2\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(
+                    items[0]
+                        .children
+                        .iter()
+                        .any(|b| matches!(b, Block::OrderedList { .. })),
+                    "expected ordered list nested inside unordered list"
+                );
+            }
+            other => panic!("expected unordered list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_links_in_paragraph() {
+        let md = "Visit [a](https://a.com) and [b](https://b.com) today.";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Paragraph(st) => {
+                let link_count = st
+                    .spans
+                    .iter()
+                    .filter(|s| matches!(&s.kind, SpanKind::Link(_)))
+                    .count();
+                assert!(link_count >= 2, "expected at least 2 links, got {link_count}");
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_strikethrough() {
+        let blocks = parse_markdown("This is ~~deleted~~ text");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Paragraph(st) => {
+                assert!(
+                    st.spans.iter().any(|s| s.kind == SpanKind::Strikethrough),
+                    "expected a strikethrough span"
+                );
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_image() {
+        // pulldown_cmark wraps images in paragraphs at the inline level;
+        // verify the parser handles them without crashing and produces a block.
+        let blocks = parse_markdown("![alt text](https://img.png \"title\")");
+        assert_eq!(blocks.len(), 1);
+        // The image is represented as a Paragraph (inline image) or Image block.
+        assert!(
+            matches!(&blocks[0], Block::Paragraph(_) | Block::Image { .. }),
+            "expected paragraph or image block"
+        );
+    }
+
+    #[test]
+    fn parse_crlf_line_endings() {
+        let md = "# Hello\r\n\r\nParagraph\r\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(&blocks[1], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn parse_unicode_headings() {
+        let md = "# 你好世界\n## 🚀 Rocket\n";
+        let blocks = parse_markdown(md);
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 1);
+                assert_eq!(text.text, "你好世界");
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+        match &blocks[1] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 2);
+                assert!(text.text.contains('🚀'));
+            }
+            other => panic!("expected heading, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_large_document_perf() {
         // Build a ~50KB document with various block types.
         let mut doc = String::with_capacity(50_000);

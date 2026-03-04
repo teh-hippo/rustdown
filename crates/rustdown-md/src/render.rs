@@ -783,6 +783,135 @@ mod tests {
     }
 
     #[test]
+    fn estimate_height_paragraph() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Paragraph(StyledText {
+            text: "Hello world".to_owned(),
+            spans: vec![],
+        });
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_code_block() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Code {
+            language: "rust".to_owned(),
+            code: "fn main() {}\n".to_owned(),
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_blockquote() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Quote(vec![Block::Paragraph(StyledText {
+            text: "quoted".to_owned(),
+            spans: vec![],
+        })]);
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_list() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::UnorderedList(vec![ListItem {
+            content: StyledText {
+                text: "item".to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+        }]);
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_table() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Table {
+            header: vec![StyledText {
+                text: "Col".to_owned(),
+                spans: vec![],
+            }],
+            alignments: vec![Alignment::None],
+            rows: vec![vec![StyledText {
+                text: "val".to_owned(),
+                spans: vec![],
+            }]],
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_thematic_break() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::ThematicBreak;
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_image() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Image {
+            url: "https://img.png".to_owned(),
+            alt: "alt".to_owned(),
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn estimate_height_ordered_list() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::OrderedList {
+            start: 1,
+            items: vec![ListItem {
+                content: StyledText {
+                    text: "first".to_owned(),
+                    spans: vec![],
+                },
+                children: vec![],
+            }],
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn cache_clear_resets_all() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# Title\n\nBody text");
+        cache.ensure_heights(14.0, 400.0, &style);
+        assert!(!cache.blocks.is_empty());
+
+        cache.clear();
+        assert!(cache.blocks.is_empty());
+        assert!(cache.heights.is_empty());
+        assert!(cache.cum_y.is_empty());
+        assert!((cache.total_height - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn style_with_heading_scales() {
+        let mut style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let scales = [3.0, 2.5, 2.0, 1.5, 1.2, 1.0];
+        style.with_heading_scales(scales);
+        for (i, &expected) in scales.iter().enumerate() {
+            assert!(
+                (style.headings[i].font_scale - expected).abs() < f32::EPSILON,
+                "heading {i} scale mismatch"
+            );
+        }
+    }
+
+    #[test]
     fn height_estimation_perf() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let mut cache = MarkdownCache::default();
