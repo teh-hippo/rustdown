@@ -4,7 +4,7 @@
 //! Key feature: viewport culling in `show_scrollable` — only blocks
 //! overlapping the visible region are laid out, giving O(visible) cost.
 
-use crate::parse::{Alignment, Block, ListItem, SpanStyle, StyledText, parse_markdown};
+use crate::parse::{Alignment, Block, ListItem, SpanStyle, StyledText, parse_markdown_into};
 use crate::style::MarkdownStyle;
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -60,9 +60,10 @@ impl MarkdownCache {
             return;
         }
 
-        // Content actually changed — re-parse.
+        // Content actually changed — re-parse, reusing the blocks allocation.
         self.text_hash = hash;
-        self.blocks = parse_markdown(source);
+        self.blocks.clear();
+        parse_markdown_into(source, &mut self.blocks);
         self.heights.clear();
         self.cum_y.clear();
         self.total_height = 0.0;

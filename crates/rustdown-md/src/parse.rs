@@ -152,8 +152,17 @@ impl StyledText {
     }
 }
 
-/// Parse markdown source into blocks.
+/// Parse markdown source into blocks (convenience wrapper for tests).
+#[cfg(test)]
 pub fn parse_markdown(source: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    parse_markdown_into(source, &mut blocks);
+    blocks
+}
+
+/// Parse markdown source, appending blocks to an existing `Vec`.
+/// Reuses the existing allocation when possible.
+pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
     let opts = Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_HEADING_ATTRIBUTES
@@ -167,13 +176,12 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
         v.extend(parser);
         v
     };
-    let mut blocks = Vec::with_capacity(events.len() / 4 + 4);
-    let mut fmt_stack = Vec::new();
+    blocks.reserve(events.len() / 4 + 4);
+    let mut fmt_stack = Vec::with_capacity(4);
     let mut i = 0;
     while i < events.len() {
-        i += parse_block(&events[i..], &mut blocks, &mut fmt_stack);
+        i += parse_block(&events[i..], blocks, &mut fmt_stack);
     }
-    blocks
 }
 
 fn parse_block(
