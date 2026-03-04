@@ -363,9 +363,9 @@ impl Mode {
     #[must_use]
     const fn icon(self) -> &'static str {
         match self {
-            Self::Edit => "\u{270E}",       // ✎ lower-right pencil
-            Self::Preview => "\u{25B7}",    // ▷ white right-pointing triangle
-            Self::SideBySide => "\u{2590}", // ▐ right half block
+            Self::Edit => "Ed",
+            Self::Preview => "Pr",
+            Self::SideBySide => "S|S",
         }
     }
 
@@ -533,16 +533,14 @@ impl eframe::App for RustdownApp {
                 }
 
                 ui.separator();
-                let color_icon = if self.heading_color_mode {
-                    "\u{25D0}" // ◐ circle with left half black (active)
+                let color_rt = egui::RichText::new("Aa").font(toolbar_font.clone());
+                let color_rt = if self.heading_color_mode {
+                    color_rt.color(egui::Color32::from_rgb(0xFF, 0xB8, 0x6C))
                 } else {
-                    "\u{25CB}" // ○ white circle (inactive)
+                    color_rt
                 };
                 if ui
-                    .toggle_value(
-                        &mut self.heading_color_mode,
-                        egui::RichText::new(color_icon).font(toolbar_font.clone()),
-                    )
+                    .toggle_value(&mut self.heading_color_mode, color_rt)
                     .on_hover_text("Heading colours")
                     .changed()
                 {
@@ -551,15 +549,17 @@ impl eframe::App for RustdownApp {
                 }
                 ui.separator();
                 if ui
-                    .button(egui::RichText::new("\u{00B6}").font(toolbar_font.clone()))
+                    .button(egui::RichText::new("Fmt").font(toolbar_font.clone()))
                     .on_hover_text("Format document")
                     .clicked()
                 {
                     self.format_document();
                 }
-                let nav_icon = egui::RichText::new("\u{2630}").font(toolbar_font.clone()); // ☰ hamburger
-                ui.toggle_value(&mut self.nav.visible, nav_icon)
-                    .on_hover_text("Navigation");
+                ui.toggle_value(
+                    &mut self.nav.visible,
+                    egui::RichText::new("Nav").font(toolbar_font.clone()),
+                )
+                .on_hover_text("Navigation");
 
                 ui.separator();
 
@@ -1568,9 +1568,11 @@ impl RustdownApp {
             dirty: false,
             preview_cache: rustdown_md::MarkdownCache::default(),
             last_edit_at: None,
-            edit_seq: 0,
+            edit_seq: 1, // Start at 1 so nav refresh triggers (default outline_seq may be 0)
             editor_galley_cache: None,
         };
+        // Force nav outline refresh on next frame.
+        self.nav.invalidate_outline();
     }
 
     fn apply_action(&mut self, action: PendingAction) {
@@ -2333,9 +2335,9 @@ mod tests {
 
     #[test]
     fn mode_icons_and_tooltips() {
-        assert_eq!(Mode::Edit.icon(), "\u{270E}");
-        assert_eq!(Mode::Preview.icon(), "\u{25B7}");
-        assert_eq!(Mode::SideBySide.icon(), "\u{2590}");
+        assert_eq!(Mode::Edit.icon(), "Ed");
+        assert_eq!(Mode::Preview.icon(), "Pr");
+        assert_eq!(Mode::SideBySide.icon(), "S|S");
         assert_eq!(Mode::Edit.tooltip(), "Edit");
         assert_eq!(Mode::Preview.tooltip(), "Preview");
         assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");

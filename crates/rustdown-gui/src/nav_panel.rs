@@ -124,6 +124,11 @@ impl NavState {
         self.expanded.clear();
     }
 
+    /// Force the next `refresh_outline` call to re-extract headings.
+    pub const fn invalidate_outline(&mut self) {
+        self.outline_seq = u64::MAX;
+    }
+
     /// Update `active_index` from a byte position in the document.
     pub fn update_active_from_position(&mut self, byte_position: usize) {
         self.active_index =
