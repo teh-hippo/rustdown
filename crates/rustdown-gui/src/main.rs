@@ -2031,10 +2031,7 @@ mod tests {
         assert_eq!(text.as_ref(), "alpha beta");
         assert_eq!(replaced, 0);
 
-        let mut search = SearchState {
-            query: "alpha".to_owned(),
-            ..Default::default()
-        };
+        let mut search = SearchState::with_query("alpha");
         assert_eq!(search.match_count("alpha beta alpha", 1), 2);
         assert_eq!(search.match_count("alpha beta alpha", 1), 2);
         search.query = "beta".to_owned();
@@ -2374,10 +2371,7 @@ mod tests {
 
     #[test]
     fn search_state_caches_by_query_and_seq() {
-        let mut search = SearchState {
-            query: "a".to_owned(),
-            ..Default::default()
-        };
+        let mut search = SearchState::with_query("a");
         assert_eq!(search.match_count("aaa", 1), 3);
         // Same query and seq should use cache.
         assert_eq!(search.match_count("aaa", 1), 3);

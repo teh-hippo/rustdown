@@ -7,12 +7,21 @@ pub(crate) struct SearchState {
     pub(crate) query: String,
     pub(crate) replacement: String,
     pub(crate) last_replace_count: Option<usize>,
-    pub(crate) match_count_query: String,
-    pub(crate) match_count_seq: u64,
-    pub(crate) match_count: usize,
+    /// Cached match-count state (private — only accessed via `match_count()`).
+    match_count_query: String,
+    match_count_seq: u64,
+    match_count: usize,
 }
 
 impl SearchState {
+    /// Create a `SearchState` pre-populated with the given query.
+    pub(crate) fn with_query(query: &str) -> Self {
+        Self {
+            query: query.to_owned(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn match_count(&mut self, haystack: &str, haystack_seq: u64) -> usize {
         if self.match_count_seq == haystack_seq && self.match_count_query == self.query {
             return self.match_count;

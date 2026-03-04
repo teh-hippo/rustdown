@@ -223,10 +223,7 @@ pub(crate) fn run_open_pipeline_diagnostics(
             std::hint::black_box(search_query),
         ));
     });
-    let mut search_state = SearchState {
-        query: search_query.to_owned(),
-        ..Default::default()
-    };
+    let mut search_state = SearchState::with_query(search_query);
     let search_cached_loop = measure_iterations(diagnostics_iterations, || {
         std::hint::black_box(search_state.match_count(app.doc.text.as_str(), app.doc.edit_seq));
     });
