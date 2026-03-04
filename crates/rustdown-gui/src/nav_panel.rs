@@ -706,4 +706,98 @@ mod tests {
         assert_eq!(preview_byte_to_scroll_y(&outline, 0, 1000.0), 0.0);
         assert_eq!(preview_scroll_y_to_byte(&outline, 0.0, 1000.0), 0);
     }
+
+    #[test]
+    fn stress_test_nav_extracts_all_headings() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let state = make_state(md);
+        assert!(
+            state.outline.len() > 50,
+            "stress test has many headings, got {}",
+            state.outline.len()
+        );
+
+        // All heading levels 1-6 should be present
+        for level in 1..=6 {
+            assert!(
+                state.outline.iter().any(|h| h.level == level),
+                "expected heading level {level} in stress test"
+            );
+        }
+
+        // Byte offsets should be strictly increasing
+        for w in state.outline.windows(2) {
+            assert!(
+                w[1].byte_offset > w[0].byte_offset,
+                "heading offsets should increase: {} then {}",
+                w[0].byte_offset,
+                w[1].byte_offset
+            );
+        }
+    }
+
+    #[test]
+    fn stress_test_nav_expand_collapse() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let mut state = make_state(md);
+
+        // Default depth=4 — should show some but not all headings
+        let all = compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
+        assert!(
+            !all.is_empty(),
+            "should have visible headings at default depth"
+        );
+        assert!(
+            all.len() <= state.outline.len(),
+            "visible should be <= total outline"
+        );
+
+        // Expand first heading — should reveal more
+        state.expanded.insert(all[0]);
+        let expanded =
+            compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
+        assert!(
+            expanded.len() >= all.len(),
+            "expanding first heading should show at least as many entries"
+        );
+
+        // Collapse — should return to original
+        state.expanded.remove(&all[0]);
+        let collapsed =
+            compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
+        assert_eq!(collapsed.len(), all.len());
+    }
+
+    #[test]
+    fn stress_test_nav_scroll_targets_valid() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let state = make_state(md);
+        let total_h = 10_000.0; // reasonable preview height
+
+        for h in &state.outline {
+            let y = preview_byte_to_scroll_y(&state.outline, h.byte_offset, total_h);
+            assert!(
+                y >= 0.0 && y <= total_h,
+                "scroll target for offset {} should be in [0, {}], got {}",
+                h.byte_offset,
+                total_h,
+                y,
+            );
+        }
+    }
+
+    #[test]
+    fn stress_test_heading_labels_non_empty() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let state = make_state(md);
+
+        for (i, h) in state.outline.iter().enumerate() {
+            let label = h.label(md);
+            assert!(
+                !label.is_empty(),
+                "heading {i} at offset {} should have non-empty label",
+                h.byte_offset
+            );
+        }
+    }
 }
