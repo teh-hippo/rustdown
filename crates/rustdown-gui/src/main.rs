@@ -724,6 +724,12 @@ fn configure_ui_style(ctx: &egui::Context) {
                 font_id.size = DEFAULT_BODY_BUTTON_FONT_SIZE;
             }
         }
+        if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
+            // Set large enough to give egui_commonmark's heading scale factors
+            // (which interpolate between Body and Heading sizes) visible
+            // differentiation across all six heading levels.
+            font_id.size = DEFAULT_BODY_BUTTON_FONT_SIZE * 2.0;
+        }
         if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Monospace) {
             font_id.size = DEFAULT_MONOSPACE_FONT_SIZE;
         }
@@ -2782,6 +2788,13 @@ mod tests {
                 .get(&egui::TextStyle::Small)
                 .map(|font| font.size),
             Some(DEFAULT_SMALL_FONT_SIZE)
+        );
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Heading)
+                .map(|font| font.size),
+            Some(DEFAULT_BODY_BUTTON_FONT_SIZE * 2.0)
         );
     }
 
