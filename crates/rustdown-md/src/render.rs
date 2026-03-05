@@ -2985,4 +2985,240 @@ Normal paragraph.
         let (blocks, _) = headless_render(md);
         assert!(matches!(&blocks[0], Block::Table(_)));
     }
+
+    // ── Round 9: comprehensive new tests ──────────────────────────────
+
+    #[test]
+    fn scrollable_render_with_many_images_no_panic() {
+        let mut md = String::new();
+        for i in 0..15 {
+            let _ = writeln!(md, "## Image section {i}\n");
+            let _ = writeln!(md, "![image {i}](https://example.com/img_{i}.png)\n");
+            let _ = writeln!(md, "Some text after image {i}.\n");
+        }
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("many_images");
+
+        // Initial render at top
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, &md, None);
+            });
+        });
+        let total = cache.total_height;
+        assert!(
+            total > 0.0,
+            "document with images should have positive height"
+        );
+
+        // Scroll through at several positions
+        let step = total / 10.0;
+        for i in 0..12 {
+            let y = step * i as f32;
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, &md, Some(y));
+                });
+            });
+        }
+
+        let img_count = cache
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Image { .. }))
+            .count();
+        assert!(
+            img_count >= 10,
+            "should parse at least 10 images, got {img_count}"
+        );
+    }
+
+    #[test]
+    fn table_with_horizontal_scroll_no_panic() {
+        let mut header = String::from("|");
+        let mut separator = String::from("|");
+        let mut row = String::from("|");
+        for i in 0..14 {
+            let _ = write!(header, " Col{i:02} |");
+            separator.push_str("--------|");
+            let _ = write!(row, " val{i:02} |");
+        }
+        let md = format!("{header}\n{separator}\n{row}\n{row}\n{row}\n");
+
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("wide_table");
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, &md, None);
+            });
+        });
+
+        match &cache.blocks[0] {
+            Block::Table(table) => {
+                assert_eq!(table.header.len(), 14, "should have 14 columns");
+                assert_eq!(table.rows.len(), 3, "should have 3 rows");
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn smart_punctuation_converts_quotes() {
+        let md = r#"He said "hello" and she said 'world'."#;
+        let blocks = crate::parse::parse_markdown(md);
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                // ENABLE_SMART_PUNCTUATION should convert straight quotes to curly.
+                assert!(
+                    text.text.contains('\u{201c}') || text.text.contains('\u{201d}'),
+                    "expected smart double quotes (\u{201c}\u{201d}) in: {:?}",
+                    text.text
+                );
+                assert!(
+                    text.text.contains('\u{2018}') || text.text.contains('\u{2019}'),
+                    "expected smart single quotes (\u{2018}\u{2019}) in: {:?}",
+                    text.text
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn autolink_angle_brackets_parsed_as_link() {
+        let md = "Visit <https://example.com> for info.";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                let has_link = text.spans.iter().any(
+                    |s| matches!(&s.style.link, Some(url) if url.as_ref() == "https://example.com"),
+                );
+                assert!(
+                    has_link,
+                    "angle-bracket autolink should produce a link span: spans={:?}",
+                    text.spans
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn height_estimation_narrow_viewport() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        let md = "# Title\n\nA paragraph with some text that should wrap at narrow widths.\n\n\
+                  - Item one\n- Item two\n- Item three\n\n\
+                  ```\ncode block\n```\n";
+        cache.ensure_parsed(md);
+        cache.ensure_heights(14.0, 200.0, &style);
+
+        assert!(
+            cache.total_height > 0.0,
+            "total height at 200px should be positive"
+        );
+        // Each block should have a non-zero height
+        for (i, h) in cache.heights.iter().enumerate() {
+            assert!(
+                *h > 0.0,
+                "block {i} height should be positive at 200px width"
+            );
+        }
+        // Narrow wrapping should produce taller totals than wide
+        let narrow_total = cache.total_height;
+        cache.heights.clear();
+        cache.ensure_heights(14.0, 2000.0, &style);
+        assert!(
+            narrow_total >= cache.total_height,
+            "narrow viewport ({narrow_total}) should be at least as tall as wide ({})",
+            cache.total_height
+        );
+    }
+
+    #[test]
+    fn height_estimation_wide_viewport() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        let md = "# Title\n\nShort paragraph.\n\n| A | B | C |\n|---|---|---|\n| x | y | z |\n";
+        cache.ensure_parsed(md);
+        cache.ensure_heights(14.0, 2000.0, &style);
+
+        assert!(
+            cache.total_height > 0.0,
+            "total height at 2000px should be positive"
+        );
+        for (i, h) in cache.heights.iter().enumerate() {
+            assert!(
+                *h > 0.0,
+                "block {i} height should be positive at 2000px width"
+            );
+        }
+        // At 2000px, single-line text should not wrap excessively
+        // so total height should stay reasonable (under 500px for this short doc)
+        assert!(
+            cache.total_height < 500.0,
+            "short doc at wide viewport should not be excessively tall: {}",
+            cache.total_height
+        );
+    }
+
+    #[test]
+    fn stress_test_multiple_viewports() {
+        let md = include_str!("../../../test-assets/stress-test.md");
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let widths: &[f32] = &[320.0, 768.0, 1024.0, 1920.0];
+
+        for &width in widths {
+            let ctx = headless_ctx();
+            let mut cache = MarkdownCache::default();
+            let viewer = MarkdownViewer::new("multi_vp");
+
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 768.0),
+                )),
+                ..Default::default()
+            };
+
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, md, None);
+                });
+            });
+
+            assert!(
+                !cache.blocks.is_empty(),
+                "blocks should be parsed at {width}px"
+            );
+            assert!(
+                cache.total_height > 0.0,
+                "total height should be positive at {width}px, got {}",
+                cache.total_height
+            );
+
+            // Scroll to middle and end to verify no panics
+            let mid = cache.total_height / 2.0;
+            let end = cache.total_height;
+            for scroll_y in [mid, end] {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 768.0),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        viewer.show_scrollable(ui, &mut cache, &style, md, Some(scroll_y));
+                    });
+                });
+            }
+        }
+    }
 }
