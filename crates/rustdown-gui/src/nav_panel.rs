@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -29,8 +28,9 @@ pub struct NavState {
     pub max_depth: u8,
     /// Whether heading colour mode is active.
     pub heading_color_mode: bool,
-    /// Set of outline indices whose children are expanded.
-    expanded: HashSet<usize>,
+    /// Bitset of outline indices whose children are expanded (`Vec<bool>` is
+    /// faster than `HashSet` for small sets typical of document outlines).
+    expanded: Vec<bool>,
     /// The heading index the user is currently scrolled to.
     active_index: Option<usize>,
     /// Pending scroll request for the host to execute.
@@ -58,7 +58,7 @@ impl Default for NavState {
             outline_seq: u64::MAX,
             max_depth: 4,
             heading_color_mode: false,
-            expanded: HashSet::new(),
+            expanded: Vec::new(),
             active_index: None,
             pending_scroll: None,
             pending_editor_scroll_y: None,
@@ -212,6 +212,7 @@ impl NavState {
         self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
         self.expanded.clear();
+        self.expanded.resize(self.outline.len(), false);
         let mut h1_indices = self
             .outline
             .iter()
@@ -221,7 +222,7 @@ impl NavState {
         if let Some(sole_h1) = h1_indices.next()
             && h1_indices.next().is_none()
         {
-            self.expanded.insert(sole_h1);
+            self.expanded[sole_h1] = true;
         }
     }
 
@@ -247,11 +248,13 @@ impl NavState {
     }
 
     /// Cheap hash of the expanded set for cache invalidation.
-    /// Uses XOR so the result is independent of `HashSet` iteration order.
     fn expanded_hash(&self) -> u64 {
+        // Hash the Vec<bool> as a bitwise fingerprint.
         let mut h: u64 = self.expanded.len() as u64;
-        for &idx in &self.expanded {
-            h ^= (idx as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+        for (idx, &val) in self.expanded.iter().enumerate() {
+            if val {
+                h ^= (idx as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+            }
         }
         h
     }
@@ -336,12 +339,10 @@ impl NavState {
                 );
                 if let Some(action) = result {
                     self.pending_scroll = Some(NavScrollTarget::ByteOffset(action.byte_offset));
-                    if let Some(toggle_idx) = action.toggle_idx {
-                        if self.expanded.contains(&toggle_idx) {
-                            self.expanded.remove(&toggle_idx);
-                        } else {
-                            self.expanded.insert(toggle_idx);
-                        }
+                    if let Some(toggle_idx) = action.toggle_idx
+                        && toggle_idx < self.expanded.len()
+                    {
+                        self.expanded[toggle_idx] = !self.expanded[toggle_idx];
                     }
                 }
             });
@@ -389,7 +390,7 @@ struct RenderContext<'a> {
     outline: &'a [HeadingEntry],
     visible: &'a [(usize, bool)],
     min_level: u8,
-    expanded: &'a HashSet<usize>,
+    expanded: &'a [bool],
     active_index: Option<usize>,
     source: &'a str,
     heading_color_mode: bool,
@@ -401,7 +402,7 @@ struct RenderContext<'a> {
 /// single backward pass (O(n) total instead of O(n²) per render call).
 fn compute_visible_headings(
     outline: &[HeadingEntry],
-    expanded: &HashSet<usize>,
+    expanded: &[bool],
     max_depth: u8,
     min_level: u8,
 ) -> Vec<(usize, bool)> {
@@ -445,7 +446,7 @@ fn compute_visible_headings(
         } else {
             parent_stack
                 .last()
-                .is_some_and(|&p| is_visible[p] && expanded.contains(&p))
+                .is_some_and(|&p| is_visible[p] && expanded.get(p).copied().unwrap_or(false))
         };
 
         if show {
@@ -462,7 +463,7 @@ fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickActi
 
     for &(gi, has_children) in cx.visible {
         let h = &cx.outline[gi];
-        let is_expanded = cx.expanded.contains(&gi);
+        let is_expanded = cx.expanded.get(gi).copied().unwrap_or(false);
 
         let style = RowStyle {
             indent: f32::from(h.level.saturating_sub(cx.min_level)) * NAV_INDENT_PX,
@@ -558,10 +559,10 @@ mod tests {
     #[test]
     fn refresh_outline_resets_expanded() {
         let mut state = make_state("# A\n## B\n");
-        state.expanded.insert(1);
+        state.expanded[1] = true;
         let s = Arc::new("# A\n## B\n### C\n".to_owned());
         state.refresh_outline(&s, 2);
-        assert_eq!(state.expanded, HashSet::from([0]));
+        assert_eq!(state.expanded, vec![true, false, false]);
     }
 
     #[test]
@@ -569,7 +570,7 @@ mod tests {
         let mut state = NavState::default();
         let s = Arc::new("# A\n## B\n".to_owned());
         state.refresh_outline(&s, 1);
-        assert_eq!(state.expanded, HashSet::from([0]));
+        assert_eq!(state.expanded, vec![true, false]);
     }
 
     #[test]
@@ -577,7 +578,7 @@ mod tests {
         let mut state = NavState::default();
         let s = Arc::new("# A\n## B\n# C\n".to_owned());
         state.refresh_outline(&s, 1);
-        assert!(state.expanded.is_empty());
+        assert!(!state.expanded.iter().any(|v| *v));
     }
 
     #[test]
@@ -585,7 +586,7 @@ mod tests {
         let mut state = NavState::default();
         let s = Arc::new("## A\n## B\n".to_owned());
         state.refresh_outline(&s, 1);
-        assert!(state.expanded.is_empty());
+        assert!(!state.expanded.iter().any(|v| *v));
     }
 
     #[test]
@@ -695,7 +696,7 @@ mod tests {
     fn compute_visible_only_top_level_when_collapsed() {
         let md = "# A\n## B\n### C\n# D\n## E\n";
         let outline = nav_outline::extract_headings(md);
-        let expanded = HashSet::new();
+        let expanded = vec![false; outline.len()];
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         // Only H1 headings visible when nothing is expanded.
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
@@ -707,14 +708,14 @@ mod tests {
         let md = "# A\n## B\n### C\n# D\n";
         let outline = nav_outline::extract_headings(md);
         // Expand A (index 0) — should reveal B but not C.
-        let mut expanded = HashSet::new();
-        expanded.insert(0);
+        let mut expanded = vec![false; outline.len()];
+        expanded[0] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 2, 1]); // A, B, D
 
         // Now also expand B — should reveal C.
-        expanded.insert(1);
+        expanded[1] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 2, 3, 1]); // A, B, C, D
@@ -724,7 +725,12 @@ mod tests {
     fn has_children_flag_detects_children() {
         let md = "# A\n## B\n# C\n";
         let outline = nav_outline::extract_headings(md);
-        let expanded = HashSet::from([0, 2]);
+        let expanded = {
+            let mut v = vec![false; 3];
+            v[0] = true;
+            v[2] = true;
+            v
+        };
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         // A(0) has child B → true, B(1) has no children → false, C(2) has no children → false
         let children: Vec<_> = visible.iter().map(|&(_, hc)| hc).collect();
@@ -735,12 +741,16 @@ mod tests {
     fn has_children_flag_respects_max_depth() {
         let md = "# A\n### C\n";
         let outline = nav_outline::extract_headings(md);
-        let expanded = HashSet::from([0]);
+        let expanded = {
+            let mut v = vec![false; 1];
+            v[0] = true;
+            v
+        };
         // max_depth=4: C is within depth → A has children
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert!(visible[0].1); // A has children
         // max_depth=1: C exceeds depth → A has no visible children
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 1, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 1, 1);
         assert!(!visible[0].1); // A has no children at depth 1
     }
 
@@ -749,20 +759,20 @@ mod tests {
         // 4 levels deep: expand all ancestors to reveal the deepest.
         let md = "# A\n## B\n### C\n#### D\n";
         let outline = nav_outline::extract_headings(md);
-        let mut expanded = HashSet::new();
+        let mut expanded = vec![false; outline.len()];
         // Nothing expanded: only H1 visible.
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0]);
         // Expand A: B visible.
-        expanded.insert(0);
+        expanded[0] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0, 1]);
         // Expand B: C visible.
-        expanded.insert(1);
+        expanded[1] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0, 1, 2]);
         // Expand C: D visible.
-        expanded.insert(2);
+        expanded[2] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0, 1, 2, 3]);
     }
@@ -772,9 +782,9 @@ mod tests {
         // H1 followed directly by H3 (skipping H2).
         let md = "# A\n### C\n## B\n";
         let outline = nav_outline::extract_headings(md);
-        let mut expanded = HashSet::new();
+        let mut expanded = vec![false; outline.len()];
         // Expand A: both C and B are direct children (C at level 3, B at level 2).
-        expanded.insert(0);
+        expanded[0] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 3, 2]);
@@ -784,14 +794,14 @@ mod tests {
     fn compute_visible_collapse_parent_hides_grandchildren() {
         let md = "# A\n## B\n### C\n";
         let outline = nav_outline::extract_headings(md);
-        let mut expanded = HashSet::new();
-        expanded.insert(0);
-        expanded.insert(1);
+        let mut expanded = vec![false; outline.len()];
+        expanded[0] = true;
+        expanded[1] = true;
         // All visible.
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0, 1, 2]);
         // Collapse A: B and C should be hidden even though B is still "expanded".
-        expanded.remove(&0);
+        expanded[0] = false;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert_eq!(indices(&visible), vec![0]);
     }
@@ -799,7 +809,7 @@ mod tests {
     #[test]
     fn compute_visible_empty_outline() {
         let outline: Vec<HeadingEntry> = Vec::new();
-        let expanded = HashSet::new();
+        let expanded = vec![false; outline.len()];
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         assert!(visible.is_empty());
     }
@@ -809,7 +819,7 @@ mod tests {
         // All headings at the same level: all visible, none expandable.
         let md = "## A\n## B\n## C\n";
         let outline = nav_outline::extract_headings(md);
-        let expanded = HashSet::new();
+        let expanded = vec![false; outline.len()];
         let visible = compute_visible_headings(&outline, &expanded, 4, 2);
         assert_eq!(indices(&visible), vec![0, 1, 2]);
     }
@@ -818,10 +828,10 @@ mod tests {
     fn compute_visible_max_depth_filters() {
         let md = "# A\n## B\n### C\n#### D\n";
         let outline = nav_outline::extract_headings(md);
-        let mut expanded = HashSet::new();
-        expanded.insert(0);
-        expanded.insert(1);
-        expanded.insert(2);
+        let mut expanded = vec![false; outline.len()];
+        expanded[0] = true;
+        expanded[1] = true;
+        expanded[2] = true;
         // max_depth=2 hides C and D.
         let visible = compute_visible_headings(&outline, &expanded, 2, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
@@ -904,7 +914,7 @@ mod tests {
         let md = include_str!("../../../test-assets/stress-test.md");
         let mut state = make_state(md);
         // Normalize to fully-collapsed baseline for this expand/collapse test.
-        state.expanded.clear();
+        state.expanded.fill(false);
 
         // Default depth=4 — should show some but not all headings
         let all = compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
@@ -918,7 +928,7 @@ mod tests {
         );
 
         // Expand first heading — should reveal more
-        state.expanded.insert(all[0].0);
+        state.expanded[all[0].0] = true;
         let expanded =
             compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
         assert!(
@@ -927,7 +937,7 @@ mod tests {
         );
 
         // Collapse — should return to original
-        state.expanded.remove(&all[0].0);
+        state.expanded[all[0].0] = false;
         let collapsed =
             compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
         assert_eq!(collapsed.len(), all.len());
@@ -972,7 +982,7 @@ mod tests {
     fn compute_visible_single_heading() {
         let md = "# Only\n";
         let outline = nav_outline::extract_headings(md);
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 4, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 4, 1);
         assert_eq!(visible.len(), 1);
         assert!(!visible[0].1); // no children
     }
@@ -981,7 +991,7 @@ mod tests {
     fn compute_visible_max_depth_1_hides_all_subheadings() {
         let md = "# A\n## B\n### C\n# D\n## E\n";
         let outline = nav_outline::extract_headings(md);
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 1, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 1, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 1]);
         // At depth 1, H1s should not report having children.
@@ -993,13 +1003,27 @@ mod tests {
     fn expanded_hash_is_order_independent() {
         // Verify the hash produces the same result regardless of insertion order.
         let state1 = NavState {
-            expanded: HashSet::from([1, 5, 10, 42]),
+            expanded: {
+                let mut v = vec![false; 43];
+                v[1] = true;
+                v[5] = true;
+                v[10] = true;
+                v[42] = true;
+                v
+            },
             ..NavState::default()
         };
         let h1 = state1.expanded_hash();
 
         let state2 = NavState {
-            expanded: HashSet::from([42, 10, 5, 1]),
+            expanded: {
+                let mut v = vec![false; 43];
+                v[42] = true;
+                v[10] = true;
+                v[5] = true;
+                v[1] = true;
+                v
+            },
             ..NavState::default()
         };
         let h2 = state2.expanded_hash();
@@ -1010,13 +1034,25 @@ mod tests {
     #[test]
     fn expanded_hash_differs_for_different_sets() {
         let state1 = NavState {
-            expanded: HashSet::from([1, 2, 3]),
+            expanded: {
+                let mut v = vec![false; 4];
+                v[1] = true;
+                v[2] = true;
+                v[3] = true;
+                v
+            },
             ..NavState::default()
         };
         let h1 = state1.expanded_hash();
 
         let state2 = NavState {
-            expanded: HashSet::from([4, 5, 6]),
+            expanded: {
+                let mut v = vec![false; 7];
+                v[4] = true;
+                v[5] = true;
+                v[6] = true;
+                v
+            },
             ..NavState::default()
         };
         let h2 = state2.expanded_hash();
@@ -1048,7 +1084,7 @@ mod tests {
         let md = "##### H5\n###### H6\n";
         let outline = nav_outline::extract_headings(md);
         // max_depth=4 excludes H5 and H6.
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 4, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 4, 1);
         assert!(visible.is_empty());
     }
 
@@ -1197,7 +1233,15 @@ mod tests {
     fn compute_visible_max_depth_6_shows_everything_when_expanded() {
         let md = "# A\n## B\n### C\n#### D\n##### E\n###### F\n";
         let outline = nav_outline::extract_headings(md);
-        let expanded = HashSet::from([0, 1, 2, 3, 4]);
+        let expanded = {
+            let mut v = vec![false; 5];
+            v[0] = true;
+            v[1] = true;
+            v[2] = true;
+            v[3] = true;
+            v[4] = true;
+            v
+        };
         let visible = compute_visible_headings(&outline, &expanded, 6, 1);
         assert_eq!(indices(&visible), vec![0, 1, 2, 3, 4, 5]);
     }
@@ -1207,10 +1251,19 @@ mod tests {
         let md = "# A\n###### deep\n# B\n###### deeper\n";
         let outline = nav_outline::extract_headings(md);
         // Collapsed: only H1s visible.
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 6, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 6, 1);
         assert_eq!(indices(&visible), vec![0, 2]);
         // Expand first H1: deep (H6) becomes visible.
-        let visible = compute_visible_headings(&outline, &HashSet::from([0]), 6, 1);
+        let visible = compute_visible_headings(
+            &outline,
+            &{
+                let mut v = vec![false; 1];
+                v[0] = true;
+                v
+            },
+            6,
+            1,
+        );
         assert_eq!(indices(&visible), vec![0, 1, 2]);
     }
 
@@ -1218,7 +1271,7 @@ mod tests {
     fn compute_visible_all_h1_no_children() {
         let md = "# A\n# B\n# C\n# D\n";
         let outline = nav_outline::extract_headings(md);
-        let visible = compute_visible_headings(&outline, &HashSet::new(), 6, 1);
+        let visible = compute_visible_headings(&outline, &Vec::new(), 6, 1);
         assert_eq!(visible.len(), 4);
         // No heading should have children (all at same level).
         for &(_, has_children) in &visible {

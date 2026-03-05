@@ -30,6 +30,8 @@ pub struct MarkdownCache {
     height_wrap_width: f32,
     /// Last rendered scroll-y offset (set by `show_scrollable`).
     pub last_scroll_y: f32,
+    /// Block indices of non-empty headings, cached for O(1) `heading_y` lookup.
+    heading_block_indices: Vec<usize>,
 }
 
 impl MarkdownCache {
@@ -45,6 +47,7 @@ impl MarkdownCache {
         self.height_body_size = 0.0;
         self.height_wrap_width = 0.0;
         self.last_scroll_y = 0.0;
+        self.heading_block_indices.clear();
     }
 
     pub fn ensure_parsed(&mut self, source: &str) {
@@ -72,6 +75,16 @@ impl MarkdownCache {
         self.heights.clear();
         self.cum_y.clear();
         self.total_height = 0.0;
+
+        // Rebuild heading index for fast heading_y lookup.
+        self.heading_block_indices.clear();
+        for (idx, block) in self.blocks.iter().enumerate() {
+            if let Block::Heading { text, .. } = block
+                && !text.text.is_empty()
+            {
+                self.heading_block_indices.push(idx);
+            }
+        }
     }
 
     pub fn ensure_heights(&mut self, body_size: f32, wrap_width: f32, style: &MarkdownStyle) {
@@ -114,21 +127,12 @@ impl MarkdownCache {
     /// (0-based).  Empty headings (no visible text) are skipped so the
     /// ordinal aligns with `nav_outline::extract_headings` which also
     /// excludes them.
+    ///
+    /// Uses the pre-cached `heading_block_indices` for O(1) lookup.
     #[must_use]
     pub fn heading_y(&self, ordinal: usize) -> Option<f32> {
-        let mut seen = 0usize;
-        for (idx, block) in self.blocks.iter().enumerate() {
-            if let Block::Heading { text, .. } = block {
-                if text.text.is_empty() {
-                    continue;
-                }
-                if seen == ordinal {
-                    return self.cum_y.get(idx).copied();
-                }
-                seen += 1;
-            }
-        }
-        None
+        let block_idx = *self.heading_block_indices.get(ordinal)?;
+        self.cum_y.get(block_idx).copied()
     }
 }
 
