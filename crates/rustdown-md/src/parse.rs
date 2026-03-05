@@ -82,6 +82,7 @@ const FLAG_STRIKETHROUGH: u8 = 4;
 const FLAG_CODE: u8 = 8;
 
 impl SpanStyle {
+    #[must_use]
     pub const fn plain() -> Self {
         Self {
             flags: 0,
@@ -89,6 +90,7 @@ impl SpanStyle {
         }
     }
 
+    #[must_use]
     pub const fn strong(&self) -> bool {
         self.flags & FLAG_STRONG != 0
     }
@@ -97,6 +99,7 @@ impl SpanStyle {
         self.flags |= FLAG_STRONG;
     }
 
+    #[must_use]
     pub const fn emphasis(&self) -> bool {
         self.flags & FLAG_EMPHASIS != 0
     }
@@ -105,6 +108,7 @@ impl SpanStyle {
         self.flags |= FLAG_EMPHASIS;
     }
 
+    #[must_use]
     pub const fn strikethrough(&self) -> bool {
         self.flags & FLAG_STRIKETHROUGH != 0
     }
@@ -113,6 +117,7 @@ impl SpanStyle {
         self.flags |= FLAG_STRIKETHROUGH;
     }
 
+    #[must_use]
     pub const fn code(&self) -> bool {
         self.flags & FLAG_CODE != 0
     }
@@ -186,6 +191,37 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
     }
 }
 
+/// Collect alt text from inline events following a `Start(Image)`.
+///
+/// Scans events starting at `offset`, consuming `Text`, `Code`, and break
+/// events until `End(Image)` is found.  Returns `(alt_text, events_consumed)`.
+fn collect_image_alt(events: &[Event<'_>], offset: usize) -> (String, usize) {
+    let mut alt = String::new();
+    let mut i = offset;
+    while i < events.len() {
+        match &events[i] {
+            Event::End(TagEnd::Image) => {
+                i += 1;
+                break;
+            }
+            Event::Text(t) => {
+                alt.push_str(t);
+                i += 1;
+            }
+            Event::Code(c) => {
+                alt.push_str(c);
+                i += 1;
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                alt.push(' ');
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    (alt, i)
+}
+
 fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
     match &events[0] {
         Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt),
@@ -201,42 +237,20 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::List(start)) => parse_list(events, *start, blocks, fmt),
         Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks, fmt),
         Event::Start(Tag::Image { dest_url, .. }) => {
-            // Collect alt text from inline events between Start(Image) and End(Image).
-            // In pulldown-cmark the `title` field is the *tooltip* title, not the alt text;
-            // the alt text is emitted as child Text/Code events.
-            let mut alt = String::new();
-            let mut consumed = 1;
-            while consumed < events.len() {
-                match &events[consumed] {
-                    Event::End(TagEnd::Image) => {
-                        consumed += 1;
-                        break;
-                    }
-                    Event::Text(t) => {
-                        alt.push_str(t);
-                        consumed += 1;
-                    }
-                    Event::Code(c) => {
-                        alt.push_str(c);
-                        consumed += 1;
-                    }
-                    Event::SoftBreak | Event::HardBreak => {
-                        alt.push(' ');
-                        consumed += 1;
-                    }
-                    _ => consumed += 1,
-                }
-            }
+            let (alt, end) = collect_image_alt(events, 1);
             blocks.push(Block::Image {
                 url: dest_url.to_string(),
                 alt,
             });
-            consumed
+            end
         }
         Event::Rule => {
             blocks.push(Block::ThematicBreak);
             1
         }
+        // Skip events not handled at block level (e.g. stray End tags,
+        // FootnoteDefinition, metadata blocks).  Consuming 1 event advances
+        // the cursor past the unknown token.
         _ => 1,
     }
 }
@@ -310,14 +324,13 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
     if events.len() < 4 {
         return None;
     }
-    let (dest_url, _title) = match &events[1] {
-        Event::Start(Tag::Image {
-            dest_url, title, ..
-        }) => (dest_url.to_string(), title.to_string()),
+    let dest_url = match &events[1] {
+        Event::Start(Tag::Image { dest_url, .. }) => dest_url.to_string(),
         _ => return None,
     };
 
-    // Collect alt text from inline events between Start(Image) and End(Image).
+    // Use shared alt-text collector, but reject if any unexpected events appear
+    // (which would mean this isn't a standalone image paragraph).
     let mut alt = String::new();
     let mut i = 2;
     while i < events.len() {
@@ -593,6 +606,8 @@ impl InlineState {
 
     fn pop(&mut self, flag: &InlineFlag) {
         if let Some(pos) = self.stack.iter().rposition(|k| k == flag) {
+            // swap_remove is O(1); order doesn't matter because the cache is
+            // rebuilt from the full remaining set (bitwise OR of all flags).
             self.stack.swap_remove(pos);
             self.rebuild_cache();
         }
@@ -604,6 +619,7 @@ impl InlineState {
             .iter()
             .rposition(|k| matches!(k, InlineFlag::Link(_)))
         {
+            // See pop() above — order is irrelevant for flag accumulation.
             self.stack.swap_remove(pos);
             self.rebuild_cache();
         }

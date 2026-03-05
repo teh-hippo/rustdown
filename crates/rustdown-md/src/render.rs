@@ -2208,8 +2208,7 @@ Normal paragraph.
             })
             .collect();
 
-        let (widths, _) =
-            compute_table_col_widths(&hdr, &row_data, usable, avg_char_w, body_size);
+        let (widths, _) = compute_table_col_widths(&hdr, &row_data, usable, avg_char_w, body_size);
         widths
     }
 
