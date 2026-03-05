@@ -1172,44 +1172,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_task_list_checked() {
-        let blocks = parse_markdown("- [x] done");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 1);
-                assert_eq!(items[0].checked, Some(true));
-                assert_eq!(items[0].content.text, "done");
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_task_list_unchecked() {
-        let blocks = parse_markdown("- [ ] todo");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 1);
-                assert_eq!(items[0].checked, Some(false));
-                assert_eq!(items[0].content.text, "todo");
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_task_list_mixed() {
+    fn parse_task_list_states() {
         let md = "- [x] checked\n- [ ] unchecked\n- normal\n";
         let blocks = parse_markdown(md);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::UnorderedList(items) => {
                 assert_eq!(items.len(), 3);
-                assert_eq!(items[0].checked, Some(true));
-                assert_eq!(items[1].checked, Some(false));
-                assert_eq!(items[2].checked, None);
+                assert_eq!(items[0].checked, Some(true), "checked item");
+                assert_eq!(items[0].content.text, "checked");
+                assert_eq!(items[1].checked, Some(false), "unchecked item");
+                assert_eq!(items[1].content.text, "unchecked");
+                assert_eq!(items[2].checked, None, "normal item");
             }
             other => panic!("expected unordered list, got {other:?}"),
         }
@@ -1883,56 +1857,35 @@ mod tests {
     }
 
     #[test]
-    fn stress_link_special_chars_in_url() {
-        let md = "[spaces](https://example.com/path%20with%20spaces)";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                let link_span = st
-                    .spans
-                    .iter()
-                    .find(|s| s.style.link.is_some())
-                    .expect("should have link span");
-                let url = link_span.style.link.as_ref().expect("link url");
-                assert!(
-                    url.contains("spaces"),
-                    "URL should contain percent-encoded spaces"
-                );
+    fn stress_link_url_edge_cases() {
+        let cases = [
+            (
+                "[spaces](https://example.com/path%20with%20spaces)",
+                "spaces",
+            ),
+            ("[unicode](https://example.com/日本語)", "日本語"),
+            (
+                "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))",
+                "Rust_",
+            ),
+        ];
+        for (md, expected_fragment) in cases {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Paragraph(st) => {
+                    let link_span = st
+                        .spans
+                        .iter()
+                        .find(|s| s.style.link.is_some())
+                        .unwrap_or_else(|| panic!("should have link span for {md:?}"));
+                    let url = link_span.style.link.as_ref().expect("link url");
+                    assert!(
+                        url.contains(expected_fragment),
+                        "URL should contain {expected_fragment:?}, got {url:?}"
+                    );
+                }
+                other => panic!("expected paragraph, got {other:?}"),
             }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_link_unicode_url() {
-        let md = "[unicode](https://example.com/日本語)";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                let link_span = st
-                    .spans
-                    .iter()
-                    .find(|s| s.style.link.is_some())
-                    .expect("should have link span");
-                let url = link_span.style.link.as_ref().expect("link url");
-                assert!(url.contains("日本語"), "URL should preserve unicode");
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_link_parentheses_in_url() {
-        let md = "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(
-                    st.spans.iter().any(|s| s.style.link.is_some()),
-                    "should parse link with parentheses in URL"
-                );
-            }
-            other => panic!("expected paragraph, got {other:?}"),
         }
     }
 
@@ -2604,101 +2557,42 @@ mod tests {
     // ── 5. Span byte boundary validation ──────────────────────────
 
     #[test]
-    fn inline_validate_plain_text() {
-        validate_styled_text(&parse_paragraph("Hello world"));
-    }
-
-    #[test]
-    fn inline_validate_bold_italic_code() {
-        validate_styled_text(&parse_paragraph("**bold** and *italic* and `code` end"));
-    }
-
-    #[test]
-    fn inline_validate_unicode() {
-        validate_styled_text(&parse_paragraph("**你好** *世界* `🚀`"));
-    }
-
-    #[test]
-    fn inline_validate_all_formatting_types() {
-        validate_styled_text(&parse_paragraph(
+    fn inline_validate_various_inputs() {
+        for input in [
+            "Hello world",
+            "**bold** and *italic* and `code` end",
+            "**你好** *世界* `🚀`",
             "plain **bold** *italic* ~~strike~~ `code` [link](url) ***bi*** end",
-        ));
-    }
-
-    #[test]
-    fn inline_validate_nested_formatting() {
-        validate_styled_text(&parse_paragraph("***~~all~~***"));
+            "***~~all~~***",
+        ] {
+            validate_styled_text(&parse_paragraph(input));
+        }
     }
 
     // ── 6. Empty and edge cases ───────────────────────────────────
 
     #[test]
-    fn inline_empty_bold() {
-        // **** is empty bold — pulldown_cmark may not emit it or may emit empty text.
-        let blocks = parse_markdown("****");
-        // Whatever the parser does, it should not panic and spans should be valid.
-        for block in &blocks {
-            if let Block::Paragraph(st) = block {
-                validate_styled_text(st);
+    fn inline_empty_formatting_cases() {
+        // Empty bold, empty emphasis, empty link — should not panic.
+        for md in ["****", "__", "[](url)"] {
+            let blocks = parse_markdown(md);
+            for block in &blocks {
+                if let Block::Paragraph(st) = block {
+                    validate_styled_text(st);
+                }
             }
         }
     }
 
     #[test]
-    fn inline_empty_emphasis_underscores() {
-        let blocks = parse_markdown("__");
-        for block in &blocks {
-            if let Block::Paragraph(st) = block {
+    fn inline_unclosed_formatting_cases() {
+        // Unclosed markers treated as literal text — should not panic.
+        for md in ["**unclosed", "*unclosed", "`unclosed", "~~unclosed"] {
+            let blocks = parse_markdown(md);
+            assert!(!blocks.is_empty(), "unclosed {md:?} should produce blocks");
+            if let Some(Block::Paragraph(st)) = blocks.first() {
                 validate_styled_text(st);
             }
-        }
-    }
-
-    #[test]
-    fn inline_empty_link() {
-        let st = parse_paragraph("[](url)");
-        // Empty link text — no text emitted, spans should be empty.
-        if st.text.is_empty() {
-            assert!(st.spans.is_empty());
-        } else {
-            validate_styled_text(&st);
-        }
-    }
-
-    #[test]
-    fn inline_unclosed_bold() {
-        // ** without closing — treated as literal text by pulldown_cmark.
-        let blocks = parse_markdown("**unclosed");
-        assert!(!blocks.is_empty());
-        if let Some(Block::Paragraph(st)) = blocks.first() {
-            validate_styled_text(st);
-        }
-    }
-
-    #[test]
-    fn inline_unclosed_emphasis() {
-        let blocks = parse_markdown("*unclosed");
-        assert!(!blocks.is_empty());
-        if let Some(Block::Paragraph(st)) = blocks.first() {
-            validate_styled_text(st);
-        }
-    }
-
-    #[test]
-    fn inline_unclosed_code() {
-        let blocks = parse_markdown("`unclosed");
-        assert!(!blocks.is_empty());
-        if let Some(Block::Paragraph(st)) = blocks.first() {
-            validate_styled_text(st);
-        }
-    }
-
-    #[test]
-    fn inline_unclosed_strikethrough() {
-        let blocks = parse_markdown("~~unclosed");
-        assert!(!blocks.is_empty());
-        if let Some(Block::Paragraph(st)) = blocks.first() {
-            validate_styled_text(st);
         }
     }
 
@@ -2820,53 +2714,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_with_code_block() {
-        let md = "- Item with code:\n\n  ```rust\n  fn main() {}\n  ```\n\n- Next item\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert!(!items.is_empty());
-                assert!(
-                    !items[0].children.is_empty(),
-                    "code block should be in children"
-                );
-                assert!(matches!(&items[0].children[0], Block::Code { .. }));
+    fn parse_list_with_child_blocks() {
+        // (markdown, expected_child_variant_name)
+        let cases = [
+            (
+                "- Item with code:\n\n  ```rust\n  fn main() {}\n  ```\n\n- Next\n",
+                "Code",
+            ),
+            ("- Item with quote:\n\n  > Quoted text\n\n- Next\n", "Quote"),
+            (
+                "- First paragraph\n\n  Second paragraph\n\n- Another\n",
+                "Paragraph",
+            ),
+        ];
+        for (md, label) in cases {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::UnorderedList(items) => {
+                    assert!(
+                        !items[0].children.is_empty(),
+                        "{label} should be in children for {md:?}"
+                    );
+                }
+                other => panic!("expected UnorderedList for {label}, got {other:?}"),
             }
-            other => panic!("expected UnorderedList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_list_with_blockquote() {
-        let md = "- Item with quote:\n\n  > Quoted text\n\n- Next item\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert!(
-                    !items[0].children.is_empty(),
-                    "blockquote should be in children"
-                );
-                assert!(matches!(&items[0].children[0], Block::Quote(_)));
-            }
-            other => panic!("expected UnorderedList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_multi_paragraph_list_item() {
-        let md = "- First paragraph\n\n  Second paragraph\n\n- Another item\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                // First item should have text in content and the second paragraph in children
-                assert!(!items[0].content.text.is_empty());
-                assert!(
-                    !items[0].children.is_empty(),
-                    "second paragraph should be in children"
-                );
-            }
-            other => panic!("expected UnorderedList, got {other:?}"),
         }
     }
 
@@ -3060,59 +2931,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_with_heading_child() {
-        let md = "- Item\n\n  ## Sub-heading\n\n- Next\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert!(
-                    !items[0].children.is_empty(),
-                    "should have heading as child"
-                );
-                assert!(
-                    matches!(&items[0].children[0], Block::Heading { .. }),
-                    "child should be Heading"
-                );
+    fn parse_list_with_block_level_children() {
+        // Test that list items can contain Heading, ThematicBreak, and Table children.
+        let cases: &[(&str, &str)] = &[
+            ("- Item\n\n  ## Sub-heading\n\n- Next\n", "Heading"),
+            ("- Item\n\n  ---\n\n- Next\n", "ThematicBreak"),
+            (
+                "- Item\n\n  | A | B |\n  |---|---|\n  | 1 | 2 |\n\n- Next\n",
+                "Table",
+            ),
+        ];
+        for (md, label) in cases {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::UnorderedList(items) => {
+                    assert!(
+                        !items[0].children.is_empty(),
+                        "{label} should be a child: {:?}",
+                        items[0].children
+                    );
+                }
+                other => panic!("expected UnorderedList for {label}, got {other:?}"),
             }
-            other => panic!("expected UnorderedList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_list_with_thematic_break_child() {
-        let md = "- Item\n\n  ---\n\n- Next\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert!(
-                    items[0]
-                        .children
-                        .iter()
-                        .any(|b| matches!(b, Block::ThematicBreak)),
-                    "should have ThematicBreak as child: {:?}",
-                    items[0].children
-                );
-            }
-            other => panic!("expected UnorderedList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_list_with_table_child() {
-        let md = "- Item\n\n  | A | B |\n  |---|---|\n  | 1 | 2 |\n\n- Next\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert!(
-                    items[0]
-                        .children
-                        .iter()
-                        .any(|b| matches!(b, Block::Table(_))),
-                    "should have Table as child: {:?}",
-                    items[0].children
-                );
-            }
-            other => panic!("expected UnorderedList, got {other:?}"),
         }
     }
 

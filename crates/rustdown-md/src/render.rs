@@ -2427,50 +2427,40 @@ Normal paragraph.
     }
 
     #[test]
-    fn ordered_list_digit_count_single_digit() {
-        // 1..=9 → 1 digit
-        assert_eq!(digit_count_for(1, 1), 1); // max_num = 1
-        assert_eq!(digit_count_for(1, 9), 1); // max_num = 9
-        assert_eq!(digit_count_for(5, 3), 1); // max_num = 7
-    }
-
-    #[test]
-    fn ordered_list_digit_count_double_digit() {
-        // 10..=99 → 2 digits
-        assert_eq!(digit_count_for(1, 10), 2); // max_num = 10
-        assert_eq!(digit_count_for(1, 99), 2); // max_num = 99
-        assert_eq!(digit_count_for(50, 5), 2); // max_num = 54
-    }
-
-    #[test]
-    fn ordered_list_digit_count_triple_digit() {
-        assert_eq!(digit_count_for(1, 100), 3); // max_num = 100
-        assert_eq!(digit_count_for(1, 999), 3); // max_num = 999
-        assert_eq!(digit_count_for(998, 2), 3); // max_num = 999
-    }
-
-    #[test]
-    fn ordered_list_digit_count_large_numbers() {
-        assert_eq!(digit_count_for(1, 1000), 4); // max_num = 1000
-        assert_eq!(digit_count_for(1, 10_000), 5); // max_num = 10_000
-        assert_eq!(digit_count_for(999_999, 2), 7); // max_num = 1_000_000
-    }
-
-    #[test]
-    fn ordered_list_digit_count_zero_start() {
-        // start=0, 1 item → max_num=0 → special case → 1 digit
-        assert_eq!(digit_count_for(0, 1), 1);
-        // start=0, 10 items → max_num=9 → 1 digit
-        assert_eq!(digit_count_for(0, 10), 1);
-        // start=0, 11 items → max_num=10 → 2 digits
-        assert_eq!(digit_count_for(0, 11), 2);
-    }
-
-    #[test]
-    fn ordered_list_digit_count_empty_list() {
-        // 0 items: saturating_sub(1) clamps to 0, so max_num = start
-        assert_eq!(digit_count_for(1, 0), 1);
-        assert_eq!(digit_count_for(100, 0), 3);
+    fn ordered_list_digit_count_cases() {
+        // (start, item_count, expected_digits)
+        let cases = [
+            // Single digit: max_num 1..=9
+            (1, 1, 1),
+            (1, 9, 1),
+            (5, 3, 1),
+            // Double digit: max_num 10..=99
+            (1, 10, 2),
+            (1, 99, 2),
+            (50, 5, 2),
+            // Triple digit
+            (1, 100, 3),
+            (1, 999, 3),
+            (998, 2, 3),
+            // Large numbers
+            (1, 1000, 4),
+            (1, 10_000, 5),
+            (999_999, 2, 7),
+            // Zero start edge cases
+            (0, 1, 1),
+            (0, 10, 1),
+            (0, 11, 2),
+            // Empty list: max_num = start
+            (1, 0, 1),
+            (100, 0, 3),
+        ];
+        for (start, count, expected) in cases {
+            assert_eq!(
+                digit_count_for(start, count),
+                expected,
+                "digit_count_for({start}, {count})"
+            );
+        }
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -2608,61 +2598,71 @@ Normal paragraph.
     // ── Image URL resolution ───────────────────────────────────────
 
     #[test]
-    fn image_url_absolute_stays_unchanged() {
-        let r = resolve_image_url("https://example.com/pic.png", "");
-        assert_eq!(r, "https://example.com/pic.png");
-    }
-
-    #[test]
-    fn image_url_relative_with_base_uri() {
-        let r = resolve_image_url("images/pic.png", "file:///home/user/docs/");
-        assert_eq!(r, "file:///home/user/docs/images/pic.png");
-    }
-
-    #[test]
-    fn image_url_relative_with_empty_base_uri() {
-        let r = resolve_image_url("images/pic.png", "");
-        assert_eq!(r, "images/pic.png");
-    }
-
-    #[test]
-    fn image_url_absolute_ignores_base_uri() {
-        let r = resolve_image_url("http://cdn.example.com/img.jpg", "file:///local/base/");
-        assert_eq!(r, "http://cdn.example.com/img.jpg");
-    }
-
-    #[test]
-    fn image_url_protocol_relative_stays_unchanged() {
-        let r = resolve_image_url("//cdn.example.com/image.png", "file:///local/base/");
-        assert_eq!(r, "//cdn.example.com/image.png");
-    }
-
-    #[test]
-    fn image_url_base_uri_missing_trailing_slash() {
-        // BUG FIX: base URI without trailing '/' must still produce a valid path.
-        let r = resolve_image_url("image.png", "file:///home/user");
-        assert_eq!(r, "file:///home/user/image.png");
-    }
-
-    #[test]
-    fn image_url_absolute_path_resolves_against_authority() {
-        // A URL starting with '/' is an absolute path — resolve against
-        // scheme+authority only, discarding the base directory.
-        let r = resolve_image_url("/images/pic.png", "file:///home/user/docs/");
-        assert_eq!(r, "file:///images/pic.png");
-    }
-
-    #[test]
-    fn image_url_absolute_path_with_http_base() {
-        let r = resolve_image_url("/assets/logo.png", "http://example.com/docs/");
-        assert_eq!(r, "http://example.com/assets/logo.png");
-    }
-
-    #[test]
-    fn image_url_absolute_path_no_scheme_passthrough() {
-        // No scheme in base — absolute-path URL is returned as-is.
-        let r = resolve_image_url("/images/pic.png", "no-scheme-base");
-        assert_eq!(r, "/images/pic.png");
+    fn image_url_resolution_cases() {
+        let cases = [
+            // (url, base_uri, expected, description)
+            (
+                "https://example.com/pic.png",
+                "",
+                "https://example.com/pic.png",
+                "absolute stays unchanged",
+            ),
+            (
+                "images/pic.png",
+                "file:///home/user/docs/",
+                "file:///home/user/docs/images/pic.png",
+                "relative with base_uri",
+            ),
+            (
+                "images/pic.png",
+                "",
+                "images/pic.png",
+                "relative with empty base_uri",
+            ),
+            (
+                "http://cdn.example.com/img.jpg",
+                "file:///local/base/",
+                "http://cdn.example.com/img.jpg",
+                "absolute ignores base_uri",
+            ),
+            (
+                "//cdn.example.com/image.png",
+                "file:///local/base/",
+                "//cdn.example.com/image.png",
+                "protocol-relative unchanged",
+            ),
+            (
+                "image.png",
+                "file:///home/user",
+                "file:///home/user/image.png",
+                "base_uri missing trailing slash",
+            ),
+            (
+                "/images/pic.png",
+                "file:///home/user/docs/",
+                "file:///images/pic.png",
+                "absolute path resolves against authority",
+            ),
+            (
+                "/assets/logo.png",
+                "http://example.com/docs/",
+                "http://example.com/assets/logo.png",
+                "absolute path with http base",
+            ),
+            (
+                "/images/pic.png",
+                "no-scheme-base",
+                "/images/pic.png",
+                "no scheme passthrough",
+            ),
+        ];
+        for (url, base, expected, desc) in cases {
+            assert_eq!(
+                resolve_image_url(url, base),
+                expected,
+                "{desc}: url={url:?} base={base:?}"
+            );
+        }
     }
 
     #[test]
@@ -2838,29 +2838,17 @@ Normal paragraph.
     // ── strengthen_color tests ───────────────────────────────────────
 
     #[test]
-    fn strengthen_color_black_stays_black() {
-        // Black has luma ~0 (dark text) → darken → already at zero.
+    fn strengthen_color_core_cases() {
+        // Black → already darkest, stays unchanged.
         let out = strengthen_color(egui::Color32::from_rgb(0, 0, 0));
         let [r, g, b, _] = out.to_array();
         assert_eq!((r, g, b), (0, 0, 0), "black cannot get darker");
-    }
 
-    #[test]
-    fn strengthen_color_white_stays_white() {
+        // White → already brightest, stays unchanged.
         let out = strengthen_color(egui::Color32::from_rgb(255, 255, 255));
         let [r, g, b, _] = out.to_array();
         assert_eq!((r, g, b), (255, 255, 255));
-    }
 
-    #[test]
-    fn strengthen_color_preserves_alpha() {
-        let out = strengthen_color(egui::Color32::from_rgba_premultiplied(100, 100, 100, 42));
-        let [_, _, _, a] = out.to_array();
-        assert_eq!(a, 42, "alpha channel must be preserved");
-    }
-
-    #[test]
-    fn strengthen_color_dark_text_gets_darker() {
         // Dark text (luma < 127) → darken.
         let src = egui::Color32::from_rgb(80, 80, 80);
         let out = strengthen_color(src);
@@ -2870,10 +2858,7 @@ Normal paragraph.
             dr < sr && dg < sg && db < sb,
             "dark text should get darker: {src:?} -> {out:?}"
         );
-    }
 
-    #[test]
-    fn strengthen_color_bright_text_gets_brighter() {
         // Bright text (luma > 127) → brighten.
         let src = egui::Color32::from_rgb(200, 200, 200);
         let out = strengthen_color(src);
@@ -2885,31 +2870,55 @@ Normal paragraph.
         );
     }
 
+    #[test]
+    fn strengthen_color_alpha_and_threshold() {
+        // Alpha preservation
+        let out = strengthen_color(egui::Color32::from_rgba_premultiplied(100, 100, 100, 42));
+        let [_, _, _, a] = out.to_array();
+        assert_eq!(a, 42, "alpha channel must be preserved");
+
+        // Near threshold: 128 (luma > 127) → brighten
+        let light = strengthen_color(egui::Color32::from_rgb(128, 128, 128));
+        let [lr, lg, lb, _] = light.to_array();
+        assert!(lr > 128 && lg > 128 && lb > 128, "should brighten");
+
+        // Near threshold: 126 (luma < 127) → darken
+        let dark = strengthen_color(egui::Color32::from_rgb(126, 126, 126));
+        let [dr, dg, db, _] = dark.to_array();
+        assert!(dr < 126 && dg < 126 && db < 126, "should darken");
+
+        // Semi-transparent: premultiplied channels must not exceed alpha.
+        let semi = egui::Color32::from_rgba_unmultiplied(200, 200, 200, 100);
+        let result = strengthen_color(semi);
+        let [r, g, b, a] = result.to_array();
+        assert!(
+            r <= a && g <= a && b <= a,
+            "premultiplied channels must not exceed alpha: r={r} g={g} b={b} a={a}"
+        );
+        let [ur, _, _, ua] = result.to_srgba_unmultiplied();
+        assert_eq!(ua, 100, "alpha should be preserved");
+        assert!(ur > 200, "unmultiplied R should be brightened, got {ur}");
+    }
+
     // ── bytecount_newlines tests ──────────────────────────────────────
 
     #[test]
-    fn bytecount_newlines_empty() {
-        assert_eq!(bytecount_newlines(b""), 0);
-    }
-
-    #[test]
-    fn bytecount_newlines_single() {
-        assert_eq!(bytecount_newlines(b"\n"), 1);
-    }
-
-    #[test]
-    fn bytecount_newlines_three() {
-        assert_eq!(bytecount_newlines(b"\n\n\n"), 3);
-    }
-
-    #[test]
-    fn bytecount_newlines_embedded() {
-        assert_eq!(bytecount_newlines(b"line1\nline2"), 1);
-    }
-
-    #[test]
-    fn bytecount_newlines_none() {
-        assert_eq!(bytecount_newlines(b"no newlines here"), 0);
+    fn bytecount_newlines_cases() {
+        for (input, expected) in [
+            (&b""[..], 0),
+            (b"\n", 1),
+            (b"\n\n\n", 3),
+            (b"line1\nline2", 1),
+            (b"no newlines here", 0),
+            (b"a\nb\nc\n", 3),
+        ] {
+            assert_eq!(
+                bytecount_newlines(input),
+                expected,
+                "input: {:?}",
+                std::str::from_utf8(input).unwrap_or("<non-utf8>")
+            );
+        }
     }
 
     // ── Edge-case code block rendering ────────────────────────────────
@@ -2985,21 +2994,34 @@ Normal paragraph.
     // ── estimate_text_height edge cases ───────────────────────────────
 
     #[test]
-    fn estimate_text_height_empty_returns_font_size() {
+    fn estimate_text_height_edge_cases() {
+        // Empty text → returns font_size.
         let h = estimate_text_height("", 14.0, 200.0);
-        assert!(
-            (h - 14.0).abs() < f32::EPSILON,
-            "empty text should return font_size"
-        );
-    }
+        assert!((h - 14.0).abs() < f32::EPSILON, "empty text → font_size");
 
-    #[test]
-    fn estimate_text_height_zero_wrap_width_no_crash() {
+        // Zero wrap_width → finite, positive.
         let h = estimate_text_height("some text", 14.0, 0.0);
+        assert!(h > 0.0 && h.is_finite(), "wrap_width=0 should not crash");
+
+        // Negative wrap_width → finite, positive.
+        let h = estimate_text_height("hello", 14.0, -100.0);
         assert!(
-            h > 0.0,
-            "zero wrap_width should not crash and should return positive height"
+            h > 0.0 && h.is_finite(),
+            "negative wrap_width should be finite"
         );
+
+        // Longer text → taller.
+        let short = estimate_text_height("hi", 14.0, 200.0);
+        let long = estimate_text_height(&"word ".repeat(200), 14.0, 200.0);
+        assert!(
+            long > short,
+            "longer text ({long}) should be taller ({short})"
+        );
+
+        // Multiline → taller than single line.
+        let one = estimate_text_height("hello", 14.0, 400.0);
+        let ten = estimate_text_height(&"hello\n".repeat(10), 14.0, 400.0);
+        assert!(ten > one, "10 lines ({ten}) should exceed 1 ({one})");
     }
 
     // ── Existing coverage tests below ─────────────────────────────────
@@ -3132,20 +3154,6 @@ Normal paragraph.
             }
             other => panic!("expected Image, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn strengthen_color_near_threshold() {
-        // Test colors near the luma=127 threshold.
-        let light = strengthen_color(egui::Color32::from_rgb(128, 128, 128));
-        let [lr, lg, lb, _] = light.to_array();
-        // Luma ≈ 128 > 127 → should brighten.
-        assert!(lr > 128 && lg > 128 && lb > 128, "should brighten");
-
-        let dark = strengthen_color(egui::Color32::from_rgb(126, 126, 126));
-        let [dr, dg, db, _] = dark.to_array();
-        // Luma ≈ 126 < 127 → should darken.
-        assert!(dr < 126 && dg < 126 && db < 126, "should darken");
     }
 
     #[test]
@@ -3482,45 +3490,6 @@ Normal paragraph.
         assert!(
             h > 0.0,
             "empty table should still have positive height, got {h}"
-        );
-    }
-
-    #[test]
-    fn estimate_height_zero_wrap_width_table() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let block = Block::Table(Box::new(TableData {
-            header: vec![StyledText {
-                text: "Col".to_owned(),
-                spans: vec![],
-            }],
-            alignments: vec![Alignment::None],
-            rows: vec![vec![StyledText {
-                text: "val".to_owned(),
-                spans: vec![],
-            }]],
-        }));
-        let h = estimate_block_height(&block, 14.0, 0.0, &style);
-        assert!(
-            h > 0.0,
-            "zero wrap_width table should not panic and have positive height"
-        );
-    }
-
-    #[test]
-    fn estimate_height_zero_wrap_width_list() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let block = Block::UnorderedList(vec![ListItem {
-            content: StyledText {
-                text: "item".to_owned(),
-                spans: vec![],
-            },
-            children: vec![],
-            checked: None,
-        }]);
-        let h = estimate_block_height(&block, 14.0, 0.0, &style);
-        assert!(
-            h > 0.0,
-            "zero wrap_width list should not panic and have positive height"
         );
     }
 
@@ -4563,50 +4532,6 @@ Normal paragraph.
         assert!(h.is_finite());
     }
 
-    // ── estimate_text_height edge cases ────────────────────────────
-
-    #[test]
-    fn text_height_empty_string() {
-        let h = estimate_text_height("", 14.0, 200.0);
-        assert!((h - 14.0).abs() < f32::EPSILON, "empty text → font_size");
-    }
-
-    #[test]
-    fn text_height_wrap_width_zero() {
-        // Must not divide by zero. chars_per_line = (0/avg).max(1.0) = 1.0.
-        let h = estimate_text_height("hello world", 14.0, 0.0);
-        assert!(h.is_finite(), "wrap_width=0 should not produce Inf/NaN");
-        assert!(h > 0.0);
-    }
-
-    #[test]
-    fn text_height_wrap_width_negative() {
-        // Negative wrap_width is degenerate but must not panic or produce NaN.
-        let h = estimate_text_height("hello", 14.0, -100.0);
-        assert!(h.is_finite(), "negative wrap_width should produce finite h");
-        assert!(h > 0.0, "height should be positive even with negative wrap");
-    }
-
-    #[test]
-    fn text_height_scales_with_length() {
-        let short = estimate_text_height("hi", 14.0, 200.0);
-        let long = estimate_text_height(&"word ".repeat(200), 14.0, 200.0);
-        assert!(
-            long > short,
-            "longer text ({long}) should be taller ({short})"
-        );
-    }
-
-    #[test]
-    fn text_height_multiline() {
-        let one_line = estimate_text_height("hello", 14.0, 400.0);
-        let ten_lines = estimate_text_height(&"hello\n".repeat(10), 14.0, 400.0);
-        assert!(
-            ten_lines > one_line,
-            "10 lines ({ten_lines}) should exceed 1 ({one_line})"
-        );
-    }
-
     // ── wrap_width=0 across all block types ────────────────────────
 
     #[test]
@@ -4740,17 +4665,6 @@ Normal paragraph.
         assert_sane_height(h, "100-col table in 400px");
     }
 
-    // ── bytecount_newlines ─────────────────────────────────────────
-
-    #[test]
-    fn bytecount_newlines_edge_cases() {
-        assert_eq!(bytecount_newlines(b""), 0);
-        assert_eq!(bytecount_newlines(b"no newlines"), 0);
-        assert_eq!(bytecount_newlines(b"\n"), 1);
-        assert_eq!(bytecount_newlines(b"\n\n\n"), 3);
-        assert_eq!(bytecount_newlines(b"a\nb\nc\n"), 3);
-    }
-
     // ── Ordered list saturating_add for display number ─────────────
 
     #[test]
@@ -4800,45 +4714,6 @@ Normal paragraph.
         });
     }
 
-    // ── strengthen_color premultiplied-alpha correctness ────────────
-
-    #[test]
-    fn strengthen_color_opaque_still_works() {
-        // Opaque bright text → should brighten (no regression).
-        let bright = egui::Color32::from_rgb(200, 200, 200);
-        let result = strengthen_color(bright);
-        let [r, g, b, a] = result.to_srgba_unmultiplied();
-        assert_eq!(a, 255);
-        assert!(r > 200, "bright text should be brightened, got r={r}");
-        assert!(g > 200);
-        assert!(b > 200);
-
-        // Opaque dark text → should darken.
-        let dark = egui::Color32::from_rgb(40, 40, 40);
-        let result = strengthen_color(dark);
-        let [r2, g2, b2, a2] = result.to_srgba_unmultiplied();
-        assert_eq!(a2, 255);
-        assert!(r2 < 40, "dark text should be darkened, got r={r2}");
-        assert!(g2 < 40);
-        assert!(b2 < 40);
-    }
-
-    #[test]
-    fn strengthen_color_semitransparent_respects_alpha() {
-        // Semi-transparent bright text: premultiplied R,G,B must stay ≤ alpha.
-        let semi = egui::Color32::from_rgba_unmultiplied(200, 200, 200, 100);
-        let result = strengthen_color(semi);
-        let [r, g, b, a] = result.to_array(); // premultiplied
-        assert!(
-            r <= a && g <= a && b <= a,
-            "premultiplied channels must not exceed alpha: r={r} g={g} b={b} a={a}"
-        );
-        // Unmultiplied values should still be brightened.
-        let [ur, _, _, ua] = result.to_srgba_unmultiplied();
-        assert_eq!(ua, 100, "alpha should be preserved");
-        assert!(ur > 200, "unmultiplied R should be brightened, got {ur}");
-    }
-
     // ── Headless rendering: width-configurable helper ──────────────
 
     /// Render markdown headlessly at a given screen width, returning
@@ -4875,131 +4750,59 @@ Normal paragraph.
     // ── 1. Height accuracy tests ───────────────────────────────────
 
     #[test]
-    fn height_accuracy_heading_and_paragraph() {
-        let md = "# Main Title\n\nThis is a short paragraph with some text.\n";
-        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
-        assert!(estimated > 0.0);
-        assert!(rendered > 0.0);
-        let ratio = estimated / rendered;
-        assert!(
-            ratio > 0.2 && ratio < 5.0,
-            "heading+paragraph height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
-        );
-    }
-
-    #[test]
-    fn height_accuracy_tables_only() {
-        let md = "\
-| A | B | C |
-|---|---|---|
-| 1 | 2 | 3 |
-| 4 | 5 | 6 |
-| 7 | 8 | 9 |
-
-| X | Y |
-|---|---|
-| a | b |
-";
-        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
-        assert!(estimated > 0.0);
-        assert!(rendered > 0.0);
-        let ratio = estimated / rendered;
-        assert!(
-            ratio > 0.2 && ratio < 5.0,
-            "table-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
-        );
-    }
-
-    #[test]
-    fn height_accuracy_code_blocks_only() {
-        let md = "\
-```rust
-fn main() {
-    println!(\"hello\");
-}
-```
-
-```python
-for i in range(10):
-    print(i)
-```
-";
-        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
-        assert!(estimated > 0.0);
-        assert!(rendered > 0.0);
-        let ratio = estimated / rendered;
-        assert!(
-            ratio > 0.2 && ratio < 5.0,
-            "code-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
-        );
-    }
-
-    #[test]
-    fn height_accuracy_lists_only() {
-        let md = "\
-- Item one
-- Item two
-- Item three
-  - Nested A
-  - Nested B
-- Item four
-
-1. First
-2. Second
-3. Third
-";
-        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
-        assert!(estimated > 0.0);
-        assert!(rendered > 0.0);
-        let ratio = estimated / rendered;
-        assert!(
-            ratio > 0.2 && ratio < 5.0,
-            "list-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
-        );
+    fn height_accuracy_across_block_types() {
+        let cases = [
+            (
+                "heading+paragraph",
+                "# Main Title\n\nThis is a short paragraph with some text.\n",
+            ),
+            (
+                "tables",
+                "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |\n| 7 | 8 | 9 |\n\n| X | Y |\n|---|---|\n| a | b |\n",
+            ),
+            (
+                "code blocks",
+                "```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n```python\nfor i in range(10):\n    print(i)\n```\n",
+            ),
+            (
+                "lists",
+                "- Item one\n- Item two\n- Item three\n  - Nested A\n  - Nested B\n- Item four\n\n1. First\n2. Second\n3. Third\n",
+            ),
+        ];
+        for (label, md) in cases {
+            let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
+            assert!(estimated > 0.0, "{label}: estimated should be positive");
+            assert!(rendered > 0.0, "{label}: rendered should be positive");
+            let ratio = estimated / rendered;
+            assert!(
+                ratio > 0.2 && ratio < 5.0,
+                "{label} height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
+            );
+        }
     }
 
     // ── 2. Scrollable rendering stress ─────────────────────────────
 
     #[test]
-    fn scrollable_stress_large_mixed_20_positions() {
-        let doc = crate::stress::large_mixed_doc(100);
-        let (_, total_height) = headless_render_scrollable(&doc, None);
-        assert!(total_height > 0.0);
+    fn scrollable_stress_all_doc_types_no_crash() {
+        let generators: Vec<(&str, String)> = vec![
+            ("large_mixed", crate::stress::large_mixed_doc(100)),
+            ("pathological", crate::stress::pathological_doc(50)),
+            ("unicode", crate::stress::unicode_stress_doc(50)),
+            ("table_heavy", crate::stress::table_heavy_doc(50)),
+            ("emoji_heavy", crate::stress::emoji_heavy_doc(50)),
+            ("task_list", crate::stress::task_list_doc(50)),
+        ];
+        for (label, doc) in &generators {
+            let (_, total_height) = headless_render_scrollable(doc, None);
+            assert!(total_height > 0.0, "{label} should have positive height");
+        }
+        // Also test large_mixed at multiple scroll positions.
+        let (_, total_height) = headless_render_scrollable(&generators[0].1, None);
         let step = total_height / 20.0;
         for i in 0..20 {
-            let y = step * i as f32;
-            let _ = headless_render_scrollable(&doc, Some(y));
+            let _ = headless_render_scrollable(&generators[0].1, Some(step * i as f32));
         }
-    }
-
-    #[test]
-    fn scrollable_stress_pathological_no_crash() {
-        let doc = crate::stress::pathological_doc(50);
-        let _ = headless_render_scrollable(&doc, None);
-    }
-
-    #[test]
-    fn scrollable_stress_unicode_no_crash() {
-        let doc = crate::stress::unicode_stress_doc(50);
-        let _ = headless_render_scrollable(&doc, None);
-    }
-
-    #[test]
-    fn scrollable_stress_table_heavy_no_crash() {
-        let doc = crate::stress::table_heavy_doc(50);
-        let _ = headless_render_scrollable(&doc, None);
-    }
-
-    #[test]
-    fn scrollable_stress_emoji_heavy_no_crash() {
-        let doc = crate::stress::emoji_heavy_doc(50);
-        let _ = headless_render_scrollable(&doc, None);
-    }
-
-    #[test]
-    fn scrollable_stress_task_list_no_crash() {
-        let doc = crate::stress::task_list_doc(50);
-        let _ = headless_render_scrollable(&doc, None);
     }
 
     // ── 3. Layout consistency ──────────────────────────────────────
@@ -5304,72 +5107,44 @@ that we can observe the relationship between available width and estimated heigh
     // ── 4. compute_table_col_widths edge cases ─────────────────────
 
     #[test]
-    fn col_widths_usable_zero() {
+    fn col_widths_edge_cases() {
+        // Zero usable space → widths non-negative
         let header = vec![plain("A"), plain("B")];
         let rows = vec![vec![plain("x"), plain("y")]];
-        let (widths, _min) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
+        let (widths, _) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
         assert_eq!(widths.len(), 2);
-        // With zero usable space, widths should still be non-negative.
         for w in &widths {
             assert!(*w >= 0.0, "width should be non-negative, got {w}");
         }
-    }
 
-    #[test]
-    fn col_widths_usable_very_small() {
+        // Very small usable → clamped to min_col_w
         let header = vec![plain("A"), plain("B"), plain("C")];
         let rows = vec![vec![plain("x"), plain("y"), plain("z")]];
-        // 10px usable < min_col_w * 3 = 36 * 3 = 108
         let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 10.0, 7.0, 14.0);
-        assert_eq!(widths.len(), 3);
-        // All columns should be clamped to min_col_w.
         for w in &widths {
-            assert!(
-                *w >= min_col_w - 0.01,
-                "width {w} should be >= min {min_col_w}"
-            );
+            assert!(*w >= min_col_w - 0.01, "width {w} >= min {min_col_w}");
         }
-    }
 
-    #[test]
-    fn col_widths_all_same_length() {
+        // Equal-length columns → roughly equal widths
         let header = vec![plain("ABCD"), plain("EFGH"), plain("IJKL")];
         let rows = vec![vec![plain("1234"), plain("5678"), plain("9012")]];
         let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
-        assert_eq!(widths.len(), 3);
-        // All columns should get roughly equal width.
         let avg = widths.iter().sum::<f32>() / widths.len() as f32;
         for w in &widths {
-            assert!(
-                (*w - avg).abs() < avg * 0.2,
-                "widths should be roughly equal: {widths:?}"
-            );
+            assert!((*w - avg).abs() < avg * 0.2, "roughly equal: {widths:?}");
         }
-    }
 
-    #[test]
-    fn col_widths_one_column_much_longer() {
+        // One much longer column → gets more space
         let header = vec![plain("A"), plain(&"X".repeat(300))];
         let rows = vec![vec![plain("a"), plain(&"Y".repeat(300))]];
         let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
-        assert_eq!(widths.len(), 2);
-        assert!(
-            widths[1] > widths[0],
-            "longer column should be wider: {widths:?}"
-        );
-    }
+        assert!(widths[1] > widths[0], "longer column wider: {widths:?}");
 
-    #[test]
-    fn col_widths_body_size_zero() {
+        // body_size = 0 → min_col_w = 36
         let header = vec![plain("A"), plain("B")];
         let rows = vec![vec![plain("x"), plain("y")]];
-        // body_size = 0 → min_col_w = max(0 * 2.5, 36) = 36
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
-        assert_eq!(widths.len(), 2);
-        assert!(
-            (min_col_w - 36.0).abs() < 0.01,
-            "min_col_w should be 36 when body_size=0, got {min_col_w}"
-        );
+        let (_, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
+        assert!((min_col_w - 36.0).abs() < 0.01, "min_col_w={min_col_w}");
     }
 
     // ── 5. Alignment rendering ─────────────────────────────────────

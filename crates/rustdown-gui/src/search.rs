@@ -74,136 +74,65 @@ mod tests {
     // ── find_match_count ────────────────────────────────────────────
 
     #[test]
-    fn count_basic_multiple_matches() {
-        assert_eq!(find_match_count("abcabc", "abc"), 2);
-    }
-
-    #[test]
-    fn count_single_char_needle() {
-        assert_eq!(find_match_count("banana", "a"), 3);
-    }
-
-    #[test]
-    fn count_no_matches() {
-        assert_eq!(find_match_count("hello world", "xyz"), 0);
-    }
-
-    #[test]
-    fn count_empty_needle_returns_zero() {
-        assert_eq!(find_match_count("hello", ""), 0);
-    }
-
-    #[test]
-    fn count_empty_haystack_returns_zero() {
-        assert_eq!(find_match_count("", "abc"), 0);
-    }
-
-    #[test]
-    fn count_both_empty_returns_zero() {
-        assert_eq!(find_match_count("", ""), 0);
-    }
-
-    #[test]
-    fn count_case_sensitive() {
-        assert_eq!(find_match_count("AaAaA", "a"), 2);
-        assert_eq!(find_match_count("AaAaA", "A"), 3);
-    }
-
-    #[test]
-    fn count_non_overlapping() {
-        // "aaa" searched for "aa" — non-overlapping gives 1
-        assert_eq!(find_match_count("aaa", "aa"), 1);
-        assert_eq!(find_match_count("aaaa", "aa"), 2);
-    }
-
-    #[test]
-    fn count_unicode_content() {
-        assert_eq!(find_match_count("café café café", "café"), 3);
-        assert_eq!(find_match_count("日本語日本語", "日本語"), 2);
-    }
-
-    #[test]
-    fn count_needle_longer_than_haystack() {
-        assert_eq!(find_match_count("ab", "abcdef"), 0);
-    }
-
-    #[test]
-    fn count_full_haystack_match() {
-        assert_eq!(find_match_count("exact", "exact"), 1);
+    fn count_match_cases() {
+        let cases: &[(&str, &str, usize)] = &[
+            ("abcabc", "abc", 2),          // basic multiple
+            ("banana", "a", 3),            // single char
+            ("hello world", "xyz", 0),     // no matches
+            ("hello", "", 0),              // empty needle
+            ("", "abc", 0),                // empty haystack
+            ("", "", 0),                   // both empty
+            ("AaAaA", "a", 2),             // case sensitive
+            ("AaAaA", "A", 3),             // case sensitive caps
+            ("aaa", "aa", 1),              // non-overlapping
+            ("aaaa", "aa", 2),             // non-overlapping 2
+            ("café café café", "café", 3), // unicode
+            ("日本語日本語", "日本語", 2), // CJK
+            ("ab", "abcdef", 0),           // needle > haystack
+            ("exact", "exact", 1),         // full match
+        ];
+        for (haystack, needle, expected) in cases {
+            assert_eq!(
+                find_match_count(haystack, needle),
+                *expected,
+                "count({haystack:?}, {needle:?})"
+            );
+        }
     }
 
     // ── replace_all_occurrences ─────────────────────────────────────
 
     #[test]
-    fn replace_basic() {
-        let (result, count) = replace_all_occurrences("foo bar foo", "foo", "baz");
-        assert_eq!(count, 2);
-        assert_eq!(result, "baz bar baz");
-        assert!(matches!(result, Cow::Owned(_)));
-    }
-
-    #[test]
-    fn replace_with_empty_string_deletes() {
-        let (result, count) = replace_all_occurrences("aXbXc", "X", "");
-        assert_eq!(count, 2);
-        assert_eq!(result, "abc");
-    }
-
-    #[test]
-    fn replace_no_matches_returns_borrowed() {
-        let (result, count) = replace_all_occurrences("hello", "xyz", "!!!");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn replace_empty_needle_returns_borrowed() {
-        let (result, count) = replace_all_occurrences("hello", "", "x");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn replace_needle_equals_replacement_returns_borrowed() {
-        let (result, count) = replace_all_occurrences("hello", "ll", "ll");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn replace_unicode() {
-        let (result, count) = replace_all_occurrences("café latte café", "café", "tea");
-        assert_eq!(count, 2);
-        assert_eq!(result, "tea latte tea");
-    }
-
-    #[test]
-    fn replace_with_longer_replacement() {
-        let (result, count) = replace_all_occurrences("a-b-c", "-", "---");
-        assert_eq!(count, 2);
-        assert_eq!(result, "a---b---c");
-    }
-
-    #[test]
-    fn replace_same_length_different_strings() {
-        let (result, count) = replace_all_occurrences("abc def abc", "abc", "xyz");
-        assert_eq!(count, 2);
-        assert_eq!(result, "xyz def xyz");
-        assert!(matches!(result, Cow::Owned(_)));
-    }
-
-    #[test]
-    fn replace_with_shorter_replacement() {
-        let (result, count) = replace_all_occurrences("hello world hello", "hello", "hi");
-        assert_eq!(count, 2);
-        assert_eq!(result, "hi world hi");
-    }
-
-    #[test]
-    fn replace_empty_haystack() {
-        let (result, count) = replace_all_occurrences("", "abc", "xyz");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
+    fn replace_cases() {
+        // (haystack, needle, replacement, expected_count, expected_result, should_be_owned)
+        let cases: &[(&str, &str, &str, usize, &str, bool)] = &[
+            ("foo bar foo", "foo", "baz", 2, "baz bar baz", true),
+            ("aXbXc", "X", "", 2, "abc", true),
+            ("hello", "xyz", "!!!", 0, "hello", false),
+            ("hello", "", "x", 0, "hello", false),
+            ("hello", "ll", "ll", 0, "hello", false),
+            ("café latte café", "café", "tea", 2, "tea latte tea", true),
+            ("a-b-c", "-", "---", 2, "a---b---c", true),
+            ("abc def abc", "abc", "xyz", 2, "xyz def xyz", true),
+            ("hello world hello", "hello", "hi", 2, "hi world hi", true),
+            ("", "abc", "xyz", 0, "", false),
+        ];
+        for (haystack, needle, repl, exp_count, exp_result, owned) in cases {
+            let (result, count) = replace_all_occurrences(haystack, needle, repl);
+            assert_eq!(
+                count, *exp_count,
+                "count for replace({haystack:?}, {needle:?}, {repl:?})"
+            );
+            assert_eq!(
+                result, *exp_result,
+                "result for replace({haystack:?}, {needle:?}, {repl:?})"
+            );
+            if *owned {
+                assert!(matches!(result, Cow::Owned(_)), "should be Owned");
+            } else {
+                assert!(matches!(result, Cow::Borrowed(_)), "should be Borrowed");
+            }
+        }
     }
 
     #[test]

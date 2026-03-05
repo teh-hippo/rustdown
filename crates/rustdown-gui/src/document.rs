@@ -191,75 +191,36 @@ mod tests {
     // ── DocumentStats::from_text ──────────────────────────────────────
 
     #[test]
-    fn stats_empty_string_is_one_line() {
-        assert_eq!(DocumentStats::from_text("").lines, 1);
-    }
-
-    #[test]
-    fn stats_no_newline_is_one_line() {
-        assert_eq!(DocumentStats::from_text("hello").lines, 1);
-    }
-
-    #[test]
-    fn stats_single_newline_is_two_lines() {
-        assert_eq!(DocumentStats::from_text("a\nb").lines, 2);
-    }
-
-    #[test]
-    fn stats_trailing_newline() {
-        assert_eq!(DocumentStats::from_text("a\n").lines, 2);
-    }
-
-    #[test]
-    fn stats_multiple_newlines() {
-        assert_eq!(DocumentStats::from_text("a\nb\nc\n").lines, 4);
-    }
-
-    #[test]
-    fn stats_crlf_counts_one_per_pair() {
-        assert_eq!(DocumentStats::from_text("a\r\nb\r\n").lines, 3);
-    }
-
-    #[test]
-    fn stats_bare_cr_not_counted() {
-        // Only \n is counted; bare \r is not a line break.
-        assert_eq!(DocumentStats::from_text("a\rb").lines, 1);
-    }
-
-    #[test]
-    fn stats_mixed_newlines() {
-        assert_eq!(DocumentStats::from_text("a\nb\r\nc\rd").lines, 3);
-    }
-
-    #[test]
-    fn stats_cjk_text() {
-        assert_eq!(DocumentStats::from_text("你好\n世界").lines, 2);
-    }
-
-    #[test]
-    fn stats_only_newlines() {
-        assert_eq!(DocumentStats::from_text("\n\n\n").lines, 4);
-    }
-
-    #[test]
-    fn stats_default_matches_empty() {
+    fn stats_line_counting_cases() {
+        let cases = [
+            // (input, expected_lines, description)
+            ("", 1, "empty string"),
+            ("hello", 1, "no newline"),
+            ("a\nb", 2, "single newline"),
+            ("a\n", 2, "trailing newline"),
+            ("a\nb\nc\n", 4, "multiple newlines"),
+            ("a\r\nb\r\n", 3, "CRLF pairs"),
+            ("a\rb", 1, "bare CR not counted"),
+            ("a\nb\r\nc\rd", 3, "mixed newlines"),
+            ("你好\n世界", 2, "CJK text"),
+            ("\n\n\n", 4, "only newlines"),
+        ];
+        for (input, expected, desc) in cases {
+            assert_eq!(
+                DocumentStats::from_text(input).lines,
+                expected,
+                "{desc}: {input:?}"
+            );
+        }
         assert_eq!(DocumentStats::default(), DocumentStats::from_text(""));
     }
 
     // ── bytecount_newlines ────────────────────────────────────────────
 
     #[test]
-    fn bytecount_empty() {
+    fn bytecount_cases() {
         assert_eq!(bytecount_newlines(""), 0);
-    }
-
-    #[test]
-    fn bytecount_no_newlines() {
         assert_eq!(bytecount_newlines("hello world"), 0);
-    }
-
-    #[test]
-    fn bytecount_several() {
         assert_eq!(bytecount_newlines("a\nb\nc\n"), 3);
     }
 

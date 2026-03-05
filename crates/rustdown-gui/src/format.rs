@@ -395,28 +395,12 @@ mod tests {
     }
 
     #[test]
-    fn glob_match_multiple_wildcards() {
+    fn glob_match_edge_cases() {
         assert!(glob_match("a*b*c", "aXbYc"));
         assert!(!glob_match("a*b*c", "aXbYd"));
-    }
-
-    #[test]
-    fn glob_match_surrounding_wildcards() {
         assert!(glob_match("*test*", "prefix-test-suffix"));
-    }
-
-    #[test]
-    fn glob_match_both_empty() {
         assert!(glob_match("", ""));
-    }
-
-    #[test]
-    fn glob_match_star_matches_all() {
         assert!(glob_match("*", "anything"));
-    }
-
-    #[test]
-    fn glob_match_trailing_wildcard_matches_empty() {
         assert!(glob_match("a*", "a"));
     }
 
@@ -435,102 +419,46 @@ mod tests {
     // ── CRLF normalization edge cases ───────────────────────────────
 
     #[test]
-    fn format_crlf_only_input() {
+    fn format_crlf_normalization_cases() {
         let opts = FormatOptions {
             trim_trailing_whitespace: false,
             insert_final_newline: false,
             end_of_line: Some(EndOfLine::Lf),
         };
-        assert_eq!(format_markdown("\r\n\r\n\r\n", opts), "\n\n\n");
+        let cases = [
+            // (input, expected, description)
+            ("\r\n\r\n\r\n", "\n\n\n", "CRLF-only"),
+            ("a\rb\rc", "a\nb\nc", "CR-only"),
+            ("a\r\nb\rc\nd", "a\nb\nc\nd", "mixed CR/CRLF/LF"),
+            ("café\r\nwörld\r\n", "café\nwörld\n", "unicode with CRLF"),
+            ("日本語\r\n中文\r\n", "日本語\n中文\n", "CJK with CRLF"),
+            ("🦀\r\n🎉\r\n", "🦀\n🎉\n", "emoji with CRLF"),
+            ("über\rcool", "über\ncool", "unicode with lone CR"),
+            ("hello\r", "hello\n", "trailing CR at EOF"),
+            ("\r", "\n", "single CR"),
+        ];
+        for (input, expected, desc) in cases {
+            assert_eq!(format_markdown(input, opts), expected, "{desc}");
+        }
     }
 
     #[test]
-    fn format_cr_only_input() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        // Lone \r should each become \n.
-        assert_eq!(format_markdown("a\rb\rc", opts), "a\nb\nc");
-    }
-
-    #[test]
-    fn format_mixed_cr_crlf_lf() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(format_markdown("a\r\nb\rc\nd", opts), "a\nb\nc\nd");
-    }
-
-    #[test]
-    fn format_empty_input() {
+    fn format_empty_and_final_newline_cases() {
+        // Empty with no final newline.
         let opts = FormatOptions {
             trim_trailing_whitespace: true,
             insert_final_newline: false,
             end_of_line: Some(EndOfLine::Lf),
         };
         assert_eq!(format_markdown("", opts), "");
-    }
 
-    #[test]
-    fn format_empty_input_with_final_newline() {
-        // Empty doc with insert_final_newline should get a newline.
+        // Empty with insert_final_newline.
         let opts = FormatOptions {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             end_of_line: Some(EndOfLine::Lf),
         };
         assert_eq!(format_markdown("", opts), "\n");
-    }
-
-    #[test]
-    fn format_unicode_with_crlf() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        // Multi-byte UTF-8 chars must survive CRLF normalization.
-        assert_eq!(format_markdown("café\r\nwörld\r\n", opts), "café\nwörld\n");
-        assert_eq!(
-            format_markdown("日本語\r\n中文\r\n", opts),
-            "日本語\n中文\n"
-        );
-        // 4-byte emoji
-        assert_eq!(format_markdown("🦀\r\n🎉\r\n", opts), "🦀\n🎉\n");
-    }
-
-    #[test]
-    fn format_unicode_with_lone_cr() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(format_markdown("über\rcool", opts), "über\ncool");
-    }
-
-    #[test]
-    fn format_trailing_cr_at_eof() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(format_markdown("hello\r", opts), "hello\n");
-    }
-
-    #[test]
-    fn format_single_cr() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(format_markdown("\r", opts), "\n");
     }
 
     // ── Fence indentation interaction (format.rs ↔ markdown_fence.rs) ──

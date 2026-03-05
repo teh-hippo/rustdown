@@ -102,13 +102,9 @@ mod tests {
     }
 
     #[test]
-    fn row_byte_offset_to_y_empty_rows() {
+    fn row_mapping_empty_rows() {
         assert_eq!(row_byte_offset_to_y(&[], 0), 0.0);
         assert_eq!(row_byte_offset_to_y(&[], 42), 0.0);
-    }
-
-    #[test]
-    fn row_y_to_byte_offset_empty_rows() {
         assert_eq!(row_y_to_byte_offset(&[], 0.0), 0);
         assert_eq!(row_y_to_byte_offset(&[], 42.0), 0);
     }
@@ -170,18 +166,15 @@ mod tests {
     // ── char_index_to_byte extended ─────────────────────────────────
 
     #[test]
-    fn char_index_to_byte_empty_string() {
+    fn char_index_to_byte_edge_cases() {
+        // Empty string
         assert_eq!(char_index_to_byte("", 0), 0);
         assert_eq!(char_index_to_byte("", 5), 0);
-    }
-
-    #[test]
-    fn char_index_to_byte_cjk_and_emoji() {
-        // '日' is 3 bytes, '🦀' is 4 bytes
+        // CJK + emoji: '日' is 3 bytes, '🦀' is 4 bytes
         let text = "日🦀x";
-        assert_eq!(char_index_to_byte(text, 0), 0); // '日'
-        assert_eq!(char_index_to_byte(text, 1), 3); // '🦀'
-        assert_eq!(char_index_to_byte(text, 2), 7); // 'x'
-        assert_eq!(char_index_to_byte(text, 3), 8); // past end
+        assert_eq!(char_index_to_byte(text, 0), 0);
+        assert_eq!(char_index_to_byte(text, 1), 3);
+        assert_eq!(char_index_to_byte(text, 2), 7);
+        assert_eq!(char_index_to_byte(text, 3), 8);
     }
 }
