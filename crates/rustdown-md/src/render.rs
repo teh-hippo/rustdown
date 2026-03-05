@@ -413,17 +413,51 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
     }
 }
 
-fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
-    // Resolve relative URLs against the configured base URI.
-    let resolved: std::borrow::Cow<'_, str> =
-        if url.starts_with("//") || url.contains("://") || style.image_base_uri.is_empty() {
-            std::borrow::Cow::Borrowed(url)
-        } else {
-            let mut s = String::with_capacity(style.image_base_uri.len() + url.len());
-            s.push_str(&style.image_base_uri);
+/// Resolve a (possibly relative) image URL against a base URI.
+///
+/// Absolute URLs (containing `://` or starting with `//`) pass through
+/// unchanged.  A URL starting with `/` is treated as an absolute path
+/// and is resolved against only the scheme+authority of `base_uri`.
+/// Otherwise the URL is appended to `base_uri` with exactly one `/`
+/// separator.
+fn resolve_image_url<'a>(url: &'a str, base_uri: &str) -> std::borrow::Cow<'a, str> {
+    if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
+        return std::borrow::Cow::Borrowed(url);
+    }
+
+    if url.starts_with('/') {
+        // Absolute path — combine with the scheme+authority only.
+        // e.g. base "file:///home/user/docs/" + "/images/pic.png"
+        //   → "file:///images/pic.png"
+        if let Some(idx) = base_uri.find("://") {
+            let after_scheme = idx + 3; // skip "://"
+            // Find the next '/' after the authority (if any).
+            let authority_end = base_uri[after_scheme..]
+                .find('/')
+                .map_or(base_uri.len(), |i| after_scheme + i);
+            let mut s = String::with_capacity(authority_end + url.len());
+            s.push_str(&base_uri[..authority_end]);
             s.push_str(url);
-            std::borrow::Cow::Owned(s)
-        };
+            return std::borrow::Cow::Owned(s);
+        }
+        // No scheme — just use url as-is.
+        return std::borrow::Cow::Borrowed(url);
+    }
+
+    // Relative path — ensure exactly one '/' separator.
+    let base_slash = base_uri.ends_with('/');
+    let url_slash = url.starts_with('/');
+    let mut s = String::with_capacity(base_uri.len() + url.len() + 1);
+    s.push_str(base_uri);
+    if !base_slash && !url_slash {
+        s.push('/');
+    }
+    s.push_str(url);
+    std::borrow::Cow::Owned(s)
+}
+
+fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
+    let resolved = resolve_image_url(url, &style.image_base_uri);
 
     let max_width = ui.available_width();
     let image = egui::Image::new(resolved.as_ref())
@@ -530,9 +564,11 @@ fn render_blockquote(
     // Use a unique salt per nesting depth so egui doesn't share layout state.
     let salt = ui.next_auto_id().with(indent);
 
+    // Floor must match `estimate_quote_height` (40px) so that viewport
+    // culling height estimates stay consistent with actual rendering.
     let inner_response = ui
         .allocate_ui_with_layout(
-            egui::vec2((ui.available_width() - reserved).max(0.0), 0.0),
+            egui::vec2((ui.available_width() - reserved).max(40.0), 0.0),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
                 ui.indent(salt, |ui| {
@@ -2312,64 +2348,60 @@ Normal paragraph.
 
     #[test]
     fn image_url_absolute_stays_unchanged() {
-        let url = "https://example.com/pic.png";
-        let base_uri = "";
-        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
-            url.to_owned()
-        } else {
-            format!("{base_uri}{url}")
-        };
-        assert_eq!(resolved, "https://example.com/pic.png");
+        let r = resolve_image_url("https://example.com/pic.png", "");
+        assert_eq!(r, "https://example.com/pic.png");
     }
 
     #[test]
     fn image_url_relative_with_base_uri() {
-        let url = "images/pic.png";
-        let base_uri = "file:///home/user/docs/";
-        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
-            url.to_owned()
-        } else {
-            format!("{base_uri}{url}")
-        };
-        assert_eq!(resolved, "file:///home/user/docs/images/pic.png");
+        let r = resolve_image_url("images/pic.png", "file:///home/user/docs/");
+        assert_eq!(r, "file:///home/user/docs/images/pic.png");
     }
 
     #[test]
     fn image_url_relative_with_empty_base_uri() {
-        let url = "images/pic.png";
-        let base_uri = "";
-        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
-            url.to_owned()
-        } else {
-            format!("{base_uri}{url}")
-        };
-        // Empty base URI → relative path stays as-is
-        assert_eq!(resolved, "images/pic.png");
+        let r = resolve_image_url("images/pic.png", "");
+        assert_eq!(r, "images/pic.png");
     }
 
     #[test]
     fn image_url_absolute_ignores_base_uri() {
-        // Even with a base URI set, absolute URLs should not be prefixed
-        let url = "http://cdn.example.com/img.jpg";
-        let base_uri = "file:///local/base/";
-        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
-            url.to_owned()
-        } else {
-            format!("{base_uri}{url}")
-        };
-        assert_eq!(resolved, "http://cdn.example.com/img.jpg");
+        let r = resolve_image_url("http://cdn.example.com/img.jpg", "file:///local/base/");
+        assert_eq!(r, "http://cdn.example.com/img.jpg");
     }
 
     #[test]
     fn image_url_protocol_relative_stays_unchanged() {
-        let url = "//cdn.example.com/image.png";
-        let base_uri = "file:///local/base/";
-        let resolved = if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
-            url.to_owned()
-        } else {
-            format!("{base_uri}{url}")
-        };
-        assert_eq!(resolved, "//cdn.example.com/image.png");
+        let r = resolve_image_url("//cdn.example.com/image.png", "file:///local/base/");
+        assert_eq!(r, "//cdn.example.com/image.png");
+    }
+
+    #[test]
+    fn image_url_base_uri_missing_trailing_slash() {
+        // BUG FIX: base URI without trailing '/' must still produce a valid path.
+        let r = resolve_image_url("image.png", "file:///home/user");
+        assert_eq!(r, "file:///home/user/image.png");
+    }
+
+    #[test]
+    fn image_url_absolute_path_resolves_against_authority() {
+        // A URL starting with '/' is an absolute path — resolve against
+        // scheme+authority only, discarding the base directory.
+        let r = resolve_image_url("/images/pic.png", "file:///home/user/docs/");
+        assert_eq!(r, "file:///images/pic.png");
+    }
+
+    #[test]
+    fn image_url_absolute_path_with_http_base() {
+        let r = resolve_image_url("/assets/logo.png", "http://example.com/docs/");
+        assert_eq!(r, "http://example.com/assets/logo.png");
+    }
+
+    #[test]
+    fn image_url_absolute_path_no_scheme_passthrough() {
+        // No scheme in base — absolute-path URL is returned as-is.
+        let r = resolve_image_url("/images/pic.png", "no-scheme-base");
+        assert_eq!(r, "/images/pic.png");
     }
 
     #[test]
