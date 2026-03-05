@@ -235,35 +235,46 @@ fn estimate_block_height(
             let size = body_size * style.headings[idx].font_scale;
             let text_h = estimate_text_height(&text.text, size, wrap_width);
             let sep = if *level <= 2 { 4.0 } else { 0.0 };
+            // Render adds top_space (0.3) + bottom_space (0.15).
             size.mul_add(0.45, text_h) + sep
         }
         Block::Paragraph(text) => {
             body_size.mul_add(0.4, estimate_text_height(&text.text, body_size, wrap_width))
         }
-        Block::Code { code, .. } => {
+        Block::Code { language, code, .. } => {
             let mono_size = body_size * 0.9;
             let lines = (bytecount_newlines(code.as_bytes()) + 1).max(1) as f32;
-            body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0))
+            // 12.0 for Frame inner_margin (6px each side), 1.4 line spacing.
+            // Add language label height when present.
+            let lang_h = if language.is_empty() { 0.0 } else { body_size };
+            body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0) + lang_h)
         }
         Block::Quote(inner) => {
+            // Reserve: bar_margin (0.4em) + bar_width (3px) + content_margin (0.6em) ≈ 1em + 3px.
+            let reserved = body_size + 3.0;
+            let inner_w = (wrap_width - reserved).max(40.0);
             let inner_h: f32 = inner
                 .iter()
-                .map(|b| estimate_block_height(b, body_size, wrap_width - 20.0, style))
+                .map(|b| estimate_block_height(b, body_size, inner_w, style))
                 .sum();
             body_size.mul_add(0.3, inner_h)
         }
         Block::UnorderedList(items) | Block::OrderedList { items, .. } => {
+            // Each item: indent + bullet/number column + gap + content.
+            let bullet_col = body_size.mul_add(1.5, 2.0);
+            let content_w = (wrap_width - bullet_col).max(40.0);
             let item_h: f32 = items
                 .iter()
                 .map(|item| {
                     let text_h =
-                        estimate_text_height(&item.content.text, body_size, wrap_width - 40.0);
+                        estimate_text_height(&item.content.text, body_size, content_w);
                     let child_h: f32 = item
                         .children
                         .iter()
-                        .map(|b| estimate_block_height(b, body_size, wrap_width - 40.0, style))
+                        .map(|b| estimate_block_height(b, body_size, content_w, style))
                         .sum();
-                    body_size.mul_add(0.2, text_h + child_h)
+                    // ui.horizontal adds ~body_size vertical per item.
+                    body_size.mul_add(0.3, text_h + child_h)
                 })
                 .sum();
             body_size.mul_add(0.2, item_h)
@@ -273,6 +284,8 @@ fn estimate_block_height(
             let num_cols = table.header.len().max(1);
             let col_width = (wrap_width / num_cols as f32).max(40.0);
             let base_row_h = body_size * 1.6;
+            // Per-row spacing from egui Grid (item_spacing.y, typically ~4px).
+            let row_spacing = 4.0;
             let hdr = if table.header.is_empty() {
                 0.0
             } else {
@@ -282,6 +295,7 @@ fn estimate_block_height(
                     .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
                     .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap_or(base_row_h)
+                    + row_spacing
             };
             let rows_h: f32 = table
                 .rows
@@ -293,11 +307,18 @@ fn estimate_block_height(
                         })
                         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or(base_row_h)
+                        + row_spacing
                 })
                 .sum();
             body_size.mul_add(0.4, hdr + rows_h)
         }
-        Block::Image { .. } => body_size * 10.0, // Rough estimate for actual image height
+        Block::Image { .. } => {
+            // Images vary wildly — use a generous overestimate so viewport
+            // culling never clips them. max_width constrains width to the
+            // available area, so assume roughly a 4:3 aspect ratio at full width.
+            let max_image_h = wrap_width * 0.75;
+            body_size.mul_add(0.4, max_image_h.max(body_size * 8.0))
+        }
     }
 }
 
