@@ -2752,4 +2752,240 @@ Normal paragraph.
             assert!(h > 0.0, "height for {block:?} should be positive, got {h}");
         }
     }
+
+    // ── Round 6-8: New comprehensive tests ────────────────────────────
+
+    #[test]
+    fn render_single_column_table() {
+        let md = "| Solo |\n|------|\n| One |\n| Two |\n| Three |\n";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::Table(table) => {
+                assert_eq!(table.header.len(), 1, "single-column table");
+                assert_eq!(table.rows.len(), 3);
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_12_column_table_no_panic() {
+        let md = "\
+| A | B | C | D | E | F | G | H | I | J | K | L |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10| 11| 12|
+";
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("12col");
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
+    }
+
+    #[test]
+    fn render_adjacent_tables() {
+        let md = "\
+| A | B |
+|---|---|
+| 1 | 2 |
+
+| X | Y | Z |
+|---|---|---|
+| a | b | c |
+";
+        let (blocks, _) = headless_render(md);
+        let table_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Table(_)))
+            .count();
+        assert_eq!(table_count, 2, "should have 2 adjacent tables");
+    }
+
+    #[test]
+    fn render_image_alt_text_from_brackets() {
+        // Verify alt text comes from the text between brackets, not the title.
+        let md = "![My Alt Text](image.png)";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Image { alt, .. } => {
+                assert_eq!(alt, "My Alt Text", "alt should come from brackets");
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_image_alt_text_with_formatting() {
+        let md = "![Alt with **bold** and *italic*](img.png)";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Image { alt, .. } => {
+                assert!(
+                    alt.contains("bold") && alt.contains("italic"),
+                    "alt text should contain formatted text: {alt}"
+                );
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strengthen_color_near_threshold() {
+        // Test colors near the luma=127 threshold.
+        let light = strengthen_color(egui::Color32::from_rgb(128, 128, 128));
+        let [lr, lg, lb, _] = light.to_array();
+        // Luma ≈ 128 > 127 → should brighten.
+        assert!(lr > 128 && lg > 128 && lb > 128, "should brighten");
+
+        let dark = strengthen_color(egui::Color32::from_rgb(126, 126, 126));
+        let [dr, dg, db, _] = dark.to_array();
+        // Luma ≈ 126 < 127 → should darken.
+        assert!(dr < 126 && dg < 126 && db < 126, "should darken");
+    }
+
+    #[test]
+    fn render_deeply_nested_blockquote_no_panic() {
+        let md = "> L1\n> > L2\n> > > L3\n> > > > L4\n> > > > > L5\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_code_block_with_trailing_spaces() {
+        let md = "```\nline with spaces   \nanother line\n```\n";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Code { code, .. } => {
+                assert!(
+                    code.contains("spaces   "),
+                    "trailing spaces should be preserved"
+                );
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_empty_code_block_has_positive_height() {
+        let (_, height) = headless_render("```\n```\n");
+        assert!(height > 0.0, "empty code block should have positive height");
+    }
+
+    #[test]
+    fn estimate_height_code_with_language_taller() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let no_lang = Block::Code {
+            language: String::new(),
+            code: "code".to_owned(),
+        };
+        let with_lang = Block::Code {
+            language: "rust".to_owned(),
+            code: "code".to_owned(),
+        };
+        let h_no = estimate_block_height(&no_lang, 14.0, 400.0, &style);
+        let h_lang = estimate_block_height(&with_lang, 14.0, 400.0, &style);
+        assert!(
+            h_lang > h_no,
+            "code with language ({h_lang}) should be taller than without ({h_no})"
+        );
+    }
+
+    #[test]
+    fn image_height_estimate_scales_with_width() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Image {
+            url: "img.png".to_owned(),
+            alt: String::new(),
+        };
+        let h_narrow = estimate_block_height(&block, 14.0, 200.0, &style);
+        let h_wide = estimate_block_height(&block, 14.0, 800.0, &style);
+        assert!(
+            h_wide > h_narrow,
+            "wider viewport ({h_wide}) should produce taller image estimate than narrow ({h_narrow})"
+        );
+    }
+
+    #[test]
+    fn table_col_widths_many_columns_respect_minimum() {
+        // 12 columns — all should be at least min_col_w.
+        let header: Vec<&str> = (0..12).map(|_| "H").collect();
+        let row: Vec<&str> = (0..12).map(|_| "v").collect();
+        let widths = compute_col_widths(&header, &[row], 800.0);
+        assert_eq!(widths.len(), 12);
+        let min_col_w = (14.0_f32 * 2.5).max(36.0);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "column {i} should be at least {min_col_w}px, got {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_hr_symmetric_spacing() {
+        // Verify HR doesn't panic and produces positive height.
+        let md = "Above\n\n---\n\nBelow";
+        let (blocks, height) = headless_render(md);
+        let hr_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ThematicBreak))
+            .count();
+        assert_eq!(hr_count, 1);
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_task_list_mixed_states() {
+        let md = "\
+- [x] Done
+- [ ] Not done
+- [x] Also done
+- Regular item
+";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 4);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, Some(true));
+                assert_eq!(items[3].checked, None);
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_inline_formatting_stress() {
+        let md = "**bold** *italic* ***bold-italic*** `code` ~~strike~~ [link](url) **`bold code`**";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(text.text.contains("bold"));
+                assert!(text.text.contains("italic"));
+                assert!(text.text.contains("code"));
+                assert!(text.text.contains("strike"));
+                assert!(text.text.contains("link"));
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_table_with_long_cell_content() {
+        let md = "\
+| Short | Very Long Column |
+|-------|-----------------|
+| a     | This cell contains a very long piece of text that should test how the table handles overflow |
+";
+        let (blocks, _) = headless_render(md);
+        assert!(matches!(&blocks[0], Block::Table(_)));
+    }
 }
