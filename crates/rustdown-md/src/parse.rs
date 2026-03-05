@@ -335,45 +335,16 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
         _ => return None,
     };
 
-    // Use shared alt-text collector, but reject if any unexpected events appear
-    // (which would mean this isn't a standalone image paragraph).
-    let mut alt = String::with_capacity(64);
-    let mut i = 2;
-    while i < events.len() {
-        match &events[i] {
-            Event::End(TagEnd::Image) => {
-                i += 1;
-                break;
-            }
-            Event::Text(t) => {
-                alt.push_str(t);
-                i += 1;
-            }
-            Event::Code(c) => {
-                alt.push_str(c);
-                i += 1;
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                alt.push(' ');
-                i += 1;
-            }
-            // Formatting tags inside alt text — skip the tag but keep scanning
-            Event::Start(Tag::Strong | Tag::Emphasis | Tag::Strikethrough)
-            | Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough) => {
-                i += 1;
-            }
-            _ => return None, // unexpected event → not a standalone image
-        }
-    }
+    // Reuse shared alt-text collector starting after Start(Image).
+    let (alt, end_idx) = collect_image_alt(events, 2);
 
     // The very next event must be End(Paragraph).
-    if i >= events.len() || !matches!(&events[i], Event::End(TagEnd::Paragraph)) {
+    if end_idx >= events.len() || !matches!(&events[end_idx], Event::End(TagEnd::Paragraph)) {
         return None;
     }
-    i += 1; // consume End(Paragraph)
 
     blocks.push(Block::Image { url: dest_url, alt });
-    Some(i)
+    Some(end_idx + 1) // +1 to consume End(Paragraph)
 }
 
 fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Block>) -> usize {
@@ -615,13 +586,20 @@ enum InlineFlag {
     Link(Rc<str>),
 }
 
-/// Maintains the inline formatting stack and a cached `SpanStyle` that
-/// is updated incrementally on push/pop, making style queries O(1).
+/// Maintains the inline formatting stack with counter-based cache rebuild.
+///
+/// Instead of rescanning the full stack on every pop (O(n)), we track
+/// reference counts for each flag type.  This makes push, pop, and
+/// style queries all O(1).
 struct InlineState {
     stack: Vec<InlineFlag>,
-    /// Cached flags bitfield (strong | emphasis | strikethrough).
-    cached_flags: u8,
-    /// Cached link URL (last link on stack, or None).
+    /// Per-flag reference counts — avoids O(n) rebuild on pop.
+    strong_count: u8,
+    emphasis_count: u8,
+    strikethrough_count: u8,
+    /// Number of Link entries on the stack.
+    link_count: u8,
+    /// Cached link URL (topmost link on stack, or None).
     cached_link: Option<Rc<str>>,
 }
 
@@ -629,21 +607,42 @@ impl InlineState {
     fn new() -> Self {
         Self {
             stack: Vec::with_capacity(4),
-            cached_flags: 0,
+            strong_count: 0,
+            emphasis_count: 0,
+            strikethrough_count: 0,
+            link_count: 0,
             cached_link: None,
         }
     }
 
     fn clear(&mut self) {
         self.stack.clear();
-        self.cached_flags = 0;
+        self.strong_count = 0;
+        self.emphasis_count = 0;
+        self.strikethrough_count = 0;
+        self.link_count = 0;
         self.cached_link = None;
+    }
+
+    /// Compute the flags bitfield from counters — O(1).
+    const fn flags(&self) -> u8 {
+        let mut f = 0u8;
+        if self.strong_count > 0 {
+            f |= FLAG_STRONG;
+        }
+        if self.emphasis_count > 0 {
+            f |= FLAG_EMPHASIS;
+        }
+        if self.strikethrough_count > 0 {
+            f |= FLAG_STRIKETHROUGH;
+        }
+        f
     }
 
     /// Current `SpanStyle` — O(1), no stack traversal.
     fn style(&self) -> SpanStyle {
         SpanStyle {
-            flags: self.cached_flags,
+            flags: self.flags(),
             link: self.cached_link.clone(),
         }
     }
@@ -651,27 +650,28 @@ impl InlineState {
     /// Current `SpanStyle` with the code flag set.
     fn style_with_code(&self) -> SpanStyle {
         SpanStyle {
-            flags: self.cached_flags | FLAG_CODE,
+            flags: self.flags() | FLAG_CODE,
             link: self.cached_link.clone(),
         }
     }
 
     fn push(&mut self, flag: InlineFlag) {
         match &flag {
-            InlineFlag::Strong => self.cached_flags |= FLAG_STRONG,
-            InlineFlag::Emphasis => self.cached_flags |= FLAG_EMPHASIS,
-            InlineFlag::Strikethrough => self.cached_flags |= FLAG_STRIKETHROUGH,
-            InlineFlag::Link(url) => self.cached_link = Some(Rc::clone(url)),
+            InlineFlag::Strong => self.strong_count += 1,
+            InlineFlag::Emphasis => self.emphasis_count += 1,
+            InlineFlag::Strikethrough => self.strikethrough_count += 1,
+            InlineFlag::Link(url) => {
+                self.link_count += 1;
+                self.cached_link = Some(Rc::clone(url));
+            }
         }
         self.stack.push(flag);
     }
 
     fn pop(&mut self, flag: &InlineFlag) {
         if let Some(pos) = self.stack.iter().rposition(|k| k == flag) {
-            // swap_remove is O(1); order doesn't matter because the cache is
-            // rebuilt from the full remaining set (bitwise OR of all flags).
-            self.stack.swap_remove(pos);
-            self.rebuild_cache();
+            let removed = self.stack.swap_remove(pos);
+            self.decrement(&removed);
         }
     }
 
@@ -681,22 +681,31 @@ impl InlineState {
             .iter()
             .rposition(|k| matches!(k, InlineFlag::Link(_)))
         {
-            // See pop() above — order is irrelevant for flag accumulation.
-            self.stack.swap_remove(pos);
-            self.rebuild_cache();
+            let removed = self.stack.swap_remove(pos);
+            self.decrement(&removed);
         }
     }
 
-    /// Rebuild cached flags from the stack (only needed on pop).
-    fn rebuild_cache(&mut self) {
-        self.cached_flags = 0;
-        self.cached_link = None;
-        for flag in &self.stack {
-            match flag {
-                InlineFlag::Strong => self.cached_flags |= FLAG_STRONG,
-                InlineFlag::Emphasis => self.cached_flags |= FLAG_EMPHASIS,
-                InlineFlag::Strikethrough => self.cached_flags |= FLAG_STRIKETHROUGH,
-                InlineFlag::Link(url) => self.cached_link = Some(Rc::clone(url)),
+    /// Decrement the counter for a removed flag and refresh the link cache
+    /// only when necessary.
+    fn decrement(&mut self, flag: &InlineFlag) {
+        match flag {
+            InlineFlag::Strong => self.strong_count = self.strong_count.saturating_sub(1),
+            InlineFlag::Emphasis => self.emphasis_count = self.emphasis_count.saturating_sub(1),
+            InlineFlag::Strikethrough => {
+                self.strikethrough_count = self.strikethrough_count.saturating_sub(1);
+            }
+            InlineFlag::Link(_) => {
+                self.link_count = self.link_count.saturating_sub(1);
+                if self.link_count == 0 {
+                    self.cached_link = None;
+                } else {
+                    // Find the new topmost link.
+                    self.cached_link = self.stack.iter().rev().find_map(|f| match f {
+                        InlineFlag::Link(url) => Some(Rc::clone(url)),
+                        _ => None,
+                    });
+                }
             }
         }
     }
@@ -1291,7 +1300,7 @@ mod tests {
         // Pop Strong without any preceding push — must not crash.
         state.pop(&InlineFlag::Strong);
         assert!(state.stack.is_empty());
-        assert_eq!(state.cached_flags, 0);
+        assert_eq!(state.flags(), 0);
         assert!(state.cached_link.is_none());
     }
 

@@ -1217,11 +1217,11 @@ impl RustdownApp {
     /// Uses exact heading Y positions from the parsed preview cache when
     /// available, and falls back to byte-proportional mapping otherwise.
     fn preview_nav_scroll_y(&self, byte_offset: usize) -> f32 {
-        if let Some(ordinal) = self
+        // Binary search on sorted outline for O(log n) lookup.
+        if let Ok(ordinal) = self
             .nav
             .outline
-            .iter()
-            .position(|h| h.byte_offset == byte_offset)
+            .binary_search_by_key(&byte_offset, |h| h.byte_offset)
             && let Some(y) = self.doc.preview_cache.heading_y(ordinal)
         {
             return y;

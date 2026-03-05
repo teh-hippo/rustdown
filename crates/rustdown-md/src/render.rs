@@ -409,14 +409,11 @@ fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     let hard_lines = (newline_count + 1).max(1);
     // Use character count (not byte count) for average line length to avoid
     // inflating wrap estimates for multi-byte characters like CJK.
+    // Rust's chars().count() is internally optimized to count leading bytes.
     let char_count = if is_ascii {
         text.len()
     } else {
-        // Count non-continuation bytes (leading bytes of UTF-8 sequences).
-        text.as_bytes()
-            .iter()
-            .filter(|&&b| (b & 0xC0) != 0x80)
-            .count()
+        text.chars().count()
     };
     let avg_line_len = char_count as f32 / hard_lines as f32;
     let wraps_per_line = (avg_line_len / chars_per_line).ceil().max(1.0);
@@ -996,22 +993,23 @@ fn compute_table_col_widths(
     let min_col_w = (body_size * 2.5).max(36.0);
 
     // Initial estimates from content length (header + rows).
-    let mut widths: Vec<f32> = (0..num_cols)
-        .map(|ci| {
-            let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
-            let max_row_len = rows
-                .iter()
-                .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
-                .max()
-                .unwrap_or(0);
-            let char_len = hdr_len.max(max_row_len).max(3) as f32;
-            // Cap per-column estimate to avoid one column dominating.
-            (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
-        })
-        .collect();
+    let col_cap = usable / num_cols as f32 * 3.0;
+    let mut widths = Vec::with_capacity(num_cols);
+    let mut total_est = 0.0_f32;
+    for ci in 0..num_cols {
+        let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
+        let max_row_len = rows
+            .iter()
+            .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
+            .max()
+            .unwrap_or(0);
+        let char_len = hdr_len.max(max_row_len).max(3) as f32;
+        let w = (avg_char_w.mul_add(char_len, 12.0)).min(col_cap);
+        total_est += w;
+        widths.push(w);
+    }
 
     // Normalise: scale to budget, clamp to minimum, redistribute overflow.
-    let total_est: f32 = widths.iter().sum();
     if total_est > 0.0 {
         let scale = usable / total_est;
         let mut clamped_total = 0.0_f32;
@@ -1186,7 +1184,10 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
     let mut h: u64 = BASIS;
 
     for chunk in chunks {
-        let word = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+        // chunks_exact(8) guarantees exactly 8 bytes — direct conversion is safe.
+        let word = u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
         h ^= word;
         h = h.wrapping_mul(PRIME);
     }
