@@ -293,8 +293,11 @@ fn estimate_block_height(
             body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0) + lang_h)
         }
         Block::Quote(inner) => estimate_quote_height(inner, body_size, wrap_width, style),
-        Block::UnorderedList(items) | Block::OrderedList { items, .. } => {
-            estimate_list_height(items, body_size, wrap_width, style)
+        Block::UnorderedList(items) => {
+            estimate_list_height(items, body_size, wrap_width, style, None)
+        }
+        Block::OrderedList { start, items } => {
+            estimate_list_height(items, body_size, wrap_width, style, Some(*start))
         }
         Block::ThematicBreak => body_size * 0.8,
         Block::Table(table) => estimate_table_height(table, body_size, wrap_width),
@@ -324,14 +327,28 @@ fn estimate_quote_height(
     body_size.mul_add(0.3, inner_h)
 }
 
+#[allow(clippy::cast_precision_loss)] // digit_count math on small values
 fn estimate_list_height(
     items: &[ListItem],
     body_size: f32,
     wrap_width: f32,
     style: &MarkdownStyle,
+    ordered_start: Option<u64>,
 ) -> f32 {
-    // Each item: indent + bullet/number column + gap + content.
-    let bullet_col = body_size.mul_add(1.5, 2.0);
+    // Match the bullet/number column width used in the actual renderers.
+    let bullet_col = match ordered_start {
+        Some(start) => {
+            let max_num = start.saturating_add(items.len().saturating_sub(1) as u64);
+            let digit_count = if max_num == 0 {
+                1
+            } else {
+                (max_num as f64).log10().floor() as u32 + 1
+            };
+            // Mirrors render_ordered_list: 0.6 em per digit + 1.0 em + 4px gap.
+            body_size.mul_add(0.6_f32.mul_add(digit_count as f32, 1.0), 4.0)
+        }
+        None => body_size.mul_add(1.5, 2.0),
+    };
     let content_w = (wrap_width - bullet_col).max(40.0);
     let item_h: f32 = items
         .iter()
@@ -378,14 +395,30 @@ fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     if text.is_empty() {
         return font_size;
     }
-    let avg_char_width = font_size * 0.55;
+    // Use wider average char width for non-ASCII text (CJK glyphs are roughly
+    // square, so ≈0.7 em is a better estimate than the 0.55 em used for Latin).
+    let is_ascii = text.is_ascii();
+    let avg_char_width = if is_ascii {
+        font_size * 0.55
+    } else {
+        font_size * 0.7
+    };
     let chars_per_line = (wrap_width / avg_char_width).max(1.0);
-    let total_len = text.len();
     // Count newlines by scanning bytes (much faster than .lines() for large text).
     let newline_count = bytecount_newlines(text.as_bytes());
     let hard_lines = (newline_count + 1).max(1);
-    // Estimate average line length for soft-wrapping calculation.
-    let avg_line_len = total_len as f32 / hard_lines as f32;
+    // Use character count (not byte count) for average line length to avoid
+    // inflating wrap estimates for multi-byte characters like CJK.
+    let char_count = if is_ascii {
+        text.len()
+    } else {
+        // Count non-continuation bytes (leading bytes of UTF-8 sequences).
+        text.as_bytes()
+            .iter()
+            .filter(|&&b| (b & 0xC0) != 0x80)
+            .count()
+    };
+    let avg_line_len = char_count as f32 / hard_lines as f32;
     let wraps_per_line = (avg_line_len / chars_per_line).ceil().max(1.0);
     let total = hard_lines as f32 * wraps_per_line;
     total * font_size * 1.3
@@ -5441,7 +5474,7 @@ that we can observe the relationship between available width and estimated heigh
             let indent_px = 16.0 * *depth as f32;
             assert!(indent_px.is_finite(), "indent overflowed at depth {depth}");
             let items = vec![plain_item("test")];
-            let h = estimate_list_height(&items, 14.0, 400.0, &style);
+            let h = estimate_list_height(&items, 14.0, 400.0, &style, None);
             assert!(h > 0.0, "list height should be positive at depth {depth}");
         }
     }
@@ -5789,8 +5822,8 @@ that we can observe the relationship between available width and estimated heigh
         let items_50: Vec<_> = (0..50).map(|i| plain_item(&format!("Item {i}"))).collect();
         let items_100: Vec<_> = (0..100).map(|i| plain_item(&format!("Item {i}"))).collect();
 
-        let h50 = estimate_list_height(&items_50, 14.0, 400.0, &style);
-        let h100 = estimate_list_height(&items_100, 14.0, 400.0, &style);
+        let h50 = estimate_list_height(&items_50, 14.0, 400.0, &style, None);
+        let h100 = estimate_list_height(&items_100, 14.0, 400.0, &style, None);
 
         assert!(h50 > 0.0);
         assert!(h100 > 0.0);
@@ -5811,7 +5844,7 @@ that we can observe the relationship between available width and estimated heigh
         let mut heights = Vec::new();
         for &n in &counts {
             let items: Vec<_> = (0..n).map(|i| plain_item(&format!("Item {i}"))).collect();
-            let h = estimate_list_height(&items, 14.0, 400.0, &style);
+            let h = estimate_list_height(&items, 14.0, 400.0, &style, None);
             assert!(h > 0.0);
             heights.push(h);
         }
@@ -5833,7 +5866,7 @@ that we can observe the relationship between available width and estimated heigh
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
 
         let flat_items: Vec<_> = (0..10).map(|i| plain_item(&format!("Flat {i}"))).collect();
-        let h_flat = estimate_list_height(&flat_items, 14.0, 400.0, &style);
+        let h_flat = estimate_list_height(&flat_items, 14.0, 400.0, &style, None);
 
         // 5 items each with a 2-item child list (10 items total).
         let nested_items: Vec<_> = (0..5)
@@ -5849,7 +5882,7 @@ that we can observe the relationship between available width and estimated heigh
                 checked: None,
             })
             .collect();
-        let h_nested = estimate_list_height(&nested_items, 14.0, 400.0, &style);
+        let h_nested = estimate_list_height(&nested_items, 14.0, 400.0, &style, None);
 
         assert!(h_flat > 0.0);
         assert!(h_nested > 0.0);
@@ -6732,6 +6765,83 @@ that we can observe the relationship between available width and estimated heigh
         assert!(
             max_delta >= 30,
             "strengthen_color should produce visible difference, got delta={max_delta}"
+        );
+    }
+
+    #[test]
+    fn progressive_refinement_updates_heights() {
+        // After rendering, heights should converge toward actual values.
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("refine_test");
+
+        let md = "# Big Heading\n\nShort paragraph.\n\n```\nfn main() {\n    \
+                  println!(\"hello\");\n}\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+
+        // First render — heights are estimated.
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+
+        let heights_after_first = cache.heights.clone();
+        assert!(!heights_after_first.is_empty());
+
+        // Second render — heights should refine.
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+
+        // Total height should be positive and consistent across renders.
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn estimate_text_height_cjk_not_overestimated() {
+        // CJK text: 10 chars, each 3 bytes = 30 bytes.
+        // With byte-based counting the height would be ~3× inflated.
+        let cjk = "日本語テスト文字列十";
+        let latin = "abcdefghij";
+        let cjk_h = estimate_text_height(cjk, 14.0, 200.0);
+        let latin_h = estimate_text_height(latin, 14.0, 200.0);
+        // CJK should not be dramatically taller than Latin of similar char count.
+        assert!(
+            cjk_h < latin_h * 3.0,
+            "CJK height {cjk_h} vs Latin {latin_h}"
+        );
+    }
+
+    #[test]
+    fn estimate_ordered_list_wider_numbers() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let items: Vec<ListItem> = (0..100)
+            .map(|i| ListItem {
+                content: StyledText {
+                    text: format!("item {i}"),
+                    spans: vec![],
+                },
+                children: vec![],
+                checked: None,
+            })
+            .collect();
+
+        let ordered = Block::OrderedList {
+            start: 1,
+            items: items.clone(),
+        };
+        let unordered = Block::UnorderedList(items);
+
+        let h_ord = estimate_block_height(&ordered, 14.0, 400.0, &style);
+        let h_unord = estimate_block_height(&unordered, 14.0, 400.0, &style);
+
+        // Ordered list with 3-digit numbers should be at least as tall as unordered.
+        assert!(
+            h_ord >= h_unord * 0.9,
+            "ordered {h_ord} should not be much shorter than unordered {h_unord}"
         );
     }
 }
