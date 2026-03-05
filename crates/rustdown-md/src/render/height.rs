@@ -158,9 +158,21 @@ fn estimate_text_height_inner(
     wrap_width: f32,
     char_count_hint: Option<usize>,
 ) -> f32 {
+    // Guard against NaN / Inf / non-positive font_size.
+    let font_size = if font_size.is_finite() && font_size > 0.0 {
+        font_size
+    } else {
+        14.0
+    };
     if text.is_empty() {
         return font_size;
     }
+    // Guard against NaN / Inf / non-positive wrap_width.
+    let wrap_width = if wrap_width.is_finite() && wrap_width > 0.0 {
+        wrap_width
+    } else {
+        400.0
+    };
     // Use wider average char width for non-ASCII text (CJK glyphs are roughly
     // square, so ≈0.7 em is a better estimate than the 0.55 em used for Latin).
     let is_ascii = text.is_ascii();

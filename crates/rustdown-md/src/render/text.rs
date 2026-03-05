@@ -122,7 +122,12 @@ pub(super) fn render_text_with_links(
         // widgets flow together without extra gaps.
         ui.spacing_mut().item_spacing.x = 0.0;
         for span in &st.spans {
-            let text = &st.text[span.start as usize..span.end as usize];
+            let start = (span.start as usize).min(st.text.len());
+            let end = (span.end as usize).min(st.text.len());
+            if start >= end {
+                continue;
+            }
+            let text = &st.text[start..end];
             let font_family = if span.style.code() {
                 egui::FontFamily::Monospace
             } else {
@@ -183,6 +188,11 @@ pub(super) fn build_layout_job(
     };
 
     for span in spans {
+        let start = (span.start as usize).min(st.text.len());
+        let end = (span.end as usize).min(st.text.len());
+        if start >= end {
+            continue;
+        }
         let sf = SpanFormat::resolve(&span.style, style, base_color, ui);
         let span_size = if span.style.code() { size * 0.9 } else { size };
         let mut format = egui::TextFormat {
@@ -203,7 +213,7 @@ pub(super) fn build_layout_job(
         }
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,
-            byte_range: span.start as usize..span.end as usize,
+            byte_range: start..end,
             format,
         });
     }

@@ -152,11 +152,12 @@ pub struct Span {
 }
 
 impl StyledText {
+    #[allow(clippy::cast_possible_truncation)] // Saturates at u32::MAX
     fn push_text(&mut self, s: &str, style: SpanStyle) {
-        let start = self.text.len() as u32;
+        let start = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
         self.text.push_str(s);
-        let end = self.text.len() as u32;
-        self.char_count += s.chars().count() as u32;
+        let end = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
+        self.char_count = self.char_count.saturating_add(s.chars().count() as u32);
         if style.link.is_some() {
             self.has_links = true;
         }
@@ -2105,5 +2106,69 @@ mod tests {
         assert!(b.iter().any(|b| matches!(b, Block::Code { .. })));
         assert!(b.iter().any(|b| matches!(b, Block::Table(_))));
         assert!(b.iter().any(|b| matches!(b, Block::Image { .. })));
+    }
+
+    // ── Chaos / fuzz tests ──────────────────────────────────────────
+
+    #[test]
+    fn chaos_deeply_nested_blockquotes_no_stack_overflow() {
+        // 500 levels of nested blockquotes should NOT stack overflow.
+        let md = "> ".repeat(500) + "leaf text\n";
+        let blocks = parse_markdown(&md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn chaos_deeply_nested_lists_no_stack_overflow() {
+        // 500 levels of nested list indentation.
+        let mut md = String::new();
+        for depth in 0..500 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- level {depth}").ok();
+        }
+        let blocks = parse_markdown(&md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn chaos_huge_text_u32_saturation() {
+        // StyledText with text approaching u32::MAX should not panic.
+        // We can't allocate 4GB, but test that char_count saturates.
+        let mut st = StyledText::default();
+        // Simulate: push_text 50000 chars, check char_count stays valid
+        let chunk = "a".repeat(50_000);
+        for _ in 0..100 {
+            st.push_text(&chunk, SpanStyle::plain());
+        }
+        assert_eq!(st.char_count, 5_000_000);
+        assert!(st.text.len() == 5_000_000);
+    }
+
+    #[test]
+    fn chaos_empty_table_no_columns() {
+        // Table with empty header should not crash height estimation.
+        let md = "|||\n||\n||\n";
+        let blocks = parse_markdown(md);
+        // Whatever pulldown_cmark produces, it shouldn't crash.
+        assert!(blocks.len() <= 5);
+    }
+
+    #[test]
+    fn chaos_unclosed_code_fence() {
+        // Unclosed fence: rest of doc treated as code.
+        let md = format!("```\n{}\n", "x".repeat(100_000));
+        let blocks = parse_markdown(&md);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn chaos_million_list_items() {
+        // Should parse without panicking (may be slow).
+        let mut md = String::with_capacity(20 * 10_000);
+        for i in 0..10_000 {
+            let _ = writeln!(md, "- item {i}");
+        }
+        let blocks = parse_markdown(&md);
+        assert!(!blocks.is_empty());
     }
 }

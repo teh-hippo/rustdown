@@ -184,7 +184,9 @@ impl MarkdownViewer {
             .id_salt(self.id_salt)
             .auto_shrink([false, false]);
 
-        if let Some(y) = scroll_to_y {
+        if let Some(y) = scroll_to_y
+            && y.is_finite()
+        {
             scroll_area = scroll_area.vertical_scroll_offset(y);
         }
 
@@ -272,7 +274,14 @@ impl MarkdownViewer {
 
 // ── Block rendering ────────────────────────────────────────────────
 
+/// Maximum rendering recursion depth to prevent stack overflow from
+/// pathologically nested markdown (e.g. 1000 nested blockquotes).
+const MAX_RENDER_DEPTH: usize = 128;
+
 fn render_blocks(ui: &mut egui::Ui, blocks: &[Block], style: &MarkdownStyle, indent: usize) {
+    if indent > MAX_RENDER_DEPTH {
+        return;
+    }
     for block in blocks {
         render_block(ui, block, style, indent);
     }
@@ -4330,5 +4339,101 @@ mod tests {
             assert!(!cache.blocks.is_empty(), "{label}: blocks");
             assert!(cache.total_height > 0.0, "{label}: height");
         }
+    }
+
+    // ── Chaos / fuzz tests ──────────────────────────────────────────
+
+    #[test]
+    fn chaos_render_deeply_nested_blockquotes() {
+        // 200 levels of nested blockquotes must not stack overflow.
+        let md = "> ".repeat(200) + "content\n";
+        let (blocks, height) = headless_render(&md);
+        assert!(!blocks.is_empty());
+        assert!(height.is_finite());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn chaos_render_deeply_nested_lists() {
+        let mut md = String::new();
+        for depth in 0..200 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- depth {depth}").ok();
+        }
+        let (blocks, height) = headless_render(&md);
+        assert!(!blocks.is_empty());
+        assert!(height.is_finite());
+    }
+
+    #[test]
+    fn chaos_height_estimation_nan_inputs() {
+        // NaN and Inf inputs should not crash or propagate NaN.
+        let h = estimate_text_height("hello world", 14.0, f32::NAN);
+        assert!(h.is_finite() && h > 0.0, "NaN wrap_width produced: {h}");
+
+        let h = estimate_text_height("hello world", f32::NAN, 200.0);
+        assert!(h.is_finite() && h > 0.0, "NaN font_size produced: {h}");
+
+        let h = estimate_text_height("hello world", 14.0, f32::INFINITY);
+        assert!(h.is_finite() && h > 0.0, "Inf wrap_width produced: {h}");
+
+        let h = estimate_text_height("hello world", 0.0, 200.0);
+        assert!(h.is_finite(), "zero font_size produced: {h}");
+
+        let h = estimate_text_height("hello world", -5.0, 200.0);
+        assert!(h.is_finite(), "negative font_size produced: {h}");
+    }
+
+    #[test]
+    fn chaos_height_estimation_empty_table() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Table(Box::new(crate::parse::TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![],
+        }));
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h.is_finite() && h >= 0.0, "empty table height: {h}");
+    }
+
+    #[test]
+    fn chaos_scrollable_render_nan_scroll() {
+        let md = "# Hello\n\nWorld\n";
+        // NaN scroll offset should not crash.
+        let _ = headless_render_scrollable(md, Some(f32::NAN));
+        let _ = headless_render_scrollable(md, Some(f32::INFINITY));
+        let _ = headless_render_scrollable(md, Some(f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn chaos_span_bounds_safety() {
+        // Verify that even with manually constructed bad spans,
+        // the text rendering path doesn't panic.
+        let st = StyledText {
+            text: "hello".to_owned(),
+            spans: vec![crate::parse::Span {
+                start: 0,
+                end: 100, // WAY past end of text
+                style: crate::parse::SpanStyle::default(),
+            }],
+            ..StyledText::default()
+        };
+        // build_layout_job should clamp or handle gracefully.
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // This should NOT panic even with invalid spans.
+                let _job = build_layout_job(
+                    &st,
+                    &st.spans,
+                    &style,
+                    egui::Color32::WHITE,
+                    14.0,
+                    400.0,
+                    ui,
+                );
+            });
+        });
     }
 }
