@@ -506,12 +506,15 @@ fn render_blockquote(
     let rect_before = ui.available_rect_before_wrap();
     let bar_x = rect_before.min.x + bar_margin + bar_width * 0.5;
 
+    // Use a unique salt per nesting depth so egui doesn't share layout state.
+    let salt = ui.next_auto_id().with(indent);
+
     let inner_response = ui
         .allocate_ui_with_layout(
             egui::vec2((ui.available_width() - reserved).max(0.0), 0.0),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
-                ui.indent("bq", |ui| {
+                ui.indent(salt, |ui| {
                     render_blocks(ui, inner, style, indent + 1);
                 });
             },
@@ -983,16 +986,32 @@ fn render_table_cell(
 
 // ── Utilities ──────────────────────────────────────────────────────
 
-/// Approximate "bold" by brightening/saturating a colour.
+/// Approximate "bold" by increasing contrast of a colour.
 /// egui has no bold font weight, so we visually distinguish strong text.
+/// On dark backgrounds (bright text) the colour is brightened;
+/// on light backgrounds (dark text) it is darkened.
 fn strengthen_color(color: egui::Color32) -> egui::Color32 {
     let [red, green, blue, alpha] = color.to_array();
-    let boost = |val: u8| {
-        // Max boost is (255 - 0) / 5 = 51, so this always fits in u8.
-        let delta = (u16::from(255_u8.saturating_sub(val))) / 5;
-        val.saturating_add(delta.min(255) as u8)
-    };
-    egui::Color32::from_rgba_premultiplied(boost(red), boost(green), boost(blue), alpha)
+    // Perceptual luminance (ITU-R BT.601).
+    let luma = 0.114f32.mul_add(
+        f32::from(blue),
+        0.299f32.mul_add(f32::from(red), 0.587 * f32::from(green)),
+    );
+    if luma > 127.0 {
+        // Bright text (dark background) → brighten toward white.
+        let boost = |val: u8| {
+            let delta = (u16::from(255_u8.saturating_sub(val))) / 5;
+            val.saturating_add(delta.min(255) as u8)
+        };
+        egui::Color32::from_rgba_premultiplied(boost(red), boost(green), boost(blue), alpha)
+    } else {
+        // Dark text (light background) → darken toward black.
+        let darken = |val: u8| {
+            let delta = u16::from(val) / 5;
+            val.saturating_sub(delta.min(255) as u8)
+        };
+        egui::Color32::from_rgba_premultiplied(darken(red), darken(green), darken(blue), alpha)
+    }
 }
 
 pub fn simple_hash(s: &str) -> u64 {
@@ -2510,10 +2529,11 @@ Normal paragraph.
     // ── strengthen_color tests ───────────────────────────────────────
 
     #[test]
-    fn strengthen_color_black_gets_brighter() {
+    fn strengthen_color_black_stays_black() {
+        // Black has luma ~0 (dark text) → darken → already at zero.
         let out = strengthen_color(egui::Color32::from_rgb(0, 0, 0));
         let [r, g, b, _] = out.to_array();
-        assert!(r > 0 && g > 0 && b > 0, "black should become brighter");
+        assert_eq!((r, g, b), (0, 0, 0), "black cannot get darker");
     }
 
     #[test]
@@ -2531,14 +2551,28 @@ Normal paragraph.
     }
 
     #[test]
-    fn strengthen_color_mid_range_increases() {
-        let src = egui::Color32::from_rgb(100, 100, 100);
+    fn strengthen_color_dark_text_gets_darker() {
+        // Dark text (luma < 127) → darken.
+        let src = egui::Color32::from_rgb(80, 80, 80);
+        let out = strengthen_color(src);
+        let [sr, sg, sb, _] = src.to_array();
+        let [dr, dg, db, _] = out.to_array();
+        assert!(
+            dr < sr && dg < sg && db < sb,
+            "dark text should get darker: {src:?} -> {out:?}"
+        );
+    }
+
+    #[test]
+    fn strengthen_color_bright_text_gets_brighter() {
+        // Bright text (luma > 127) → brighten.
+        let src = egui::Color32::from_rgb(200, 200, 200);
         let out = strengthen_color(src);
         let [sr, sg, sb, _] = src.to_array();
         let [dr, dg, db, _] = out.to_array();
         assert!(
             dr > sr && dg > sg && db > sb,
-            "mid-range channels should increase"
+            "bright text should get brighter: {src:?} -> {out:?}"
         );
     }
 
