@@ -537,4 +537,68 @@ mod tests {
             "4-space indented content should not be fenced-code-styled"
         );
     }
+
+    // ── Edge-case tests ─────────────────────────────────────────────
+
+    #[test]
+    fn heading_with_inline_code_styled_entirely_as_heading() {
+        // Heading detection takes priority: the whole line (including
+        // backticks) is styled as heading, not split into inline code.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "# Title with `code`\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let sec = section_for_snippet(&job, "Title with `code`");
+        assert_ne!(
+            sec.format.color,
+            visuals.text_color(),
+            "heading line with backticks should be heading-styled, not base"
+        );
+        // Font size should be scaled up for H1.
+        assert!(
+            sec.format.font_id.size > egui::TextStyle::Body.resolve(&style).size,
+            "H1 font should be larger than body"
+        );
+    }
+
+    #[test]
+    fn fence_with_long_language_name_highlighted_as_fence() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "```really-long-language-name\ncontent\n```\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let fence_sec = section_for_snippet(&job, "```really-long-language-name");
+        assert_eq!(
+            fence_sec.format.color,
+            visuals.weak_text_color(),
+            "fence with unusual language should be weak-text styled"
+        );
+        let content_sec = section_for_snippet(&job, "content");
+        assert_eq!(
+            content_sec.format.background, visuals.faint_bg_color,
+            "content inside fenced block should have code background"
+        );
+    }
+
+    #[test]
+    fn double_backtick_inline_code_does_not_panic() {
+        // The highlighter matches single backticks greedily, so ``double``
+        // is parsed as two empty code spans around "double" (not a
+        // CommonMark double-backtick span). Verify no panic and full
+        // byte coverage.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "Use ``double`` backticks\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let covered: usize = job
+            .sections
+            .iter()
+            .map(|s| s.byte_range.end - s.byte_range.start)
+            .sum();
+        assert_eq!(
+            covered,
+            source.len(),
+            "all bytes should be covered by sections"
+        );
+    }
 }

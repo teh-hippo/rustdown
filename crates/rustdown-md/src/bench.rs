@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[allow(clippy::panic, clippy::cast_precision_loss)]
 mod tests {
+    use std::fmt::Write;
     use std::time::{Duration, Instant};
 
     use crate::parse::parse_markdown;
@@ -1058,5 +1059,171 @@ mod tests {
             assert!(h.is_finite(), "height[{i}] not finite: {h}");
             assert!(*h > 0.0, "height[{i}] not positive: {h}");
         }
+    }
+
+    // ── Rendering pipeline stress tests ────────────────────────────
+
+    #[test]
+    fn stress_1000_tables() {
+        let mut doc = String::with_capacity(100_000);
+        for i in 0..1000 {
+            write!(doc, "| Header {i} | Value |\n|---|---|\n| data | {i} |\n\n").ok();
+        }
+        let blocks = parse_markdown(&doc);
+        let table_count = blocks
+            .iter()
+            .filter(|b| matches!(b, crate::parse::Block::Table(_)))
+            .count();
+        assert_eq!(table_count, 1000);
+
+        // Height estimation shouldn't take too long.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        let start = Instant::now();
+        cache.ensure_heights(14.0, 600.0, &style);
+        let elapsed = start.elapsed();
+        assert!(cache.total_height > 0.0);
+        eprintln!("stress_1000_tables height estimation: {elapsed:?}");
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed.as_millis() < 100,
+                "1000 tables height estimation took {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stress_deeply_nested_blockquotes() {
+        // 20 levels of nesting.
+        let mut doc = String::new();
+        for i in 0..20 {
+            let prefix: String = "> ".repeat(i + 1);
+            writeln!(doc, "{prefix}Level {}", i + 1).ok();
+        }
+        let blocks = parse_markdown(&doc);
+        assert!(!blocks.is_empty());
+
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 600.0, &style);
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn stress_mixed_content_5mb() {
+        // Build a ~5MB document with all block types.
+        let mut doc = String::with_capacity(5_000_000);
+        for section in 0..500 {
+            writeln!(doc, "# Section {section}").ok();
+            writeln!(doc).ok();
+            for para in 0..5 {
+                writeln!(
+                    doc,
+                    "Paragraph {para}: {}",
+                    "Lorem ipsum dolor sit amet. ".repeat(10)
+                )
+                .ok();
+                writeln!(doc).ok();
+            }
+            writeln!(doc, "```\ncode block {section}\nline 2\nline 3\n```").ok();
+            writeln!(doc).ok();
+            writeln!(doc, "| A | B | C |").ok();
+            writeln!(doc, "|---|---|---|").ok();
+            writeln!(doc, "| {section} | data | row |").ok();
+            writeln!(doc).ok();
+            writeln!(doc, "> Quote from section {section}").ok();
+            writeln!(doc).ok();
+            writeln!(doc, "- Item 1\n- Item 2\n- Item 3").ok();
+            writeln!(doc).ok();
+        }
+
+        let start = Instant::now();
+        let blocks = parse_markdown(&doc);
+        let parse_time = start.elapsed();
+
+        assert!(!blocks.is_empty());
+        assert!(
+            blocks.len() > 1000,
+            "expected many blocks, got {}",
+            blocks.len()
+        );
+
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+
+        let start = Instant::now();
+        cache.ensure_heights(14.0, 600.0, &style);
+        let height_time = start.elapsed();
+
+        assert!(cache.total_height > 0.0);
+
+        eprintln!(
+            "stress_mixed_content_5mb: doc_len={}KB, blocks={}, parse={parse_time:?}, heights={height_time:?}",
+            doc.len() / 1024,
+            blocks.len()
+        );
+
+        if !cfg!(debug_assertions) {
+            assert!(
+                parse_time.as_millis() < 500,
+                "5MB parse took {parse_time:?}"
+            );
+            assert!(
+                height_time.as_millis() < 200,
+                "5MB height estimation took {height_time:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stress_empty_blocks_1000() {
+        let mut doc = String::with_capacity(10_000);
+        for _ in 0..1000 {
+            doc.push_str(">\n\n"); // Empty blockquotes
+        }
+        let blocks = parse_markdown(&doc);
+        assert!(!blocks.is_empty());
+    }
+
+    #[test]
+    fn stress_single_huge_table() {
+        // 5 columns, 500 rows
+        let mut doc = String::with_capacity(50_000);
+        doc.push_str("| A | B | C | D | E |\n|---|---|---|---|---|\n");
+        for row in 0..500 {
+            writeln!(
+                doc,
+                "| r{row}c0 | r{row}c1 | r{row}c2 | r{row}c3 | r{row}c4 |"
+            )
+            .ok();
+        }
+        let blocks = parse_markdown(&doc);
+        match &blocks[0] {
+            crate::parse::Block::Table(table) => {
+                assert_eq!(table.header.len(), 5);
+                assert_eq!(table.rows.len(), 500);
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stress_alternating_code_and_text() {
+        let mut doc = String::with_capacity(100_000);
+        for i in 0..500 {
+            writeln!(doc, "Text paragraph {i}.").ok();
+            writeln!(doc).ok();
+            writeln!(doc, "```\ncode block {i}\n```").ok();
+            writeln!(doc).ok();
+        }
+        let blocks = parse_markdown(&doc);
+        let code_count = blocks
+            .iter()
+            .filter(|b| matches!(b, crate::parse::Block::Code { .. }))
+            .count();
+        assert_eq!(code_count, 500);
     }
 }

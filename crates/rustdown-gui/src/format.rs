@@ -545,4 +545,90 @@ mod tests {
             "text between 4-space-indented pseudo-fences should be trimmed"
         );
     }
+
+    // ── Edge-case tests ─────────────────────────────────────────────
+
+    #[test]
+    fn format_fence_at_eof_gets_final_newline() {
+        // Fence closing without a trailing newline; insert_final_newline
+        // should append one.
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let source = "text\n```\ncode\n```";
+        assert_eq!(format_markdown(source, opts), "text\n```\ncode\n```\n");
+    }
+
+    #[test]
+    fn format_mixed_crlf_cr_lf_all_normalize() {
+        // CRLF, lone CR, and LF in a single document.
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(
+            format_markdown("line1\r\nline2\rline3\n", opts),
+            "line1\nline2\nline3\n"
+        );
+    }
+
+    #[test]
+    fn format_preserves_trailing_whitespace_inside_code_block() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let source = "```\n  code  \n```\n";
+        assert_eq!(
+            format_markdown(source, opts),
+            source,
+            "spaces inside fenced code block must be preserved"
+        );
+    }
+
+    #[test]
+    fn format_preserves_hard_break_trailing_spaces() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(
+            format_markdown("line  \nnext\n", opts),
+            "line  \nnext\n",
+            "two trailing spaces (hard break) must be kept"
+        );
+    }
+
+    #[test]
+    fn format_already_formatted_returns_unchanged() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let source = "# Hello\n\nParagraph text.\n";
+        assert_eq!(
+            format_markdown(source, opts),
+            source,
+            "already-formatted file should be unchanged"
+        );
+    }
+
+    #[test]
+    fn format_only_crlf_normalization_no_other_changes() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(
+            format_markdown("hello\r\nworld\r\n", opts),
+            "hello\nworld\n"
+        );
+    }
 }
