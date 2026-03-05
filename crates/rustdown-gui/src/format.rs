@@ -481,4 +481,82 @@ mod tests {
             "indented pseudo-fence"
         );
     }
+
+    // ── Security / Fuzz Tests ────────────────────────────────────────
+
+    #[test]
+    fn fuzz_format_adversarial_inputs() {
+        let cases = [
+            "",                                        // empty
+            "\0\0\0",                                  // null bytes
+            "\r",                                      // lone CR
+            "\r\n",                                    // CRLF only
+            "\r\r\r",                                  // multiple CRs
+            "\n\n\n\n\n",                              // only newlines
+            "\r\n\r\n\r\n",                            // only CRLFs
+            "\r\n\r\r\n\n",                            // mixed line endings
+            "\t\t\t\t",                                // only tabs
+            " \t \t \t ",                              // mixed whitespace
+            "```\n\r\n\r```",                          // fence with mixed endings
+            &"x".repeat(1_000_000),                    // 1MB single line
+            &("line\n".repeat(100_000)),               // 100K lines
+            &"\r\n".repeat(50_000),                    // 50K empty CRLF lines
+            "\u{FEFF}# BOM heading\n",                 // byte-order mark
+            "日本語テスト\t \n中文测试  \n한국어\t\n", // CJK with trailing whitespace
+        ];
+        for input in &cases {
+            let result = format_markdown(input, DEFAULT_OPTIONS);
+            // Must not panic. Output should be valid UTF-8 (guaranteed by String).
+            // Output may grow slightly due to insert_final_newline.
+            let _ = result.len();
+        }
+    }
+
+    #[test]
+    fn fuzz_format_crlf_preserves_multibyte() {
+        // Ensure CRLF normalization doesn't corrupt multi-byte UTF-8.
+        let multibyte_inputs = [
+            "héllo\r\nwörld\r\n",
+            "日本語\r\nテスト\r\n",
+            "🦀\r\n🎉\r\n",
+            "café\r\nnaïve\r\nrésumé\r\n",
+            "Ω≈ç√∫\r\n≤≥÷\r\n",
+        ];
+        for input in multibyte_inputs {
+            let result = format_markdown(
+                input,
+                FormatOptions {
+                    end_of_line: Some(EndOfLine::Lf),
+                    ..DEFAULT_OPTIONS
+                },
+            );
+            // No \r should remain after LF normalization.
+            assert!(!result.contains('\r'), "CRLF not normalized for: {input:?}");
+            // Verify round-trip: content minus line-ending changes should be preserved.
+            let input_words: Vec<&str> = input.split_whitespace().collect();
+            for word in &input_words {
+                if !word.is_empty() {
+                    assert!(result.contains(word.trim()), "lost content word {word:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_format_fence_boundary() {
+        // Fences at various states.
+        let cases = [
+            "```\ncode\n```\n",
+            "````\ncode\n````\n",
+            "~~~\ncode\n~~~\n",
+            "```rust\nfn main() {}\n```\n",
+            "```\n```\n```\n```\n",      // rapid open/close
+            "```\nunclosed fence\n",     // unclosed
+            "   ```\n   code\n   ```\n", // indented fence
+        ];
+        for input in cases {
+            let result = format_markdown(input, DEFAULT_OPTIONS);
+            let _ = result.len();
+        }
+    }
 }

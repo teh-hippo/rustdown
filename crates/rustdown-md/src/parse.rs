@@ -183,9 +183,28 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
     blocks
 }
 
+/// Maximum source size (in bytes) that the parser will process.
+///
+/// Documents above this limit are silently truncated at the last newline
+/// boundary within the limit, preventing denial-of-service via enormous
+/// inputs. 64 MiB is generous for any realistic markdown document.
+const MAX_PARSE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Parse markdown source, appending blocks to an existing `Vec`.
 /// Reuses the existing allocation when possible.
+///
+/// Sources larger than [`MAX_PARSE_BYTES`] are truncated at the last
+/// newline within the limit to prevent unbounded memory allocation.
 pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
+    let source = if source.len() > MAX_PARSE_BYTES {
+        // Truncate at the last newline within the limit for clean output.
+        match source[..MAX_PARSE_BYTES].rfind('\n') {
+            Some(pos) => &source[..pos],
+            None => &source[..MAX_PARSE_BYTES],
+        }
+    } else {
+        source
+    };
     let opts = Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_HEADING_ATTRIBUTES
@@ -2169,6 +2188,175 @@ mod tests {
             let _ = writeln!(md, "- item {i}");
         }
         let blocks = parse_markdown(&md);
+        assert!(!blocks.is_empty());
+    }
+
+    // ── Security / Fuzz Tests ────────────────────────────────────────
+
+    /// Adversarial input: null bytes throughout markdown.
+    #[test]
+    fn fuzz_null_bytes_in_markdown() {
+        let inputs = [
+            "\0",
+            "# Hello\0World",
+            "text\0\0\0more",
+            "\0\0\0\0\0\0\0\0",
+            "```\0rust\0\ncode\0\n```",
+            "| col\0 |\n|---|\n| val\0 |",
+        ];
+        for input in inputs {
+            let blocks = parse_markdown(input);
+            // Must not panic — output content is implementation-defined.
+            let _ = blocks.len();
+        }
+    }
+
+    /// Adversarial input: extreme unicode and control characters.
+    #[test]
+    fn fuzz_control_and_unicode_chars() {
+        let inputs = [
+            "\u{FEFF}# BOM heading",         // byte-order mark
+            "text\u{200B}zero\u{200B}width", // zero-width spaces
+            "\u{202E}RTL override\u{202C}",  // right-to-left override
+            "\u{FFFD}\u{FFFD}\u{FFFD}",      // replacement characters
+            &"🦀".repeat(10_000),            // many emoji
+            "\t\t\t\t\t\t\t\t\t\t",          // only tabs
+            "\r\r\r\r\r\r\r\r",              // bare carriage returns
+            "\x01\x02\x03\x04\x05\x06\x07",  // ASCII control chars
+        ];
+        for input in &inputs {
+            let blocks = parse_markdown(input);
+            let _ = blocks.len();
+        }
+    }
+
+    /// Adversarial input: pathological nesting depths.
+    #[test]
+    fn fuzz_deep_nesting() {
+        // 500 nested blockquotes.
+        let deep_quote = "> ".repeat(500) + "deep";
+        let blocks = parse_markdown(&deep_quote);
+        let _ = blocks.len();
+
+        // 500 nested lists.
+        let mut deep_list = String::new();
+        for i in 0..500 {
+            deep_list.push_str(&"  ".repeat(i));
+            let _ = writeln!(deep_list, "- item");
+        }
+        let blocks = parse_markdown(&deep_list);
+        let _ = blocks.len();
+    }
+
+    /// Adversarial input: extremely long single lines.
+    #[test]
+    fn fuzz_very_long_lines() {
+        // Single 1MB line.
+        let single_line = "x".repeat(1_000_000);
+        let blocks = parse_markdown(&single_line);
+        assert!(!blocks.is_empty());
+
+        // Long heading.
+        let heading = format!("# {}", "A".repeat(100_000));
+        let blocks = parse_markdown(&heading);
+        assert!(!blocks.is_empty());
+
+        // Long link URL.
+        let link = format!("[text]({})", "a".repeat(100_000));
+        let blocks = parse_markdown(&link);
+        assert!(!blocks.is_empty());
+    }
+
+    /// Adversarial input: alternating open/close markers.
+    #[test]
+    fn fuzz_alternating_markers() {
+        let inputs = [
+            "**".repeat(5_000),    // unclosed bold
+            "~~".repeat(5_000),    // unclosed strikethrough
+            "`".repeat(10_000),    // unclosed code
+            "```\n".repeat(1_000), // rapid fenced blocks
+            "[".repeat(5_000),     // unclosed links
+            "](".repeat(5_000),    // partial link syntax
+            "![".repeat(5_000),    // unclosed images
+        ];
+        for input in &inputs {
+            let blocks = parse_markdown(input);
+            let _ = blocks.len();
+        }
+    }
+
+    /// Adversarial input: enormous tables.
+    #[test]
+    fn fuzz_large_table() {
+        use std::fmt::Write;
+        let mut table = String::with_capacity(200_000);
+        // 100 columns header.
+        table.push('|');
+        for c in 0..100 {
+            let _ = write!(table, " col{c} |");
+        }
+        table.push('\n');
+        table.push('|');
+        for _ in 0..100 {
+            table.push_str(" --- |");
+        }
+        table.push('\n');
+        // 500 rows.
+        for r in 0..500 {
+            table.push('|');
+            for c in 0..100 {
+                let _ = write!(table, " r{r}c{c} |");
+            }
+            table.push('\n');
+        }
+        let blocks = parse_markdown(&table);
+        assert!(!blocks.is_empty());
+    }
+
+    /// Input size limit: documents above `MAX_PARSE_BYTES` are truncated.
+    #[test]
+    fn parse_truncates_oversized_input() {
+        use std::fmt::Write;
+        // Create input larger than 64 MiB.
+        let line = "x".repeat(1024) + "\n";
+        let mut big = String::with_capacity(65 * 1024 * 1024 + 1024);
+        while big.len() < 65 * 1024 * 1024 {
+            let _ = write!(big, "{line}");
+        }
+        // Must not panic or OOM — parser truncates.
+        let blocks = parse_markdown(&big);
+        let _ = blocks.len();
+    }
+
+    /// Mixed adversarial: markdown with every construct interleaved.
+    #[test]
+    fn fuzz_mixed_constructs() {
+        let md = r#"# **~~`heading`~~**
+
+> > > deeply quoted **bold** ~~strike~~ `code`
+
+| a | b |
+|---|---|
+| [link](http://x) | ![img](y) |
+
+- [ ] task 1
+  - [x] sub task
+    - normal
+      1. ordered
+
+```rust
+fn main() {}
+```
+
+---
+
+text with [link](url "title") and ![image](img.png)
+
+<div>raw html</div>
+
+&amp; &lt; &gt; entities
+"#;
+        let blocks = parse_markdown(md);
         assert!(!blocks.is_empty());
     }
 }

@@ -158,18 +158,19 @@ fn estimate_text_height_inner(
     wrap_width: f32,
     char_count_hint: Option<usize>,
 ) -> f32 {
-    // Guard against NaN / Inf / non-positive font_size.
+    // Guard against NaN / Inf / non-positive / absurdly large font_size.
+    // Clamp to a sane range: no real font exceeds ~1000px.
     let font_size = if font_size.is_finite() && font_size > 0.0 {
-        font_size
+        font_size.min(1000.0)
     } else {
         14.0
     };
     if text.is_empty() {
         return font_size;
     }
-    // Guard against NaN / Inf / non-positive wrap_width.
+    // Guard against NaN / Inf / non-positive / absurdly large wrap_width.
     let wrap_width = if wrap_width.is_finite() && wrap_width > 0.0 {
-        wrap_width
+        wrap_width.min(100_000.0)
     } else {
         400.0
     };

@@ -341,9 +341,18 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
 /// and is resolved against only the scheme+authority of `base_uri`.
 /// Otherwise the URL is appended to `base_uri` with exactly one `/`
 /// separator.
+///
+/// **Security:** relative URLs containing `..` path segments are rejected
+/// to prevent directory-traversal attacks via malicious markdown images.
 fn resolve_image_url<'a>(url: &'a str, base_uri: &str) -> std::borrow::Cow<'a, str> {
     if url.starts_with("//") || url.contains("://") || base_uri.is_empty() {
         return std::borrow::Cow::Borrowed(url);
+    }
+
+    // Reject path-traversal attempts: any `..` that appears as a full
+    // path component (e.g. `../`, `foo/../../bar`, or trailing `..`).
+    if contains_dot_dot_segment(url) {
+        return std::borrow::Cow::Borrowed("");
     }
 
     if url.starts_with('/') {
@@ -374,6 +383,22 @@ fn resolve_image_url<'a>(url: &'a str, base_uri: &str) -> std::borrow::Cow<'a, s
     }
     s.push_str(url);
     std::borrow::Cow::Owned(s)
+}
+
+/// Returns `true` if `path` contains a `..` path component.
+///
+/// Matches `..` when it appears as the entire path, at the start
+/// (`../foo`), in the middle (`foo/../bar`), or at the end (`foo/..`).
+/// Also checks backslash-separated paths for Windows.
+fn contains_dot_dot_segment(path: &str) -> bool {
+    for sep in ['/', '\\'] {
+        for component in path.split(sep) {
+            if component == ".." {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
@@ -4629,5 +4654,132 @@ mod tests {
             cache.total_height.abs() < f32::EPSILON,
             "empty content height should be 0"
         );
+    }
+
+    // ── Security / Fuzz Tests ────────────────────────────────────────
+
+    #[test]
+    fn fuzz_resolve_image_url_path_traversal() {
+        let traversal_urls = [
+            "../../../etc/passwd",
+            "..\\..\\..\\windows\\system32\\config",
+            "images/../../../secret.txt",
+            "foo/bar/../../..",
+            "..",
+            "../",
+            "..\\",
+            "a/b/../../../etc/shadow",
+        ];
+        let base = "file:///home/user/docs/";
+        for url in traversal_urls {
+            let resolved = resolve_image_url(url, base);
+            assert_eq!(
+                resolved.as_ref(),
+                "",
+                "path traversal should be blocked: {url}"
+            );
+        }
+        // URL-encoded dots (%2e%2e) are NOT path traversal — they are
+        // literal percent-encoded characters and won't be decoded by the
+        // file system. Verify they pass through.
+        let encoded = "img/..%2f..%2f..%2fetc/passwd";
+        let resolved = resolve_image_url(encoded, base);
+        assert_ne!(resolved.as_ref(), "", "URL-encoded dots are safe");
+    }
+
+    #[test]
+    fn fuzz_resolve_image_url_safe_paths() {
+        let safe_urls = [
+            ("image.png", "file:///docs/", "file:///docs/image.png"),
+            (
+                "sub/image.png",
+                "file:///docs/",
+                "file:///docs/sub/image.png",
+            ),
+            // Absolute path resolves against scheme+authority only (not full base).
+            (
+                "/absolute.png",
+                "file:///home/user/",
+                "file:///absolute.png",
+            ),
+            (
+                "https://example.com/img.png",
+                "",
+                "https://example.com/img.png",
+            ),
+            (
+                "//cdn.example.com/img.png",
+                "file:///docs/",
+                "//cdn.example.com/img.png",
+            ),
+        ];
+        for (url, base, expected) in safe_urls {
+            let resolved = resolve_image_url(url, base);
+            assert_eq!(resolved.as_ref(), expected, "safe URL: {url}");
+        }
+    }
+
+    #[test]
+    fn fuzz_resolve_image_url_adversarial() {
+        let cases = [
+            "",                   // empty URL
+            " ",                  // whitespace
+            "\0",                 // null byte
+            &"a".repeat(100_000), // very long path
+            "\n\r\t",             // control chars
+            "file:///etc/passwd", // absolute URI (passthrough)
+        ];
+        let base = "file:///home/user/docs/";
+        for url in &cases {
+            let resolved = resolve_image_url(url, base);
+            // Must not panic.
+            let _ = resolved.len();
+        }
+    }
+
+    #[test]
+    fn contains_dot_dot_segment_cases() {
+        assert!(contains_dot_dot_segment(".."));
+        assert!(contains_dot_dot_segment("../foo"));
+        assert!(contains_dot_dot_segment("foo/../bar"));
+        assert!(contains_dot_dot_segment("foo/.."));
+        assert!(contains_dot_dot_segment("..\\foo"));
+        assert!(contains_dot_dot_segment("foo\\..\\bar"));
+        // These should NOT match.
+        assert!(!contains_dot_dot_segment("..."));
+        assert!(!contains_dot_dot_segment("..name"));
+        assert!(!contains_dot_dot_segment("name..ext"));
+        assert!(!contains_dot_dot_segment("foo/.../bar"));
+    }
+
+    #[test]
+    fn fuzz_height_estimation_adversarial() {
+        use height::estimate_text_height;
+        // NaN, Inf, negative, zero font sizes.
+        let adversarial_sizes = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -1.0,
+            0.0,
+            f32::MIN,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+        ];
+        for size in adversarial_sizes {
+            let h = estimate_text_height("hello world", size, 400.0);
+            assert!(h.is_finite(), "height must be finite for size {size}");
+            assert!(h >= 0.0, "height must be non-negative for size {size}");
+        }
+        // NaN, Inf wrap widths.
+        for width in adversarial_sizes {
+            let h = estimate_text_height("hello world", 14.0, width);
+            assert!(h.is_finite(), "height must be finite for width {width}");
+        }
+        // Very long text.
+        let huge = "x".repeat(10_000_000);
+        let h = estimate_text_height(&huge, 14.0, 400.0);
+        assert!(h.is_finite());
+        assert!(h > 0.0);
     }
 }

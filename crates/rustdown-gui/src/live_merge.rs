@@ -618,4 +618,102 @@ mod tests {
             }
         }
     }
+
+    // ── Security / Fuzz Tests ────────────────────────────────────────
+
+    #[test]
+    fn fuzz_merge_adversarial_inputs() {
+        // All three identical.
+        assert_eq!(
+            merge_three_way("same", "same", "same"),
+            Merge3Outcome::Clean("same".to_owned())
+        );
+
+        // Empty inputs.
+        let _ = merge_three_way("", "", "");
+        let _ = merge_three_way("", "new", "");
+        let _ = merge_three_way("", "", "new");
+        let _ = merge_three_way("base", "", "");
+
+        // Null bytes in content.
+        let _ = merge_three_way("a\0b", "a\0c", "a\0d");
+
+        // Very long identical lines (deduplication stress).
+        let long_line = "x".repeat(100_000) + "\n";
+        let base = long_line.repeat(10);
+        let _ = merge_three_way(&base, &base, &base);
+
+        // Single character differences.
+        let _ = merge_three_way("a", "b", "c");
+        let _ = merge_three_way("a", "a", "b");
+        let _ = merge_three_way("a", "b", "a");
+    }
+
+    #[test]
+    fn fuzz_merge_binary_like_content() {
+        // Content that looks like binary data (high bytes, no newlines).
+        let base = (0..256)
+            .map(|b| (b % 128) as u8 as char)
+            .collect::<String>();
+        let ours = base.clone() + "ours";
+        let theirs = base.clone() + "theirs";
+        let result = merge_three_way(&base, &ours, &theirs);
+        // Should produce a result (clean or conflicted) without panicking.
+        match result {
+            Merge3Outcome::Clean(text) => assert!(!text.is_empty()),
+            Merge3Outcome::Conflicted {
+                conflict_marked,
+                ours_wins,
+            } => {
+                assert!(!conflict_marked.is_empty());
+                assert!(!ours_wins.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_merge_crlf_mixed_endings() {
+        let base = "line1\r\nline2\r\nline3\r\n";
+        let ours = "line1\nline2\nline3\n";
+        let theirs = "line1\r\nmodified\r\nline3\r\n";
+        let result = merge_three_way(base, ours, theirs);
+        // Should not panic regardless of mixed line endings.
+        match result {
+            Merge3Outcome::Clean(text) => assert!(!text.is_empty()),
+            Merge3Outcome::Conflicted { .. } => {}
+        }
+    }
+
+    #[test]
+    fn fuzz_merge_unicode_boundaries() {
+        // Edits that change within multi-byte characters.
+        let base = "héllo wörld\ncafé résumé\n";
+        let ours = "HÉLLO wörld\ncafé résumé\n";
+        let theirs = "héllo wörld\nCAFÉ résumé\n";
+        let result = merge_three_way(base, ours, theirs);
+        match result {
+            Merge3Outcome::Clean(text) => {
+                assert!(text.contains("HÉLLO") || text.contains("héllo"));
+            }
+            Merge3Outcome::Conflicted { .. } => {}
+        }
+    }
+
+    #[test]
+    fn fuzz_merge_conflict_markers_in_content() {
+        // Content that already contains conflict markers.
+        let base = "normal\n<<<<<<< ours\n=======\n>>>>>>> theirs\n";
+        let ours = "changed\n<<<<<<< ours\n=======\n>>>>>>> theirs\n";
+        let theirs = "normal\n<<<<<<< ours\nmodified\n>>>>>>> theirs\n";
+        let result = merge_three_way(base, ours, theirs);
+        // Must not corrupt output even with pre-existing markers.
+        match result {
+            Merge3Outcome::Clean(text)
+            | Merge3Outcome::Conflicted {
+                ours_wins: text, ..
+            } => {
+                assert!(!text.is_empty());
+            }
+        }
+    }
 }
