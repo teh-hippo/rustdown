@@ -867,6 +867,9 @@ fn render_table(
     let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
     let usable = (available - spacing).max(0.0);
 
+    // Minimum per-column width — scales with body size but has a floor.
+    let min_col_w = (body_size * 2.5).max(36.0);
+
     // Estimate per-column widths from content length (header + rows).
     let mut col_widths: Vec<f32> = (0..num_cols)
         .map(|ci| {
@@ -879,41 +882,76 @@ fn render_table(
             let char_len = hdr_len.max(max_row_len).max(3) as f32;
             // Cap per-column estimate at usable / num_cols * 3 to avoid one column
             // dominating.
-            (char_len * avg_char_w + 12.0).min(usable / num_cols as f32 * 3.0)
+            (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
         })
         .collect();
 
-    // Normalise so total equals usable width, but enforce 40px minimum.
+    // Normalise so total equals usable width, but enforce minimum per column.
+    // Two-pass: first scale down, then clamp; if clamping changes the total,
+    // redistribute the remaining space among non-clamped columns.
     let total_est: f32 = col_widths.iter().sum();
     if total_est > 0.0 {
         let scale = usable / total_est;
+        let mut clamped_total = 0.0_f32;
+        let mut free_total = 0.0_f32;
         for w in &mut col_widths {
-            *w = (*w * scale).max(40.0);
+            let scaled = *w * scale;
+            if scaled < min_col_w {
+                *w = min_col_w;
+                clamped_total += min_col_w;
+            } else {
+                *w = scaled;
+                free_total += scaled;
+            }
+        }
+        // Redistribute: shrink free columns to absorb clamped overflow.
+        let remaining = usable - clamped_total;
+        if remaining > 0.0 && free_total > 0.0 {
+            let redistribute = remaining / free_total;
+            for w in &mut col_widths {
+                if *w > min_col_w {
+                    *w *= redistribute;
+                }
+            }
         }
     }
 
-    egui::Grid::new(ui.next_auto_id())
-        .striped(true)
-        .min_row_height(body_size * 1.4)
-        .show(ui, |ui| {
-            for (i, cell) in header.iter().enumerate() {
-                let align = alignments.get(i).copied().unwrap_or(Alignment::None);
-                let w = col_widths.get(i).copied().unwrap_or(40.0);
-                ui.set_min_width(w);
-                render_table_cell(ui, cell, style, align, true);
-            }
-            ui.end_row();
+    // Wrap in horizontal scroll when table is wider than available space.
+    let total_width: f32 = col_widths.iter().sum::<f32>() + spacing;
+    let needs_scroll = total_width > available + 1.0;
 
-            for row in rows {
-                for (i, cell) in row.iter().take(num_cols).enumerate() {
+    let render_grid = |ui: &mut egui::Ui| {
+        egui::Grid::new(ui.next_auto_id())
+            .striped(true)
+            .min_row_height(body_size * 1.4)
+            .show(ui, |ui| {
+                for (i, cell) in header.iter().enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
-                    let w = col_widths.get(i).copied().unwrap_or(40.0);
+                    let w = col_widths.get(i).copied().unwrap_or(min_col_w);
                     ui.set_min_width(w);
-                    render_table_cell(ui, cell, style, align, false);
+                    render_table_cell(ui, cell, style, align, true);
                 }
                 ui.end_row();
-            }
+
+                for row in rows {
+                    for (i, cell) in row.iter().take(num_cols).enumerate() {
+                        let align = alignments.get(i).copied().unwrap_or(Alignment::None);
+                        let w = col_widths.get(i).copied().unwrap_or(min_col_w);
+                        ui.set_min_width(w);
+                        render_table_cell(ui, cell, style, align, false);
+                    }
+                    ui.end_row();
+                }
+            });
+    };
+
+    if needs_scroll {
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            render_grid(ui);
         });
+    } else {
+        render_grid(ui);
+    }
 }
 
 fn render_table_cell(
@@ -2112,6 +2150,7 @@ Normal paragraph.
         let num_cols = header.len().max(1);
         let spacing = 8.0 * num_cols.saturating_sub(1) as f32; // default item_spacing.x ≈ 8
         let usable = (available - spacing).max(0.0);
+        let min_col_w = (body_size * 2.5).max(36.0);
 
         let mut col_widths: Vec<f32> = (0..num_cols)
             .map(|ci| {
@@ -2122,15 +2161,33 @@ Normal paragraph.
                     .max()
                     .unwrap_or(0);
                 let char_len = hdr_len.max(max_row_len).max(3) as f32;
-                (char_len * avg_char_w + 12.0).min(usable / num_cols as f32 * 3.0)
+                (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
             })
             .collect();
 
         let total_est: f32 = col_widths.iter().sum();
         if total_est > 0.0 {
             let scale = usable / total_est;
+            let mut clamped_total = 0.0_f32;
+            let mut free_total = 0.0_f32;
             for w in &mut col_widths {
-                *w = (*w * scale).max(40.0);
+                let scaled = *w * scale;
+                if scaled < min_col_w {
+                    *w = min_col_w;
+                    clamped_total += min_col_w;
+                } else {
+                    *w = scaled;
+                    free_total += scaled;
+                }
+            }
+            let remaining = usable - clamped_total;
+            if remaining > 0.0 && free_total > 0.0 {
+                let redistribute = remaining / free_total;
+                for w in &mut col_widths {
+                    if *w > min_col_w {
+                        *w *= redistribute;
+                    }
+                }
             }
         }
         col_widths
