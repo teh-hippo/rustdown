@@ -228,9 +228,7 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
         Event::Start(Tag::CodeBlock(kind)) => {
             let lang = match kind {
-                pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => {
-                    l.as_ref().to_owned()
-                }
+                pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => l.as_ref().to_owned(),
                 _ => String::new(),
             };
             parse_code_block(events, lang, blocks)

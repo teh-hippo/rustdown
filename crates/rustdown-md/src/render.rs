@@ -316,12 +316,9 @@ fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> 
     let row_spacing = 4.0;
 
     let row_height = |cells: &[StyledText]| -> f32 {
-        cells
-            .iter()
-            .fold(base_row_h, |max, c| {
-                estimate_text_height(&c.text, body_size, col_width).max(max)
-            })
-            + row_spacing
+        cells.iter().fold(base_row_h, |max, c| {
+            estimate_text_height(&c.text, body_size, col_width).max(max)
+        }) + row_spacing
     };
 
     let hdr = if table.header.is_empty() {

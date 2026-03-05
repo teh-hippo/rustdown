@@ -233,15 +233,16 @@ fn emit_inline_code_sections(
     let mut i = 0;
 
     // Helper: push a section with a specific format reference (avoids per-section clone).
-    let push = |job: &mut egui::text::LayoutJob, range: std::ops::Range<usize>, fmt: &egui::TextFormat| {
-        if range.start < range.end {
-            job.sections.push(egui::text::LayoutSection {
-                leading_space: 0.0,
-                byte_range: range,
-                format: fmt.clone(),
-            });
-        }
-    };
+    let push =
+        |job: &mut egui::text::LayoutJob, range: std::ops::Range<usize>, fmt: &egui::TextFormat| {
+            if range.start < range.end {
+                job.sections.push(egui::text::LayoutSection {
+                    leading_space: 0.0,
+                    byte_range: range,
+                    format: fmt.clone(),
+                });
+            }
+        };
 
     while let Some(tick_rel) = memchr::memchr(b'`', &line_bytes[i..]) {
         let tick_i = i + tick_rel;

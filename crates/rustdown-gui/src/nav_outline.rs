@@ -107,9 +107,7 @@ pub fn active_heading_index(
         Err(i) => i - 1,
     };
     // Walk backwards from `upper` to find the first entry matching depth.
-    (0..=upper)
-        .rev()
-        .find(|&i| entries[i].level <= max_depth)
+    (0..=upper).rev().find(|&i| entries[i].level <= max_depth)
 }
 
 const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
