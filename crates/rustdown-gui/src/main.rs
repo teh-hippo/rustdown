@@ -1648,6 +1648,9 @@ impl RustdownApp {
             edit_seq: next_seq,
             editor_galley_cache: None,
         };
+        // The merge sidecar belongs to the previous document; clear it so the
+        // status bar does not show a stale reference.
+        self.disk.merge_sidecar_path = None;
         // Force nav outline refresh on next frame.
         self.nav.invalidate_outline();
     }
@@ -1659,6 +1662,7 @@ impl RustdownApp {
                 self.doc = Document::default();
                 self.doc.edit_seq = next_seq;
                 self.error = None;
+                self.disk.merge_sidecar_path = None;
                 self.reset_disk_sync_state();
                 self.nav.invalidate_outline();
             }
@@ -2874,5 +2878,37 @@ mod tests {
             app.nav.outline.is_empty(),
             "nav outline should be empty after NewBlank"
         );
+    }
+
+    #[test]
+    fn merge_sidecar_path_cleared_on_document_switch() {
+        let dir = make_temp_dir("rustdown-sidecar-clear-test");
+        let doc_path = dir.join("test.md");
+        fs::write(&doc_path, "# doc").ok();
+
+        let mut app = RustdownApp::default();
+        app.write_merge_sidecar(&doc_path, "conflict content");
+        assert!(
+            app.disk.merge_sidecar_path.is_some(),
+            "sidecar path should be set after write"
+        );
+
+        // Opening a new document must clear the stale sidecar reference.
+        app.open_path(dir.join("other.md"));
+        assert!(
+            app.disk.merge_sidecar_path.is_none(),
+            "sidecar path should be cleared after opening a different document"
+        );
+
+        // Also cleared by NewBlank.
+        app.write_merge_sidecar(&doc_path, "more conflict");
+        assert!(app.disk.merge_sidecar_path.is_some());
+        app.apply_action(PendingAction::NewBlank);
+        assert!(
+            app.disk.merge_sidecar_path.is_none(),
+            "sidecar path should be cleared after NewBlank"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
