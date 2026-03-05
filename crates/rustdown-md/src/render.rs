@@ -1081,7 +1081,7 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
 )]
 mod tests {
     use super::*;
-    use crate::parse::TableData;
+    use crate::parse::{Span, SpanStyle, TableData};
     use std::fmt::Write;
 
     #[test]
@@ -4821,5 +4821,1015 @@ that we can observe the relationship between available width and estimated heigh
         let (count, height) = headless_render_scrollable(md, None);
         assert!(count > 0);
         assert!(height > 0.0);
+    }
+
+    // ── Table stress tests ─────────────────────────────────────────
+
+    /// Build a markdown table with `cols` columns and `rows` data rows.
+    /// `cell_fn` produces the cell content for the given (row, col).
+    fn build_table_md(
+        cols: usize,
+        rows: usize,
+        cell_fn: impl Fn(usize, usize) -> String,
+    ) -> String {
+        let mut md = String::new();
+        // Header row
+        md.push('|');
+        for c in 0..cols {
+            let _ = write!(md, " H{c} |");
+        }
+        md.push('\n');
+        // Separator row
+        md.push('|');
+        for _ in 0..cols {
+            md.push_str("---|");
+        }
+        md.push('\n');
+        // Data rows
+        for r in 0..rows {
+            md.push('|');
+            for c in 0..cols {
+                let _ = write!(md, " {} |", cell_fn(r, c));
+            }
+            md.push('\n');
+        }
+        md
+    }
+
+    // ── 1. Extreme column counts ──────────────────────────────────
+
+    #[test]
+    fn table_stress_single_column() {
+        let md = build_table_md(1, 5, |r, _| format!("row{r}"));
+        let (blocks, height) = headless_render(&md);
+        assert!(height > 0.0, "1-col table should have positive height");
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Table(_))),
+            "should contain a Table block"
+        );
+    }
+
+    #[test]
+    fn table_stress_50_columns() {
+        let md = build_table_md(50, 3, |r, c| format!("r{r}c{c}"));
+        let (blocks, height) = headless_render(&md);
+        assert!(height > 0.0, "50-col table should have positive height");
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Table(_))),
+            "should contain a Table block"
+        );
+    }
+
+    #[test]
+    fn table_stress_100_columns() {
+        let md = build_table_md(100, 2, |r, c| format!("r{r}c{c}"));
+        let (_, height) = headless_render(&md);
+        assert!(height > 0.0, "100-col table should have positive height");
+    }
+
+    // ── 2. Extreme row counts ──────────────────────────────────────
+
+    #[test]
+    fn table_stress_500_rows_scrollable() {
+        let md = build_table_md(3, 500, |r, c| format!("val_{r}_{c}"));
+        // Render at various scroll positions: top, middle, bottom.
+        for scroll_y in [None, Some(0.0), Some(2000.0), Some(10000.0)] {
+            let (count, height) = headless_render_scrollable(&md, scroll_y);
+            assert!(count > 0, "500-row table should parse into blocks");
+            assert!(
+                height > 0.0,
+                "500-row table should have positive height at scroll {scroll_y:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_stress_header_only_no_data_rows() {
+        let md = "| A | B | C |\n|---|---|---|\n";
+        let (blocks, height) = headless_render(md);
+        assert!(
+            height > 0.0,
+            "header-only table should have positive height"
+        );
+        let table = blocks.iter().find_map(|b| match b {
+            Block::Table(t) => Some(t),
+            _ => None,
+        });
+        let table = table.expect("should contain a Table block");
+        assert_eq!(table.header.len(), 3);
+        assert!(table.rows.is_empty(), "should have no data rows");
+    }
+
+    // ── 3. Cell content extremes ───────────────────────────────────
+
+    #[test]
+    fn table_stress_long_cell_content() {
+        // Each cell has 1000+ characters.
+        let md = build_table_md(3, 3, |_, _| "x".repeat(1200));
+        let (_, height) = headless_render(&md);
+        assert!(height > 0.0, "long-cell table should render without panic");
+    }
+
+    #[test]
+    fn table_stress_rich_inline_formatting() {
+        // Each cell has bold + italic + code mixed text (50 words).
+        let cell = (0..50)
+            .map(|i| match i % 3 {
+                0 => format!("**bold{i}**"),
+                1 => format!("*italic{i}*"),
+                _ => format!("`code{i}`"),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let md = build_table_md(3, 5, |_, _| cell.clone());
+        let (_, height) = headless_render(&md);
+        assert!(
+            height > 0.0,
+            "rich-inline table should render without panic"
+        );
+    }
+
+    #[test]
+    fn table_stress_cells_with_links() {
+        let md = build_table_md(3, 5, |r, c| {
+            format!("[link{r}{c}](https://example.com/{r}/{c})")
+        });
+        let (_, height) = headless_render(&md);
+        assert!(height > 0.0, "link table should render without panic");
+    }
+
+    #[test]
+    fn table_stress_emoji_cells() {
+        let emojis = ["🎉", "🚀", "✅", "❌", "⚡", "🔥", "💡", "📝"];
+        let md = build_table_md(4, 4, |r, c| emojis[(r + c) % emojis.len()].to_owned());
+        let (_, height) = headless_render(&md);
+        assert!(height > 0.0, "emoji table should render without panic");
+    }
+
+    // ── 4. compute_table_col_widths edge cases ─────────────────────
+
+    #[test]
+    fn col_widths_usable_zero() {
+        let header = vec![plain("A"), plain("B")];
+        let rows = vec![vec![plain("x"), plain("y")]];
+        let (widths, _min) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
+        assert_eq!(widths.len(), 2);
+        // With zero usable space, widths should still be non-negative.
+        for w in &widths {
+            assert!(*w >= 0.0, "width should be non-negative, got {w}");
+        }
+    }
+
+    #[test]
+    fn col_widths_usable_very_small() {
+        let header = vec![plain("A"), plain("B"), plain("C")];
+        let rows = vec![vec![plain("x"), plain("y"), plain("z")]];
+        // 10px usable < min_col_w * 3 = 36 * 3 = 108
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 10.0, 7.0, 14.0);
+        assert_eq!(widths.len(), 3);
+        // All columns should be clamped to min_col_w.
+        for w in &widths {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "width {w} should be >= min {min_col_w}"
+            );
+        }
+    }
+
+    #[test]
+    fn col_widths_all_same_length() {
+        let header = vec![plain("ABCD"), plain("EFGH"), plain("IJKL")];
+        let rows = vec![vec![plain("1234"), plain("5678"), plain("9012")]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
+        assert_eq!(widths.len(), 3);
+        // All columns should get roughly equal width.
+        let avg = widths.iter().sum::<f32>() / widths.len() as f32;
+        for w in &widths {
+            assert!(
+                (*w - avg).abs() < avg * 0.2,
+                "widths should be roughly equal: {widths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn col_widths_one_column_much_longer() {
+        let header = vec![plain("A"), plain(&"X".repeat(300))];
+        let rows = vec![vec![plain("a"), plain(&"Y".repeat(300))]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
+        assert_eq!(widths.len(), 2);
+        assert!(
+            widths[1] > widths[0],
+            "longer column should be wider: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn col_widths_body_size_zero() {
+        let header = vec![plain("A"), plain("B")];
+        let rows = vec![vec![plain("x"), plain("y")]];
+        // body_size = 0 → min_col_w = max(0 * 2.5, 36) = 36
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
+        assert_eq!(widths.len(), 2);
+        assert!(
+            (min_col_w - 36.0).abs() < 0.01,
+            "min_col_w should be 36 when body_size=0, got {min_col_w}"
+        );
+    }
+
+    // ── 5. Alignment rendering ─────────────────────────────────────
+
+    #[test]
+    fn table_stress_all_alignment_types() {
+        let md = "\
+| Default | Left | Center | Right |
+|---------|:-----|:------:|------:|
+| d       | l    | c      | r     |
+";
+        let (blocks, height) = headless_render(md);
+        assert!(height > 0.0, "aligned table should have positive height");
+        let table = blocks.iter().find_map(|b| match b {
+            Block::Table(t) => Some(t),
+            _ => None,
+        });
+        let table = table.expect("should contain a Table block");
+        assert_eq!(table.alignments.len(), 4);
+        assert_eq!(table.alignments[0], Alignment::None);
+        assert_eq!(table.alignments[1], Alignment::Left);
+        assert_eq!(table.alignments[2], Alignment::Center);
+        assert_eq!(table.alignments[3], Alignment::Right);
+    }
+
+    #[test]
+    fn table_stress_missing_alignment_defaults_to_none() {
+        // Simple table: no alignment markers → all None.
+        let md = "\
+| A | B |
+|---|---|
+| 1 | 2 |
+";
+        let (blocks, _) = headless_render(md);
+        let table = blocks.iter().find_map(|b| match b {
+            Block::Table(t) => Some(t),
+            _ => None,
+        });
+        let table = table.expect("should contain a Table block");
+        for (i, a) in table.alignments.iter().enumerate() {
+            assert_eq!(
+                *a,
+                Alignment::None,
+                "column {i} should default to None alignment"
+            );
+        }
+    }
+
+    // ── 6. Table interaction with viewport culling ──────────────────
+
+    #[test]
+    fn table_stress_100_small_tables_scrollable() {
+        let mut md = String::new();
+        for i in 0..100 {
+            let _ = writeln!(md, "| T{i}A | T{i}B |");
+            md.push_str("|---|---|\n");
+            let _ = writeln!(md, "| {i}a | {i}b |");
+            md.push('\n');
+        }
+        // Scroll to the middle.
+        let (count, height) = headless_render_scrollable(&md, Some(height_of(&md) / 2.0));
+        assert!(count >= 100, "should parse all 100 tables, got {count}");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn table_stress_alternating_tables_and_paragraphs() {
+        let mut md = String::new();
+        for i in 0..50 {
+            let _ = writeln!(md, "Paragraph {i} with some text here.\n");
+            let _ = writeln!(md, "| Col1 | Col2 |");
+            md.push_str("|------|------|\n");
+            let _ = writeln!(md, "| r{i}  | c{i}  |\n");
+        }
+        for scroll_y in [None, Some(0.0), Some(500.0), Some(2000.0)] {
+            let (count, height) = headless_render_scrollable(&md, scroll_y);
+            assert!(count > 0, "mixed doc should have blocks");
+            assert!(
+                height > 0.0,
+                "mixed doc should have positive height at scroll {scroll_y:?}"
+            );
+        }
+    }
+
+    /// Quick height estimate for scroll-target computation in tests.
+    fn height_of(source: &str) -> f32 {
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(source);
+        cache.ensure_heights(14.0, 900.0, &style);
+        cache.total_height
+    }
+
+    // ── estimate_table_height edge cases ────────────────────────────
+
+    #[test]
+    fn estimate_table_height_empty_header() {
+        let table = TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![vec![plain("x")]],
+        };
+        let h = estimate_table_height(&table, 14.0, 400.0);
+        assert!(
+            h > 0.0,
+            "table with empty header should still have height from rows"
+        );
+    }
+
+    #[test]
+    fn estimate_table_height_many_rows() {
+        let table = TableData {
+            header: vec![plain("A"), plain("B"), plain("C")],
+            alignments: vec![Alignment::None; 3],
+            rows: (0..200)
+                .map(|r| vec![plain(&format!("r{r}")), plain("mid"), plain("end")])
+                .collect(),
+        };
+        let h = estimate_table_height(&table, 14.0, 400.0);
+        assert!(
+            h > 200.0,
+            "200-row table estimate should be substantial, got {h}"
+        );
+    }
+
+    #[test]
+    fn estimate_table_height_narrow_wrap_width() {
+        let table = TableData {
+            header: vec![plain("Header1"), plain("Header2")],
+            alignments: vec![Alignment::None; 2],
+            rows: vec![vec![plain(&"word ".repeat(50)), plain(&"text ".repeat(50))]],
+        };
+        let h_narrow = estimate_table_height(&table, 14.0, 50.0);
+        let h_wide = estimate_table_height(&table, 14.0, 800.0);
+        assert!(
+            h_narrow >= h_wide,
+            "narrow wrap should produce taller estimate: narrow={h_narrow}, wide={h_wide}"
+        );
+    }
+
+    // ── List stress tests ──────────────────────────────────────────
+
+    /// Build a plain `ListItem` with no children and no checkbox.
+    fn plain_item(text: &str) -> ListItem {
+        ListItem {
+            content: StyledText {
+                text: text.to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+            checked: None,
+        }
+    }
+
+    // ── 1. Extreme item counts ─────────────────────────────────────
+
+    #[test]
+    fn stress_unordered_list_500_items_scrollable() {
+        let mut md = String::with_capacity(500 * 20);
+        for i in 0..500 {
+            writeln!(md, "- Item {i}").ok();
+        }
+        let (count, height) = headless_render_scrollable(&md, None);
+        assert!(count > 0);
+        assert!(height > 0.0, "500-item list should have positive height");
+    }
+
+    #[test]
+    fn stress_ordered_list_500_items() {
+        let mut md = String::with_capacity(500 * 20);
+        for i in 1..=500 {
+            writeln!(md, "{i}. Item number {i}").ok();
+        }
+        let (blocks, height) = headless_render(&md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 1);
+                assert_eq!(items.len(), 500);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    // ── 2. Extreme nesting ─────────────────────────────────────────
+
+    #[test]
+    fn stress_list_nested_10_levels() {
+        let mut md = String::new();
+        for depth in 0..10 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- Level {depth}").ok();
+        }
+        let (blocks, height) = headless_render(&md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0, "10-level nested list should render");
+    }
+
+    #[test]
+    fn stress_list_nested_20_levels_no_overflow() {
+        let mut md = String::new();
+        for depth in 0..20 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- Depth {depth}").ok();
+        }
+        let (blocks, height) = headless_render(&md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0, "20-level nested list should not overflow");
+
+        // Also verify height estimation doesn't panic or produce NaN/Inf.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&md);
+        cache.ensure_heights(14.0, 400.0, &style);
+        assert!(cache.total_height.is_finite());
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn stress_nested_list_indent_calculation() {
+        // Verify the indent arithmetic (16.0 * indent as f32) stays finite.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        for depth in &[0usize, 5, 10, 20, 50] {
+            let indent_px = 16.0 * *depth as f32;
+            assert!(indent_px.is_finite(), "indent overflowed at depth {depth}");
+            let items = vec![plain_item("test")];
+            let h = estimate_list_height(&items, 14.0, 400.0, &style);
+            assert!(h > 0.0, "list height should be positive at depth {depth}");
+        }
+    }
+
+    // ── 3. Extreme start numbers ───────────────────────────────────
+
+    #[test]
+    fn stress_ordered_list_start_999() {
+        let md = "\
+999. First at 999
+1000. Second at 1000
+1001. Third at 1001
+";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 999);
+                assert_eq!(items.len(), 3);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_ordered_list_start_99999() {
+        let md = "\
+99999. Five-digit start
+100000. Next
+100001. After
+";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 99999);
+                assert_eq!(items.len(), 3);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_ordered_list_1000_items_digit_growth() {
+        // Start at 1, end at 1000 — number column must accommodate 4 digits.
+        let mut md = String::with_capacity(1000 * 20);
+        for i in 1..=1000 {
+            writeln!(md, "{i}. Item {i}").ok();
+        }
+        let (blocks, height) = headless_render(&md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 1);
+                assert_eq!(items.len(), 1000);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_ordered_list_digit_width_calculation() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        // Start=1, 1 item: max_num=1, digits=1
+        let b1 = Block::OrderedList {
+            start: 1,
+            items: vec![plain_item("a")],
+        };
+        let h1 = estimate_block_height(&b1, 14.0, 400.0, &style);
+        assert!(h1 > 0.0);
+
+        // Start=99999, 1 item: max_num=99999, digits=5
+        let b5 = Block::OrderedList {
+            start: 99999,
+            items: vec![plain_item("a")],
+        };
+        let h5 = estimate_block_height(&b5, 14.0, 400.0, &style);
+        assert!(h5 > 0.0);
+
+        // Start=1, 1000 items: max_num=1000, digits=4
+        let items: Vec<_> = (0..1000)
+            .map(|i| plain_item(&format!("item {i}")))
+            .collect();
+        let b4 = Block::OrderedList { start: 1, items };
+        let h4 = estimate_block_height(&b4, 14.0, 400.0, &style);
+        assert!(h4 > 0.0);
+    }
+
+    // ── 4. Mixed content in list items ─────────────────────────────
+
+    #[test]
+    fn stress_list_items_with_inline_formatting() {
+        let md = "\
+- **Bold item**
+- *Italic item*
+- `Code item`
+- [Link item](https://example.com)
+- ~~Strikethrough item~~
+- **Bold** and *italic* and `code` together
+";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 6);
+                assert!(
+                    items[0].content.spans.iter().any(|s| s.style.strong()),
+                    "first item should be bold"
+                );
+                assert!(
+                    items[2].content.spans.iter().any(|s| s.style.code()),
+                    "third item should have code"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_list_item_very_long_text() {
+        let long_text = "A".repeat(600);
+        let md = format!("- {long_text}\n- Short\n");
+        let (blocks, height) = headless_render(&md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(
+                    items[0].content.text.len() >= 500,
+                    "first item should be very long"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_list_items_with_continuation_lines() {
+        let md = "\
+- First line of item one
+  continued on next line
+  and another continuation
+- Second item
+";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(
+                    items[0].content.text.contains("continued"),
+                    "continuation line should be part of item"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    // ── 5. Task list edge cases ────────────────────────────────────
+
+    #[test]
+    fn stress_task_list_all_checked() {
+        let mut md = String::new();
+        for i in 0..20 {
+            writeln!(md, "- [x] Task {i} done").ok();
+        }
+        let (blocks, _) = headless_render(&md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 20);
+                assert!(
+                    items.iter().all(|it| it.checked == Some(true)),
+                    "all items should be checked"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stress_task_list_all_unchecked() {
+        let mut md = String::new();
+        for i in 0..20 {
+            writeln!(md, "- [ ] Task {i} todo").ok();
+        }
+        let (blocks, _) = headless_render(&md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 20);
+                assert!(
+                    items.iter().all(|it| it.checked == Some(false)),
+                    "all items should be unchecked"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stress_task_list_mixed_checked_unchecked_regular() {
+        let md = "\
+- [x] Checked
+- [ ] Unchecked
+- Regular
+- [x] Another checked
+- [ ] Another unchecked
+- Also regular
+";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 6);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
+                assert_eq!(items[3].checked, Some(true));
+                assert_eq!(items[4].checked, Some(false));
+                assert_eq!(items[5].checked, None);
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_nested_task_lists() {
+        let md = "\
+- [x] Parent checked
+  - [ ] Child unchecked
+  - [x] Child checked
+    - [ ] Grandchild unchecked
+- [ ] Parent unchecked
+  - [x] Child checked
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert!(
+                    !items[0].children.is_empty(),
+                    "first item should have child list"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    // ── 6. List/rendering interaction ──────────────────────────────
+
+    #[test]
+    fn stress_list_immediately_after_heading() {
+        let md = "\
+# My Heading
+- Item A
+- Item B
+- Item C
+";
+        let (blocks, height) = headless_render(md);
+        assert!(blocks.len() >= 2, "should have heading + list");
+        assert!(matches!(&blocks[0], Block::Heading { .. }));
+        let has_list = blocks.iter().any(|b| matches!(b, Block::UnorderedList(_)));
+        assert!(has_list, "should have an unordered list after heading");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_list_inside_blockquote() {
+        let md = "\
+> - Quoted item 1
+> - Quoted item 2
+> - Quoted item 3
+>
+> 1. Ordered in quote
+> 2. Second ordered
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Quote(_))),
+            "should have a blockquote"
+        );
+    }
+
+    #[test]
+    fn stress_document_with_only_lists() {
+        let md = "\
+- A
+- B
+- C
+
+1. One
+2. Two
+3. Three
+
+- [x] Done
+- [ ] Not done
+";
+        let (blocks, height) = headless_render(md);
+        for block in &blocks {
+            assert!(
+                matches!(block, Block::UnorderedList(_) | Block::OrderedList { .. }),
+                "expected only list blocks, got {block:?}"
+            );
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn stress_alternating_ordered_unordered_lists() {
+        let mut md = String::new();
+        for i in 0..10 {
+            if i % 2 == 0 {
+                writeln!(md, "- Unordered {i}").ok();
+            } else {
+                writeln!(md, "1. Ordered {i}").ok();
+            }
+            md.push('\n');
+        }
+        let (blocks, height) = headless_render(&md);
+        let unordered = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::UnorderedList(_)))
+            .count();
+        let ordered = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::OrderedList { .. }))
+            .count();
+        assert!(unordered > 0, "should have unordered lists");
+        assert!(ordered > 0, "should have ordered lists");
+        assert!(height > 0.0);
+    }
+
+    // ── 7. Height estimation accuracy for lists ────────────────────
+
+    #[test]
+    fn stress_height_estimation_ratio_50_vs_100_items() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        let items_50: Vec<_> = (0..50).map(|i| plain_item(&format!("Item {i}"))).collect();
+        let items_100: Vec<_> = (0..100).map(|i| plain_item(&format!("Item {i}"))).collect();
+
+        let h50 = estimate_list_height(&items_50, 14.0, 400.0, &style);
+        let h100 = estimate_list_height(&items_100, 14.0, 400.0, &style);
+
+        assert!(h50 > 0.0);
+        assert!(h100 > 0.0);
+        assert!(h100 > h50, "100 items should be taller than 50");
+
+        let ratio = h100 / h50;
+        assert!(
+            (1.6..=2.4).contains(&ratio),
+            "height ratio 100/50 should be ~2.0, got {ratio:.2}"
+        );
+    }
+
+    #[test]
+    fn stress_height_estimation_scales_linearly() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        let counts = [10, 25, 50, 100, 200];
+        let mut heights = Vec::new();
+        for &n in &counts {
+            let items: Vec<_> = (0..n).map(|i| plain_item(&format!("Item {i}"))).collect();
+            let h = estimate_list_height(&items, 14.0, 400.0, &style);
+            assert!(h > 0.0);
+            heights.push(h);
+        }
+
+        for i in 1..heights.len() {
+            assert!(
+                heights[i] > heights[i - 1],
+                "height should increase: h[{}]={} vs h[{}]={}",
+                counts[i],
+                heights[i],
+                counts[i - 1],
+                heights[i - 1],
+            );
+        }
+    }
+
+    #[test]
+    fn stress_height_estimation_nested_vs_flat() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        let flat_items: Vec<_> = (0..10).map(|i| plain_item(&format!("Flat {i}"))).collect();
+        let h_flat = estimate_list_height(&flat_items, 14.0, 400.0, &style);
+
+        // 5 items each with a 2-item child list (10 items total).
+        let nested_items: Vec<_> = (0..5)
+            .map(|i| ListItem {
+                content: StyledText {
+                    text: format!("Parent {i}"),
+                    spans: vec![],
+                },
+                children: vec![Block::UnorderedList(vec![
+                    plain_item("child a"),
+                    plain_item("child b"),
+                ])],
+                checked: None,
+            })
+            .collect();
+        let h_nested = estimate_list_height(&nested_items, 14.0, 400.0, &style);
+
+        assert!(h_flat > 0.0);
+        assert!(h_nested > 0.0);
+        assert!(
+            h_nested > h_flat,
+            "nested list should be taller: {h_nested} vs {h_flat}"
+        );
+    }
+
+    #[test]
+    fn stress_ordered_list_near_u64_max_no_panic() {
+        // saturating_add protects against overflow at extreme start numbers.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let items = vec![plain_item("near-max"), plain_item("overflow?")];
+        let block = Block::OrderedList {
+            start: u64::MAX - 1,
+            items,
+        };
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(h.is_finite());
+        assert!(h > 0.0);
+    }
+
+    // ── build_layout_job section coverage ──────────────────────────
+
+    #[test]
+    fn layout_job_sections_cover_all_bytes() {
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+
+        // Build a StyledText with all formatting types (no links).
+        let md = "plain **bold** *italic* ~~strike~~ `code` ***bi*** end";
+        let blocks = crate::parse::parse_markdown(md);
+        let st = match &blocks[0] {
+            Block::Paragraph(st) => st,
+            other => panic!("expected paragraph, got {other:?}"),
+        };
+        assert!(!st.text.is_empty());
+        assert!(
+            !st.spans.iter().any(|s| s.style.link.is_some()),
+            "this test is for the no-link path"
+        );
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let base_color = ui.visuals().text_color();
+                let job = build_layout_job(st, &st.spans, &style, base_color, 14.0, 900.0, ui);
+
+                let text_len = job.text.len();
+                assert!(!job.sections.is_empty(), "should have sections");
+
+                assert_eq!(
+                    job.sections[0].byte_range.start, 0,
+                    "first section should start at 0"
+                );
+                assert_eq!(
+                    job.sections.last().expect("non-empty").byte_range.end,
+                    text_len,
+                    "last section should end at text len ({text_len})"
+                );
+                for i in 1..job.sections.len() {
+                    assert_eq!(
+                        job.sections[i].byte_range.start,
+                        job.sections[i - 1].byte_range.end,
+                        "gap between section {} and {i}",
+                        i - 1
+                    );
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn layout_job_single_style_single_section() {
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+
+        let st = StyledText {
+            text: "all plain text".to_owned(),
+            spans: vec![Span {
+                start: 0,
+                end: 14,
+                style: SpanStyle::plain(),
+            }],
+        };
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let base_color = ui.visuals().text_color();
+                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
+                assert_eq!(job.sections.len(), 1);
+                assert_eq!(job.sections[0].byte_range, 0..14);
+            });
+        });
+    }
+
+    #[test]
+    fn layout_job_formatting_flags_applied() {
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+
+        let mut bold_style = SpanStyle::plain();
+        bold_style.set_strong();
+        let mut italic_style = SpanStyle::plain();
+        italic_style.set_emphasis();
+
+        let st = StyledText {
+            text: "AB".to_owned(),
+            spans: vec![
+                Span {
+                    start: 0,
+                    end: 1,
+                    style: bold_style,
+                },
+                Span {
+                    start: 1,
+                    end: 2,
+                    style: italic_style,
+                },
+            ],
+        };
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let base_color = ui.visuals().text_color();
+                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
+                assert_eq!(job.sections.len(), 2);
+                assert!(!job.sections[0].format.italics);
+                assert!(job.sections[1].format.italics);
+            });
+        });
+    }
+
+    #[test]
+    fn layout_job_code_uses_monospace() {
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+
+        let mut code_style = SpanStyle::plain();
+        code_style.set_code();
+
+        let st = StyledText {
+            text: "fn main()".to_owned(),
+            spans: vec![Span {
+                start: 0,
+                end: 9,
+                style: code_style,
+            }],
+        };
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let base_color = ui.visuals().text_color();
+                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
+                assert_eq!(job.sections.len(), 1);
+                assert_eq!(
+                    job.sections[0].format.font_id.family,
+                    egui::FontFamily::Monospace
+                );
+            });
+        });
     }
 }

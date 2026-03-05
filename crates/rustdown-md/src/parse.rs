@@ -2278,4 +2278,466 @@ mod tests {
         assert!(blocks.iter().any(|b| matches!(b, Block::Table(_))));
         assert!(blocks.iter().any(|b| matches!(b, Block::Image { .. })));
     }
+
+    // ── Inline formatting stress tests ─────────────────────────────
+
+    /// Validate invariants on a `StyledText`:
+    /// - All spans have `start < end`
+    /// - No span exceeds `text.len()`
+    /// - Spans cover every byte (no gaps)
+    /// - Spans don't overlap
+    fn validate_styled_text(st: &StyledText) {
+        let text_len = st.text.len() as u32;
+
+        if st.text.is_empty() {
+            assert!(st.spans.is_empty(), "empty text should have no spans");
+            return;
+        }
+
+        assert!(!st.spans.is_empty(), "non-empty text should have spans");
+
+        for (i, span) in st.spans.iter().enumerate() {
+            assert!(
+                span.start < span.end,
+                "span {i}: start ({}) must be < end ({})",
+                span.start,
+                span.end
+            );
+            assert!(
+                span.end <= text_len,
+                "span {i}: end ({}) exceeds text len ({text_len})",
+                span.end
+            );
+        }
+
+        // Check contiguity: first span starts at 0, last ends at text_len,
+        // and each span starts where the previous one ended.
+        assert_eq!(
+            st.spans[0].start, 0,
+            "first span should start at 0, got {}",
+            st.spans[0].start
+        );
+        assert_eq!(
+            st.spans.last().expect("non-empty").end,
+            text_len,
+            "last span should end at text len ({text_len})"
+        );
+        for i in 1..st.spans.len() {
+            assert_eq!(
+                st.spans[i].start,
+                st.spans[i - 1].end,
+                "gap between span {} (end {}) and span {i} (start {})",
+                i - 1,
+                st.spans[i - 1].end,
+                st.spans[i].start
+            );
+        }
+    }
+
+    /// Extract the first paragraph's `StyledText` from parsed markdown.
+    fn parse_paragraph(md: &str) -> StyledText {
+        let blocks = parse_markdown(md);
+        match blocks.into_iter().next() {
+            Some(Block::Paragraph(st)) => st,
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    // ── 1. Span merging ───────────────────────────────────────────
+
+    #[test]
+    fn inline_merge_adjacent_bold() {
+        // push_text should merge adjacent spans of the same style.
+        let mut st = StyledText::default();
+        let mut bold = SpanStyle::plain();
+        bold.set_strong();
+        st.push_text("bold1", bold.clone());
+        st.push_text("bold2", bold);
+        assert_eq!(st.text, "bold1bold2");
+        assert_eq!(
+            st.spans.len(),
+            1,
+            "adjacent identical-style bold spans should merge into one"
+        );
+        assert!(st.spans[0].style.strong());
+        validate_styled_text(&st);
+    }
+
+    #[test]
+    fn inline_no_merge_different_styles() {
+        // *italic*normal*italic* — styles differ so spans must not merge.
+        let st = parse_paragraph("*italic*normal*italic*");
+        assert_eq!(st.text, "italicnormalitalic");
+        assert!(
+            st.spans.len() >= 3,
+            "different-style spans should not merge, got {} span(s)",
+            st.spans.len()
+        );
+        assert!(st.spans[0].style.emphasis());
+        assert!(!st.spans[1].style.emphasis());
+        assert!(st.spans[2].style.emphasis());
+        validate_styled_text(&st);
+    }
+
+    #[test]
+    fn inline_merge_plain_fragments() {
+        // Multiple adjacent plain text nodes should merge.
+        let mut st = StyledText::default();
+        st.push_text("aaa", SpanStyle::plain());
+        st.push_text("bbb", SpanStyle::plain());
+        st.push_text("ccc", SpanStyle::plain());
+        assert_eq!(st.spans.len(), 1);
+        assert_eq!(st.text, "aaabbbccc");
+        assert_eq!(st.spans[0].start, 0);
+        assert_eq!(st.spans[0].end, 9);
+    }
+
+    // ── 2. Deeply nested formatting ───────────────────────────────
+
+    #[test]
+    fn inline_bold_italic() {
+        let st = parse_paragraph("***bold-italic***");
+        assert_eq!(st.text, "bold-italic");
+        assert_eq!(st.spans.len(), 1);
+        assert!(st.spans[0].style.strong());
+        assert!(st.spans[0].style.emphasis());
+        validate_styled_text(&st);
+    }
+
+    #[test]
+    fn inline_bold_italic_strikethrough() {
+        let st = parse_paragraph("***~~bold-italic-strike~~***");
+        assert_eq!(st.text, "bold-italic-strike");
+        assert_eq!(st.spans.len(), 1);
+        assert!(st.spans[0].style.strong());
+        assert!(st.spans[0].style.emphasis());
+        assert!(st.spans[0].style.strikethrough());
+        validate_styled_text(&st);
+    }
+
+    #[test]
+    fn inline_bold_italic_link() {
+        let st = parse_paragraph("[***bold-italic link***](url)");
+        assert_eq!(st.text, "bold-italic link");
+        assert_eq!(st.spans.len(), 1);
+        assert!(st.spans[0].style.strong());
+        assert!(st.spans[0].style.emphasis());
+        assert!(
+            st.spans[0].style.link.is_some(),
+            "expected link URL on span"
+        );
+        assert_eq!(st.spans[0].style.link.as_deref(), Some("url"));
+        validate_styled_text(&st);
+    }
+
+    // ── 3. Code span isolation ────────────────────────────────────
+
+    #[test]
+    fn inline_code_inside_bold() {
+        // **bold `code` bold** — code span inherits strong flag.
+        let st = parse_paragraph("**bold `code` bold**");
+        assert_eq!(st.text, "bold code bold");
+        validate_styled_text(&st);
+
+        let code_spans: Vec<_> = st.spans.iter().filter(|s| s.style.code()).collect();
+        assert_eq!(code_spans.len(), 1, "expected exactly one code span");
+        assert!(
+            code_spans[0].style.strong(),
+            "code inside bold should inherit strong flag"
+        );
+        let code_text = &st.text[code_spans[0].start as usize..code_spans[0].end as usize];
+        assert_eq!(code_text, "code");
+    }
+
+    #[test]
+    fn inline_backtick_sequence() {
+        // `a`b`c` — pulldown_cmark treats first and third backtick pairs as code.
+        let st = parse_paragraph("`a`b`c`");
+        validate_styled_text(&st);
+        let code_count = st.spans.iter().filter(|s| s.style.code()).count();
+        assert!(
+            code_count >= 1,
+            "backtick sequence should produce at least one code span"
+        );
+    }
+
+    #[test]
+    fn inline_double_backtick_code() {
+        // Double-backtick code spans allow internal backticks.
+        let st = parse_paragraph("`` `inner` ``");
+        validate_styled_text(&st);
+        let code_spans: Vec<_> = st.spans.iter().filter(|s| s.style.code()).collect();
+        assert_eq!(code_spans.len(), 1);
+        let code_text = &st.text[code_spans[0].start as usize..code_spans[0].end as usize];
+        assert!(
+            code_text.contains('`'),
+            "double-backtick code should preserve inner backtick"
+        );
+    }
+
+    // ── 4. Link text formatting ───────────────────────────────────
+
+    #[test]
+    fn inline_link_with_formatted_text() {
+        let st = parse_paragraph("[**bold** and *italic*](url)");
+        assert_eq!(st.text, "bold and italic");
+        validate_styled_text(&st);
+
+        // All spans should have link set.
+        for span in &st.spans {
+            assert_eq!(
+                span.style.link.as_deref(),
+                Some("url"),
+                "all spans in link should carry the URL"
+            );
+        }
+
+        // Check formatting within the link.
+        assert!(
+            st.spans.iter().any(|s| s.style.strong()),
+            "link should contain bold span"
+        );
+        assert!(
+            st.spans.iter().any(|s| s.style.emphasis()),
+            "link should contain italic span"
+        );
+    }
+
+    #[test]
+    fn inline_multiple_links_different_urls() {
+        let st = parse_paragraph("[aaa](url1) [bbb](url2)");
+        validate_styled_text(&st);
+
+        let link_spans: Vec<_> = st.spans.iter().filter(|s| s.style.link.is_some()).collect();
+        assert!(
+            link_spans.len() >= 2,
+            "expected at least 2 link spans, got {}",
+            link_spans.len()
+        );
+
+        let urls: Vec<&str> = link_spans
+            .iter()
+            .map(|s| s.style.link.as_deref().expect("link"))
+            .collect();
+        assert!(urls.contains(&"url1"));
+        assert!(urls.contains(&"url2"));
+    }
+
+    // ── 5. Span byte boundary validation ──────────────────────────
+
+    #[test]
+    fn inline_validate_plain_text() {
+        validate_styled_text(&parse_paragraph("Hello world"));
+    }
+
+    #[test]
+    fn inline_validate_bold_italic_code() {
+        validate_styled_text(&parse_paragraph("**bold** and *italic* and `code` end"));
+    }
+
+    #[test]
+    fn inline_validate_unicode() {
+        validate_styled_text(&parse_paragraph("**你好** *世界* `🚀`"));
+    }
+
+    #[test]
+    fn inline_validate_all_formatting_types() {
+        validate_styled_text(&parse_paragraph(
+            "plain **bold** *italic* ~~strike~~ `code` [link](url) ***bi*** end",
+        ));
+    }
+
+    #[test]
+    fn inline_validate_nested_formatting() {
+        validate_styled_text(&parse_paragraph("***~~all~~***"));
+    }
+
+    // ── 6. Empty and edge cases ───────────────────────────────────
+
+    #[test]
+    fn inline_empty_bold() {
+        // **** is empty bold — pulldown_cmark may not emit it or may emit empty text.
+        let blocks = parse_markdown("****");
+        // Whatever the parser does, it should not panic and spans should be valid.
+        for block in &blocks {
+            if let Block::Paragraph(st) = block {
+                validate_styled_text(st);
+            }
+        }
+    }
+
+    #[test]
+    fn inline_empty_emphasis_underscores() {
+        let blocks = parse_markdown("__");
+        for block in &blocks {
+            if let Block::Paragraph(st) = block {
+                validate_styled_text(st);
+            }
+        }
+    }
+
+    #[test]
+    fn inline_empty_link() {
+        let st = parse_paragraph("[](url)");
+        // Empty link text — no text emitted, spans should be empty.
+        if st.text.is_empty() {
+            assert!(st.spans.is_empty());
+        } else {
+            validate_styled_text(&st);
+        }
+    }
+
+    #[test]
+    fn inline_unclosed_bold() {
+        // ** without closing — treated as literal text by pulldown_cmark.
+        let blocks = parse_markdown("**unclosed");
+        assert!(!blocks.is_empty());
+        if let Some(Block::Paragraph(st)) = blocks.first() {
+            validate_styled_text(st);
+        }
+    }
+
+    #[test]
+    fn inline_unclosed_emphasis() {
+        let blocks = parse_markdown("*unclosed");
+        assert!(!blocks.is_empty());
+        if let Some(Block::Paragraph(st)) = blocks.first() {
+            validate_styled_text(st);
+        }
+    }
+
+    #[test]
+    fn inline_unclosed_code() {
+        let blocks = parse_markdown("`unclosed");
+        assert!(!blocks.is_empty());
+        if let Some(Block::Paragraph(st)) = blocks.first() {
+            validate_styled_text(st);
+        }
+    }
+
+    #[test]
+    fn inline_unclosed_strikethrough() {
+        let blocks = parse_markdown("~~unclosed");
+        assert!(!blocks.is_empty());
+        if let Some(Block::Paragraph(st)) = blocks.first() {
+            validate_styled_text(st);
+        }
+    }
+
+    // ── 7. Long inline sequences ──────────────────────────────────
+
+    #[test]
+    fn inline_100_alternating_bold_normal() {
+        let mut md = String::new();
+        for i in 0..100 {
+            if i % 2 == 0 {
+                write!(md, "**bold{i}** ").ok();
+            } else {
+                write!(md, "normal{i} ").ok();
+            }
+        }
+        let st = parse_paragraph(&md);
+        validate_styled_text(&st);
+
+        let bold_count = st.spans.iter().filter(|s| s.style.strong()).count();
+        assert_eq!(bold_count, 50, "expected 50 bold spans");
+
+        let plain_count = st.spans.iter().filter(|s| !s.style.strong()).count();
+        assert!(plain_count >= 50, "expected at least 50 plain spans");
+    }
+
+    #[test]
+    fn inline_50_links() {
+        let mut md = String::new();
+        for i in 0..50 {
+            write!(md, "[link{i}](https://example.com/{i}) ").ok();
+        }
+        let st = parse_paragraph(&md);
+        validate_styled_text(&st);
+
+        let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
+        assert!(
+            link_count >= 50,
+            "expected at least 50 link spans, got {link_count}"
+        );
+    }
+
+    #[test]
+    fn inline_100_code_spans() {
+        let mut md = String::new();
+        for i in 0..100 {
+            write!(md, "`code{i}` ").ok();
+        }
+        let st = parse_paragraph(&md);
+        validate_styled_text(&st);
+
+        let code_count = st.spans.iter().filter(|s| s.style.code()).count();
+        assert_eq!(code_count, 100, "expected 100 code spans");
+    }
+
+    #[test]
+    fn inline_deeply_interleaved_formatting() {
+        // Bold wrapping italic wrapping strikethrough wrapping code.
+        let st = parse_paragraph("**bold *italic ~~strike `code` strike~~ italic* bold**");
+        validate_styled_text(&st);
+        assert!(
+            st.spans.iter().any(|s| s.style.strong()),
+            "should have bold"
+        );
+        assert!(
+            st.spans.iter().any(|s| s.style.emphasis()),
+            "should have italic"
+        );
+        assert!(
+            st.spans.iter().any(|s| s.style.strikethrough()),
+            "should have strikethrough"
+        );
+        assert!(st.spans.iter().any(|s| s.style.code()), "should have code");
+    }
+
+    #[test]
+    fn inline_link_with_code() {
+        let st = parse_paragraph("[`code` in link](url)");
+        validate_styled_text(&st);
+        assert!(
+            st.spans
+                .iter()
+                .any(|s| s.style.code() && s.style.link.is_some()),
+            "code inside link should have both code and link flags"
+        );
+    }
+
+    #[test]
+    fn inline_adjacent_different_links_no_merge() {
+        let st = parse_paragraph("[a](u1)[b](u2)");
+        validate_styled_text(&st);
+        // Different URLs must not merge.
+        let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
+        assert!(
+            link_count >= 2,
+            "different link URLs should produce separate spans"
+        );
+    }
+
+    #[test]
+    fn inline_emphasis_across_softbreak() {
+        // Emphasis spanning a soft break (line continuation).
+        let st = parse_paragraph("*italic\nacross lines*");
+        validate_styled_text(&st);
+        assert!(
+            st.spans.iter().any(|s| s.style.emphasis()),
+            "emphasis should span soft break"
+        );
+    }
+
+    #[test]
+    fn inline_all_formatting_combined_in_link() {
+        let st = parse_paragraph("[***~~all~~***](url)");
+        validate_styled_text(&st);
+        let span = &st.spans[0];
+        assert!(span.style.strong());
+        assert!(span.style.emphasis());
+        assert!(span.style.strikethrough());
+        assert!(span.style.link.is_some());
+    }
 }
