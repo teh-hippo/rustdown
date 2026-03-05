@@ -4436,4 +4436,198 @@ mod tests {
             });
         });
     }
+
+    // ── Live-reload / content-change tests ──────────────────────────
+
+    #[test]
+    fn cache_reparse_on_content_change_preserves_viewport() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("reload_test");
+
+        // Initial content
+        let md1: String = (0..100)
+            .map(|i| format!("## Heading {i}\n\nParagraph {i}.\n\n"))
+            .collect();
+
+        // First render at scroll position 0
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, &md1, None);
+            });
+        });
+        let original_height = cache.total_height;
+        let original_blocks = cache.blocks.len();
+        assert!(original_height > 0.0);
+        assert!(original_blocks > 0);
+
+        // Simulate live reload with shorter content
+        let md2: String = (0..50)
+            .map(|i| format!("## New Heading {i}\n\nNew paragraph {i}.\n\n"))
+            .collect();
+
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, &md2, Some(original_height / 2.0));
+            });
+        });
+
+        assert!(
+            cache.blocks.len() < original_blocks,
+            "fewer blocks after shorter content"
+        );
+        assert!(
+            cache.total_height < original_height,
+            "shorter content = shorter height"
+        );
+        assert!(cache.total_height > 0.0, "height should still be positive");
+    }
+
+    #[test]
+    fn scroll_past_end_after_content_shrinks() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("shrink_test");
+
+        // Long document
+        let long_md: String = (0..500).map(|i| format!("Line {i}\n")).collect();
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, &long_md, None);
+            });
+        });
+        let long_height = cache.total_height;
+
+        // Short document, but scroll offset from long document
+        let short_md = "# Just one heading\n\nAnd a paragraph.\n";
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, short_md, Some(long_height));
+            });
+        });
+
+        assert!(cache.total_height < long_height);
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn content_grows_at_various_scroll_positions() {
+        let ctx = headless_ctx();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("grow_test");
+
+        let scroll_fractions = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+        for frac in scroll_fractions {
+            let mut cache = MarkdownCache::default();
+
+            // Start with short content
+            let short_md = "# Short\n\nJust a few lines.\n";
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, short_md, None);
+                });
+            });
+            let short_height = cache.total_height;
+
+            // Replace with long content, scrolled to fraction of original height
+            let long_md: String = (0..200)
+                .map(|i| format!("## Section {i}\n\nContent for section {i}.\n\n"))
+                .collect();
+            let scroll_y = short_height * frac;
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, &long_md, Some(scroll_y));
+                });
+            });
+
+            assert!(
+                cache.total_height > short_height,
+                "frac={frac}: long content should be taller"
+            );
+            assert!(
+                cache.total_height.is_finite(),
+                "frac={frac}: height should be finite"
+            );
+        }
+    }
+
+    #[test]
+    fn rapid_content_switches_no_corruption() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("rapid_test");
+
+        // Rapidly switch between different content (simulates rapid file saves)
+        let contents: Vec<String> = (0..20)
+            .map(|v| {
+                (0..50 + v * 10)
+                    .map(|i| format!("## V{v} Heading {i}\n\nParagraph.\n\n"))
+                    .collect()
+            })
+            .collect();
+
+        for (i, md) in contents.iter().enumerate() {
+            let scroll_y = if i > 0 {
+                Some(cache.total_height / 3.0)
+            } else {
+                None
+            };
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, md, scroll_y);
+                });
+            });
+
+            assert!(!cache.blocks.is_empty(), "iter {i}: blocks should exist");
+            assert!(
+                cache.total_height > 0.0,
+                "iter {i}: height should be positive"
+            );
+            assert!(
+                cache.total_height.is_finite(),
+                "iter {i}: height should be finite"
+            );
+            assert_eq!(
+                cache.heights.len(),
+                cache.blocks.len(),
+                "iter {i}: heights/blocks mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn reload_with_empty_content() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("empty_reload");
+
+        // Start with content
+        let md = "# Title\n\nSome content here.\n\n## Section\n\nMore content.\n";
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
+
+        // Reload with empty content
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, "", None);
+            });
+        });
+        assert!(
+            cache.blocks.is_empty(),
+            "empty content should produce no blocks"
+        );
+        assert!(
+            cache.total_height.abs() < f32::EPSILON,
+            "empty content height should be 0"
+        );
+    }
 }

@@ -386,4 +386,68 @@ mod tests {
             "notes.rustdown-merge-3.md"
         );
     }
+
+    #[test]
+    fn stable_read_large_file() {
+        use std::fmt::Write;
+        let dir = test_dir("rustdown-large-read-test");
+        let path = dir.join("large.md");
+        let mut content = String::with_capacity(1_100_000);
+        for i in 0..20_000 {
+            writeln!(content, "- Item {i}: {}", "x".repeat(50)).unwrap_or_default();
+        }
+        assert!(content.len() > 1_000_000);
+        fs::write(&path, &content).ok();
+        let result = read_stable_utf8(&path);
+        assert!(result.is_ok(), "large file read should succeed");
+        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, content);
+        assert_eq!(rev.len, content.len() as u64);
+    }
+
+    #[test]
+    fn stable_read_empty_file() {
+        let dir = test_dir("rustdown-empty-read-test");
+        let path = dir.join("empty.md");
+        fs::write(&path, "").ok();
+        let result = read_stable_utf8(&path);
+        assert!(result.is_ok(), "empty file read should succeed");
+        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, "");
+        assert_eq!(rev.len, 0);
+    }
+
+    #[test]
+    fn stable_read_invalid_utf8_returns_error() {
+        let dir = test_dir("rustdown-binary-read-test");
+        let path = dir.join("binary.md");
+        fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).ok();
+        let result = read_stable_utf8(&path);
+        assert!(result.is_err(), "binary file should fail UTF-8 read");
+    }
+
+    #[test]
+    fn stable_read_deleted_file_returns_error() {
+        let path = PathBuf::from("/nonexistent/path/deleted.md");
+        let result = read_stable_utf8(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn atomic_write_large_file_round_trip() {
+        use std::fmt::Write;
+        let dir = test_dir("rustdown-large-write-test");
+        let path = dir.join("large_write.md");
+        let mut content = String::with_capacity(600_000);
+        for i in 0..50_000 {
+            writeln!(content, "Line {i}").unwrap_or_default();
+        }
+        assert!(content.len() > 500_000);
+        let write_result = atomic_write_utf8(&path, &content);
+        assert!(write_result.is_ok(), "large write should succeed");
+        let read_result = read_stable_utf8(&path);
+        assert!(read_result.is_ok(), "large read-back should succeed");
+        let (read_back, _) = read_result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(read_back, content);
+    }
 }

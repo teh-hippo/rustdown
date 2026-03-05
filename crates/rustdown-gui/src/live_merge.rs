@@ -552,4 +552,70 @@ mod tests {
         assert!(conflict.ends_with(">>>>>>> theirs\n"));
         assert_eq!(ours_wins, ours);
     }
+
+    #[test]
+    fn merge_large_file_appended_falls_back_to_whole_file_conflict() {
+        use std::fmt::Write;
+        let mut base = String::new();
+        for i in 0..25_000 {
+            writeln!(base, "line {i}").unwrap_or_default();
+        }
+        let mut ours = base.clone();
+        writeln!(ours, "our addition").unwrap_or_default();
+        let mut theirs = base.clone();
+        writeln!(theirs, "their addition").unwrap_or_default();
+        let (conflict, ours_wins) = assert_conflict(&base, &ours, &theirs);
+        assert!(conflict.contains("<<<<<<< ours"));
+        assert!(conflict.contains(">>>>>>> theirs"));
+        assert_eq!(ours_wins, ours);
+    }
+
+    #[test]
+    fn merge_disk_truncated_to_empty() {
+        let base = "original content\n";
+        let ours = "original content\nour addition\n";
+        let theirs = "";
+        match merge_three_way(base, ours, theirs) {
+            Merge3Outcome::Conflicted { ours_wins, .. } => {
+                assert_eq!(ours_wins, ours, "ours_wins should preserve user edits");
+            }
+            Merge3Outcome::Clean(result) => {
+                // If merge resolves cleanly, the user addition should survive
+                assert!(
+                    result.contains("our addition"),
+                    "clean merge must preserve user edits"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn merge_large_identical_edits_clean() {
+        use std::fmt::Write;
+        let mut base = String::new();
+        let mut modified = String::new();
+        for i in 0..1000 {
+            writeln!(base, "line {i}").unwrap_or_default();
+            writeln!(modified, "modified line {i}").unwrap_or_default();
+        }
+        assert_clean(&base, &modified, &modified, &modified);
+    }
+
+    #[test]
+    fn merge_multiple_disjoint_edits() {
+        let base = "aaa\nbbb\nccc\nddd\neee\n";
+        let ours = "AAA\nbbb\nccc\nddd\neee\n"; // changed line 1
+        let theirs = "aaa\nbbb\nccc\nddd\nEEE\n"; // changed line 5
+        match merge_three_way(base, ours, theirs) {
+            Merge3Outcome::Clean(result) => {
+                assert!(result.contains("AAA"), "should keep our edit");
+                assert!(result.contains("EEE"), "should keep their edit");
+                assert!(!result.contains("aaa"), "should not keep original line 1");
+                assert!(!result.contains("eee"), "should not keep original line 5");
+            }
+            Merge3Outcome::Conflicted { .. } => {
+                panic!("disjoint edits should merge cleanly")
+            }
+        }
+    }
 }

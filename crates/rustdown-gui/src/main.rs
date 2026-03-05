@@ -2405,4 +2405,140 @@ mod tests {
         app.schedule_disk_reload(now);
         assert_eq!(app.disk.pending_reload_at, first);
     }
+
+    #[test]
+    fn reload_clean_buffer_invalidates_all_caches() {
+        let mut app = RustdownApp::default();
+        app.doc.text = Arc::new("original".into());
+        app.doc.base_text = Arc::new("original".into());
+        app.doc.dirty = false;
+        let old_seq = app.doc.edit_seq;
+
+        let new_text = Arc::new("new content".to_owned());
+        app.apply_disk_text_state(
+            new_text.clone(),
+            new_text,
+            test_rev(11, 11),
+            ReloadKind::Clean,
+        );
+
+        assert_eq!(app.doc.text.as_str(), "new content");
+        assert_eq!(app.doc.base_text.as_str(), "new content");
+        assert!(!app.doc.dirty);
+        assert!(app.doc.edit_seq > old_seq, "edit_seq must advance");
+        // apply_disk_text_state eagerly computes stats and clears preview
+        assert!(!app.doc.stats_dirty, "stats computed eagerly");
+        assert!(!app.doc.preview_dirty, "preview cleared eagerly");
+        assert!(app.doc.editor_galley_cache.is_none(), "galley cache reset");
+    }
+
+    #[test]
+    fn reload_dirty_buffer_uses_merge_outcome() {
+        let original = "line one\nline two\n";
+        let ours = format!("{original}our addition\n");
+        let mut app = merge_app(original, &ours, 1, original.len() as u64, true);
+
+        // Disk changed with disjoint edit (first line only)
+        let disk_text = "CHANGED\nline two\n".to_string();
+        app.incorporate_disk_text(disk_text, test_rev(2, 18));
+
+        assert!(
+            app.doc.text.contains("CHANGED"),
+            "merged text should contain disk edit"
+        );
+        assert!(
+            app.doc.text.contains("our addition"),
+            "merged text should keep our edit"
+        );
+        assert!(app.disk.conflict.is_none(), "disjoint edits: no conflict");
+    }
+
+    #[test]
+    fn reload_conflicting_edit_sets_conflict() {
+        let original = "shared line\n";
+        let mut app = merge_app(original, "our version\n", 1, original.len() as u64, true);
+
+        // Disk changed the same line we changed
+        app.incorporate_disk_text("their version\n".to_owned(), test_rev(2, 14));
+
+        assert!(
+            app.disk.conflict.is_some(),
+            "overlapping edits should conflict"
+        );
+        let conflict = disk_conflict(&app);
+        assert!(conflict.conflict_marked.contains("<<<<<<< ours"));
+        assert!(conflict.ours_wins.contains("our version"));
+    }
+
+    #[test]
+    fn reload_empty_disk_while_dirty_preserves_edits() {
+        let original = "original\n";
+        let mut app = merge_app(
+            original,
+            "user edits here\n",
+            1,
+            original.len() as u64,
+            true,
+        );
+
+        // Disk file was truncated to empty
+        app.incorporate_disk_text(String::new(), test_rev(2, 0));
+
+        // base→empty vs base→user edits: conflicting
+        if app.disk.conflict.is_some() {
+            let conflict = disk_conflict(&app);
+            assert!(
+                conflict.ours_wins.contains("user edits"),
+                "ours_wins must preserve edits"
+            );
+        } else {
+            assert!(
+                app.doc.text.contains("user edits"),
+                "merged text must keep edits"
+            );
+        }
+    }
+
+    #[test]
+    fn successive_reloads_advance_edit_seq() {
+        let mut app = RustdownApp::default();
+        let mut prev_seq = app.doc.edit_seq;
+
+        for i in 0u64..5 {
+            let content = Arc::new(format!("version {i}\n"));
+            app.apply_disk_text_state(content.clone(), content, test_rev(i, 12), ReloadKind::Clean);
+            assert!(
+                app.doc.edit_seq > prev_seq,
+                "edit_seq must advance on reload {i}"
+            );
+            prev_seq = app.doc.edit_seq;
+        }
+    }
+
+    #[test]
+    fn large_file_reload_maintains_integrity() {
+        use std::fmt::Write;
+        let mut app = RustdownApp::default();
+        let mut large_content = String::new();
+        for i in 0..50_000 {
+            writeln!(large_content, "line {i}").unwrap_or_default();
+        }
+        assert!(large_content.len() > 400_000);
+
+        let text = Arc::new(large_content.clone());
+        app.apply_disk_text_state(
+            text.clone(),
+            text,
+            test_rev(1, large_content.len() as u64),
+            ReloadKind::Clean,
+        );
+
+        assert_eq!(app.doc.text.as_str(), large_content.as_str());
+        assert_eq!(app.doc.base_text.as_str(), large_content.as_str());
+        assert!(!app.doc.dirty);
+        assert!(
+            app.doc.stats.lines > 49_000,
+            "stats should reflect large file"
+        );
+    }
 }
