@@ -32,8 +32,24 @@ pub fn format_markdown(source: &str, options: FormatOptions) -> String {
         None if source.contains("\r\n") => "\r\n",
         None => "\n",
     };
-    let normalized = if source.contains('\r') {
-        Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))
+    let normalized = if memchr::memchr(b'\r', source.as_bytes()).is_some() {
+        // Single-pass normalization: \r\n → \n, lone \r → \n.
+        let mut result = String::with_capacity(source.len());
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\r' {
+                result.push('\n');
+                // Skip \n after \r (CRLF case).
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+            } else {
+                result.push(bytes[i] as char);
+            }
+            i += 1;
+        }
+        Cow::Owned(result)
     } else {
         Cow::Borrowed(source)
     };

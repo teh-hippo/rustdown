@@ -79,8 +79,12 @@ pub fn markdown_layout_job(
 
     let base_font = egui::TextStyle::Body.resolve(style);
     let code_font = egui::TextStyle::Monospace.resolve(style);
-    let base = egui::TextFormat::simple(base_font.clone(), visuals.text_color());
-    let weak = egui::TextFormat::simple(base_font, visuals.weak_text_color());
+    let base = egui::TextFormat::simple(base_font, visuals.text_color());
+    let weak = {
+        let mut w = base.clone();
+        w.color = visuals.weak_text_color();
+        w
+    };
     let heading_scales = rustdown_md::HEADING_FONT_SCALES;
     let heading_formats = std::array::from_fn(|idx| {
         let mut format = base.clone();
@@ -214,6 +218,7 @@ pub fn markdown_layout_job(
 }
 
 /// Emit layout sections for a line that contains inline backtick code spans.
+/// Uses `FmtIdx` to defer format resolution, matching the batched-run path.
 fn emit_inline_code_sections(
     job: &mut egui::text::LayoutJob,
     line_start: usize,
@@ -226,37 +231,39 @@ fn emit_inline_code_sections(
     let mut pos = line_start;
     let line_bytes = line.as_bytes();
     let mut i = 0;
+
+    // Helper: push a section with a specific format reference (avoids per-section clone).
+    let push = |job: &mut egui::text::LayoutJob, range: std::ops::Range<usize>, fmt: &egui::TextFormat| {
+        if range.start < range.end {
+            job.sections.push(egui::text::LayoutSection {
+                leading_space: 0.0,
+                byte_range: range,
+                format: fmt.clone(),
+            });
+        }
+    };
+
     while let Some(tick_rel) = memchr::memchr(b'`', &line_bytes[i..]) {
         let tick_i = i + tick_rel;
-        if pos < line_start + tick_i {
-            push_section(job, pos..line_start + tick_i, base.clone());
-        }
+        push(job, pos..line_start + tick_i, base);
         if let Some(close) = memchr::memchr(b'`', &line_bytes[tick_i + 1..]) {
             let tick_start = line_start + tick_i;
             let code_start = tick_start + 1;
             let code_end = code_start + close;
             let tick_end = code_end + 1;
-            push_section(job, tick_start..code_start, weak.clone());
-            push_section(job, code_start..code_end, inline_code.clone());
-            push_section(job, code_end..tick_end, weak.clone());
+            push(job, tick_start..code_start, weak);
+            push(job, code_start..code_end, inline_code);
+            push(job, code_end..tick_end, weak);
             pos = tick_end;
             i = tick_i + 1 + close + 1;
         } else {
-            push_section(
-                job,
-                line_start + tick_i..line_start + tick_i + 1,
-                weak.clone(),
-            );
-            if line_start + tick_i + 1 < line_end {
-                push_section(job, line_start + tick_i + 1..line_end, base.clone());
-            }
+            push(job, line_start + tick_i..line_start + tick_i + 1, weak);
+            push(job, line_start + tick_i + 1..line_end, base);
             pos = line_end;
             i = line_bytes.len();
         }
     }
-    if pos < line_end {
-        push_section(job, pos..line_end, base.clone());
-    }
+    push(job, pos..line_end, base);
 }
 
 #[cfg(test)]
