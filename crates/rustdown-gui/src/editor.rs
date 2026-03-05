@@ -45,7 +45,7 @@ pub fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
 /// Map a Y coordinate to the byte offset at the start of the row at that
 /// position.  O(log n) binary search.
 pub fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
-    if rows.is_empty() {
+    if rows.is_empty() || !y.is_finite() {
         return 0;
     }
     let idx = rows
@@ -176,5 +176,30 @@ mod tests {
         assert_eq!(char_index_to_byte(text, 1), 3);
         assert_eq!(char_index_to_byte(text, 2), 7);
         assert_eq!(char_index_to_byte(text, 3), 8);
+    }
+
+    // ── Chaos tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn row_y_to_byte_offset_nan_inf() {
+        let rows = vec![(0.0, 0u32), (20.0, 50), (40.0, 100)];
+        // NaN and Inf should not panic — return 0
+        assert_eq!(row_y_to_byte_offset(&rows, f32::NAN), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, f32::INFINITY), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, f32::NEG_INFINITY), 0);
+    }
+
+    #[test]
+    fn row_byte_offset_to_y_extreme_values() {
+        let rows = vec![(0.0, 0u32), (20.0, 50)];
+        // usize::MAX should not panic — clamps to last row
+        assert_eq!(row_byte_offset_to_y(&rows, usize::MAX), 20.0);
+    }
+
+    #[test]
+    fn row_y_to_byte_offset_negative() {
+        let rows = vec![(0.0, 0u32), (20.0, 50)];
+        // Negative y should return first row's byte offset
+        assert_eq!(row_y_to_byte_offset(&rows, -100.0), 0);
     }
 }

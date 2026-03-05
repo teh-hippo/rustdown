@@ -3,6 +3,21 @@
 use crate::parse::{SpanStyle, StyledText};
 use crate::style::MarkdownStyle;
 
+/// Snap `pos` to a valid UTF-8 char boundary in `text`, rounding down.
+/// If `pos` is already on a boundary (or at 0 / `text.len()`), returns it unchanged.
+#[allow(clippy::missing_const_for_fn)] // is_char_boundary is not const-stable
+fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
+    if pos >= text.len() {
+        return text.len();
+    }
+    // Walk backwards until we hit a char boundary (at most 3 bytes for UTF-8).
+    let mut p = pos;
+    while p > 0 && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
 /// Inline formatting properties resolved from a composite `SpanStyle`.
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct SpanFormat {
@@ -122,8 +137,8 @@ pub(super) fn render_text_with_links(
         // widgets flow together without extra gaps.
         ui.spacing_mut().item_spacing.x = 0.0;
         for span in &st.spans {
-            let start = (span.start as usize).min(st.text.len());
-            let end = (span.end as usize).min(st.text.len());
+            let start = snap_to_char_boundary(&st.text, (span.start as usize).min(st.text.len()));
+            let end = snap_to_char_boundary(&st.text, (span.end as usize).min(st.text.len()));
             if start >= end {
                 continue;
             }
@@ -188,8 +203,8 @@ pub(super) fn build_layout_job(
     };
 
     for span in spans {
-        let start = (span.start as usize).min(st.text.len());
-        let end = (span.end as usize).min(st.text.len());
+        let start = snap_to_char_boundary(&st.text, (span.start as usize).min(st.text.len()));
+        let end = snap_to_char_boundary(&st.text, (span.end as usize).min(st.text.len()));
         if start >= end {
             continue;
         }
@@ -247,5 +262,64 @@ pub(super) fn strengthen_color(color: egui::Color32) -> egui::Color32 {
             val.saturating_sub(delta.min(255) as u8)
         };
         egui::Color32::from_rgba_unmultiplied(darken(red), darken(green), darken(blue), alpha)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snap_to_char_boundary_ascii() {
+        let text = "hello";
+        for i in 0..=text.len() {
+            assert_eq!(snap_to_char_boundary(text, i), i);
+        }
+    }
+
+    #[test]
+    fn snap_to_char_boundary_multibyte() {
+        // 'é' = 2 bytes, '日' = 3 bytes, '🦀' = 4 bytes
+        let text = "aé日🦀z";
+        // Valid boundaries: 0, 1, 3, 6, 10, 11
+        assert_eq!(snap_to_char_boundary(text, 0), 0); // 'a'
+        assert_eq!(snap_to_char_boundary(text, 1), 1); // start of 'é'
+        assert_eq!(snap_to_char_boundary(text, 2), 1); // mid 'é' → snaps to 1
+        assert_eq!(snap_to_char_boundary(text, 3), 3); // start of '日'
+        assert_eq!(snap_to_char_boundary(text, 4), 3); // mid '日' → snaps to 3
+        assert_eq!(snap_to_char_boundary(text, 5), 3); // mid '日' → snaps to 3
+        assert_eq!(snap_to_char_boundary(text, 6), 6); // start of '🦀'
+        assert_eq!(snap_to_char_boundary(text, 7), 6); // mid '🦀' → snaps to 6
+        assert_eq!(snap_to_char_boundary(text, 8), 6); // mid '🦀' → snaps to 6
+        assert_eq!(snap_to_char_boundary(text, 9), 6); // mid '🦀' → snaps to 6
+        assert_eq!(snap_to_char_boundary(text, 10), 10); // start of 'z'
+        assert_eq!(snap_to_char_boundary(text, 11), 11); // end of string
+    }
+
+    #[test]
+    fn snap_to_char_boundary_beyond_length() {
+        let text = "abc";
+        assert_eq!(snap_to_char_boundary(text, 100), 3);
+        assert_eq!(snap_to_char_boundary(text, usize::MAX), 3);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_empty_string() {
+        assert_eq!(snap_to_char_boundary("", 0), 0);
+        assert_eq!(snap_to_char_boundary("", 5), 0);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_only_multibyte() {
+        // String of only 4-byte chars
+        let text = "🦀🦀🦀";
+        for pos in 0..text.len() {
+            let snapped = snap_to_char_boundary(text, pos);
+            assert!(
+                text.is_char_boundary(snapped),
+                "pos {pos} → {snapped} is not a boundary"
+            );
+            assert!(snapped <= pos, "snapped {snapped} > original {pos}");
+        }
     }
 }

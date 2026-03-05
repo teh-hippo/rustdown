@@ -359,7 +359,7 @@ impl NavState {
             const DEPTH_LABELS: [&str; 7] = [
                 "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
             ];
-            ui.label(DEPTH_LABELS[self.max_depth as usize]);
+            ui.label(DEPTH_LABELS[(self.max_depth as usize).min(6)]);
             if ui
                 .add_enabled(self.max_depth < 6, egui::Button::new("+").small())
                 .on_hover_text("Show more heading levels")
@@ -1036,6 +1036,49 @@ mod tests {
         assert_eq!(visible.len(), 4);
         for &(_, hc) in &visible {
             assert!(!hc, "all H1s — none should have children");
+        }
+    }
+
+    // ── Chaos tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn decrease_depth_at_minimum_stays_at_one() {
+        let mut state = NavState {
+            max_depth: 1,
+            ..NavState::default()
+        };
+        state.decrease_depth();
+        assert_eq!(state.max_depth, 1);
+        for _ in 0..10 {
+            state.decrease_depth();
+        }
+        assert_eq!(state.max_depth, 1);
+    }
+
+    #[test]
+    fn increase_depth_at_maximum_stays_at_six() {
+        let mut state = NavState {
+            max_depth: 6,
+            ..NavState::default()
+        };
+        state.increase_depth();
+        assert_eq!(state.max_depth, 6);
+        for _ in 0..10 {
+            state.increase_depth();
+        }
+        assert_eq!(state.max_depth, 6);
+    }
+
+    #[test]
+    fn depth_labels_index_clamped_within_bounds() {
+        // Simulate what the UI code does: DEPTH_LABELS[(max_depth as usize).min(6)]
+        const DEPTH_LABELS: [&str; 7] = [
+            "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
+        ];
+        // Even with out-of-range values, the .min(6) clamp prevents panic
+        for depth in [0u8, 1, 6, 7, 100, 255] {
+            let idx = (depth as usize).min(6);
+            let _ = DEPTH_LABELS[idx]; // must not panic
         }
     }
 }

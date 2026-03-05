@@ -38,7 +38,7 @@ pub(super) fn compute_table_col_widths(
 
     // Normalise: scale to budget, clamp to minimum, redistribute overflow.
     if total_est > 0.0 {
-        let scale = usable / total_est;
+        let scale = (usable / total_est).min(1e6);
         let mut clamped_total = 0.0_f32;
         let mut free_total = 0.0_f32;
         for w in &mut widths {
@@ -166,4 +166,64 @@ pub(super) fn render_table_cell(
             render_styled_text(ui, cell, style);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::StyledText;
+
+    fn empty_styled() -> StyledText {
+        StyledText::default()
+    }
+
+    #[test]
+    fn compute_col_widths_empty_header() {
+        // 0 columns → treated as max(0, 1) = 1 column
+        let (widths, _) = compute_table_col_widths(&[], &[], 500.0, 8.0, 16.0);
+        assert_eq!(widths.len(), 1);
+        assert!(widths[0].is_finite());
+    }
+
+    #[test]
+    fn compute_col_widths_single_col() {
+        let header = vec![empty_styled()];
+        let (widths, _) = compute_table_col_widths(&header, &[], 500.0, 8.0, 16.0);
+        assert_eq!(widths.len(), 1);
+        assert!(widths[0].is_finite());
+        assert!(widths[0] > 0.0);
+    }
+
+    #[test]
+    fn compute_col_widths_tiny_usable() {
+        // Very small usable width should not produce Inf/NaN
+        let header = vec![empty_styled(), empty_styled(), empty_styled()];
+        let (widths, min_w) = compute_table_col_widths(&header, &[], 1.0, 8.0, 16.0);
+        assert_eq!(widths.len(), 3);
+        for w in &widths {
+            assert!(w.is_finite(), "width should be finite, got {w}");
+            assert!(*w >= min_w);
+        }
+    }
+
+    #[test]
+    fn compute_col_widths_zero_avg_char() {
+        // avg_char_w = 0 should not cause issues
+        let header = vec![empty_styled()];
+        let (widths, _) = compute_table_col_widths(&header, &[], 500.0, 0.0, 16.0);
+        assert_eq!(widths.len(), 1);
+        assert!(widths[0].is_finite());
+    }
+
+    #[test]
+    fn compute_col_widths_many_columns() {
+        // 100 columns in tight space
+        let header: Vec<StyledText> = (0..100).map(|_| empty_styled()).collect();
+        let (widths, min_w) = compute_table_col_widths(&header, &[], 200.0, 8.0, 16.0);
+        assert_eq!(widths.len(), 100);
+        for w in &widths {
+            assert!(w.is_finite());
+            assert!(*w >= min_w);
+        }
+    }
 }

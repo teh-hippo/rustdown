@@ -73,7 +73,8 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
             (Some(oe), None) => oe.base_start,
             (None, Some(te)) => te.base_start,
             (None, None) => base_len,
-        };
+        }
+        .min(base_len);
 
         if pos < next_start {
             for tok in &base_lines[pos..next_start] {
@@ -223,12 +224,17 @@ fn diff_edits<'a>(base: &'a str, other: &'a str) -> Vec<Edit<'a>> {
     diff.postprocess_lines(&input);
 
     let other_lines: Vec<&'a str> = imara_diff::sources::lines(other).collect();
+    let other_len = other_lines.len();
 
     diff.hunks()
-        .map(|hunk| Edit {
-            base_start: hunk.before.start as usize,
-            base_end: hunk.before.end as usize,
-            replacement: other_lines[hunk.after.start as usize..hunk.after.end as usize].to_vec(),
+        .map(|hunk| {
+            let after_start = (hunk.after.start as usize).min(other_len);
+            let after_end = (hunk.after.end as usize).min(other_len);
+            Edit {
+                base_start: hunk.before.start as usize,
+                base_end: hunk.before.end as usize,
+                replacement: other_lines[after_start..after_end].to_vec(),
+            }
         })
         .collect()
 }
@@ -255,18 +261,21 @@ fn edits_identical(left: &Edit<'_>, right: &Edit<'_>) -> bool {
 }
 
 fn render_range_with_edits(base: &[&str], start: usize, end: usize, edits: &[Edit<'_>]) -> String {
+    let base_len = base.len();
+    let end = end.min(base_len);
     let mut out = String::new();
-    let mut pos = start;
+    let mut pos = start.min(end);
     for edit in edits {
-        if pos < edit.base_start {
-            for tok in &base[pos..edit.base_start] {
+        let edit_start = edit.base_start.min(base_len);
+        if pos < edit_start {
+            for tok in &base[pos..edit_start] {
                 out.push_str(tok);
             }
         }
         for tok in &edit.replacement {
             out.push_str(tok);
         }
-        pos = edit.base_end;
+        pos = edit.base_end.min(base_len);
     }
     if pos < end {
         for tok in &base[pos..end] {
@@ -715,5 +724,77 @@ mod tests {
                 assert!(!text.is_empty());
             }
         }
+    }
+
+    // ── Chaos tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn render_range_with_edits_empty_base() {
+        let base: Vec<&str> = vec![];
+        let result = render_range_with_edits(&base, 0, 0, &[]);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn render_range_with_edits_oob_end() {
+        // end > base.len() should be clamped, not panic
+        let base = vec!["a\n", "b\n"];
+        let result = render_range_with_edits(&base, 0, 100, &[]);
+        assert_eq!(result, "a\nb\n");
+    }
+
+    #[test]
+    fn render_range_with_edits_oob_start() {
+        // start > end should produce empty string
+        let base = vec!["a\n", "b\n"];
+        let result = render_range_with_edits(&base, 50, 100, &[]);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn render_range_with_edits_edit_beyond_base() {
+        // edit.base_start beyond base length should be clamped
+        let base = vec!["a\n"];
+        let edits = vec![Edit {
+            base_start: 100,
+            base_end: 200,
+            replacement: vec!["x\n"],
+        }];
+        let result = render_range_with_edits(&base, 0, 1, &edits);
+        // base[0..1] is "a\n", then the replacement "x\n" is appended
+        assert_eq!(result, "a\nx\n");
+    }
+
+    #[test]
+    fn merge_single_char_documents() {
+        // Minimal documents that are all different
+        let result = merge_three_way("x", "y", "z");
+        match result {
+            Merge3Outcome::Clean(_) | Merge3Outcome::Conflicted { .. } => {}
+        }
+    }
+
+    #[test]
+    fn merge_only_newlines() {
+        let result = merge_three_way("\n\n\n", "\n\n\n\n", "\n\n");
+        match result {
+            Merge3Outcome::Clean(_) | Merge3Outcome::Conflicted { .. } => {}
+        }
+    }
+
+    #[test]
+    fn diff_edits_empty_inputs() {
+        let edits = diff_edits("", "");
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn diff_edits_one_side_empty() {
+        // Adding content to empty base
+        let edits = diff_edits("", "hello\nworld\n");
+        assert!(!edits.is_empty());
+        // Removing all content
+        let edits = diff_edits("hello\nworld\n", "");
+        assert!(!edits.is_empty());
     }
 }
