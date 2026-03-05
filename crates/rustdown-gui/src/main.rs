@@ -1602,6 +1602,10 @@ impl RustdownApp {
         let text = Arc::new(text);
         let base_text = text.clone();
         let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
+        // Monotonically advance edit_seq so caches keyed on it (search match
+        // count, nav outline, editor galley) are always invalidated when the
+        // underlying document identity changes.
+        let next_seq = self.doc.edit_seq.wrapping_add(1);
         self.doc = Document {
             path: Some(path),
             image_uri_scheme,
@@ -1614,7 +1618,7 @@ impl RustdownApp {
             dirty: false,
             preview_cache: rustdown_md::MarkdownCache::default(),
             last_edit_at: None,
-            edit_seq: 1, // Start at 1 so nav refresh triggers (default outline_seq may be 0)
+            edit_seq: next_seq,
             editor_galley_cache: None,
         };
         // Force nav outline refresh on next frame.
@@ -1624,9 +1628,12 @@ impl RustdownApp {
     fn apply_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewBlank => {
+                let next_seq = self.doc.edit_seq.wrapping_add(1);
                 self.doc = Document::default();
+                self.doc.edit_seq = next_seq;
                 self.error = None;
                 self.reset_disk_sync_state();
+                self.nav.invalidate_outline();
             }
             PendingAction::Open(path) => self.open_path(path),
         }
@@ -2778,5 +2785,67 @@ mod tests {
         assert!(app.doc.stats_dirty);
         assert!(app.doc.preview_dirty);
         assert!(app.doc.last_edit_at.is_some());
+    }
+
+    #[test]
+    fn load_document_advances_edit_seq_monotonically() {
+        let mut app = RustdownApp::default();
+        let seq0 = app.doc.edit_seq;
+        app.load_document(PathBuf::from("a.md"), "aaa".to_owned(), None);
+        let seq1 = app.doc.edit_seq;
+        assert!(seq1 > seq0, "edit_seq should advance on first load");
+
+        app.load_document(PathBuf::from("b.md"), "bbb".to_owned(), None);
+        let seq2 = app.doc.edit_seq;
+        assert!(seq2 > seq1, "edit_seq should advance on second load");
+    }
+
+    #[test]
+    fn search_cache_invalidated_across_document_loads() {
+        let mut app = RustdownApp::default();
+        app.load_document(PathBuf::from("a.md"), "hello hello".to_owned(), None);
+        app.search.query = "hello".to_owned();
+        let count_a = app
+            .search
+            .match_count(app.doc.text.as_str(), app.doc.edit_seq);
+        assert_eq!(count_a, 2);
+
+        // Load a different document — the search cache must NOT return 2.
+        app.load_document(PathBuf::from("b.md"), "hello world".to_owned(), None);
+        let count_b = app
+            .search
+            .match_count(app.doc.text.as_str(), app.doc.edit_seq);
+        assert_eq!(
+            count_b, 1,
+            "stale search cache returned after document load"
+        );
+    }
+
+    #[test]
+    fn new_blank_advances_edit_seq() {
+        let mut app = RustdownApp::default();
+        app.load_document(PathBuf::from("a.md"), "text".to_owned(), None);
+        let seq_before = app.doc.edit_seq;
+        app.apply_action(PendingAction::NewBlank);
+        assert!(
+            app.doc.edit_seq > seq_before,
+            "NewBlank must advance edit_seq"
+        );
+    }
+
+    #[test]
+    fn new_blank_invalidates_nav_outline() {
+        let mut app = RustdownApp::default();
+        app.load_document(PathBuf::from("a.md"), "# Heading\n".to_owned(), None);
+        app.nav.refresh_outline(&app.doc.text, app.doc.edit_seq);
+        assert_eq!(app.nav.outline.len(), 1);
+
+        app.apply_action(PendingAction::NewBlank);
+        let text = app.doc.text.clone();
+        app.nav.refresh_outline(&text, app.doc.edit_seq);
+        assert!(
+            app.nav.outline.is_empty(),
+            "nav outline should be empty after NewBlank"
+        );
     }
 }
