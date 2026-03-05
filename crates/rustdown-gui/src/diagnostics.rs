@@ -347,11 +347,6 @@ pub fn run_open_pipeline_diagnostics(
         preview_cached_loop,
         frame_iterations
     );
-    avg_metric!(
-        "t_edit_note_change_avg_us",
-        edit_deferred_loop,
-        edit_iterations
-    );
     metric!("text_heap_clean_bytes", clean_text_heap_bytes);
     metric!("text_heap_dirty_bytes", dirty_text_heap_bytes);
     metric!("t_total_ms", total_ms.as_millis());
