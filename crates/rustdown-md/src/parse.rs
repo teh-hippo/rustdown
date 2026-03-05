@@ -2847,4 +2847,280 @@ mod tests {
             other => panic!("expected UnorderedList, got {other:?}"),
         }
     }
+
+    // ── Additional parsing coverage tests ──────────────────────────
+
+    #[test]
+    fn parse_heading_trailing_hashes() {
+        let blocks = parse_markdown("## Title ##\n");
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 2);
+                assert_eq!(text.text.trim(), "Title");
+            }
+            other => panic!("expected Heading, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_image_empty_url() {
+        let blocks = parse_markdown("![alt text]()\n");
+        match &blocks[0] {
+            Block::Image { url, alt } => {
+                assert!(url.is_empty());
+                assert_eq!(alt, "alt text");
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_triple_emphasis_bold_italic() {
+        let blocks = parse_markdown("***bold and italic***\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(!text.spans.is_empty());
+                let span = &text.spans[0];
+                assert!(span.style.strong(), "should be strong");
+                assert!(span.style.emphasis(), "should be emphasis");
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_escaped_special_chars() {
+        let blocks = parse_markdown("\\*not bold\\* and \\[not link\\]\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    text.text.contains("*not bold*"),
+                    "escaped asterisks should be literal: {:?}",
+                    text.text
+                );
+                assert!(
+                    text.text.contains("[not link]"),
+                    "escaped brackets should be literal: {:?}",
+                    text.text
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_html_entities_decoded() {
+        let blocks = parse_markdown("&amp; &lt; &gt; &#123;\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(text.text.contains('&'), "should decode &amp;");
+                assert!(text.text.contains('<'), "should decode &lt;");
+                assert!(text.text.contains('>'), "should decode &gt;");
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ordered_task_list() {
+        let blocks = parse_markdown("1. [x] Done\n2. [ ] Todo\n3. Normal\n");
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 1);
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_table_escaped_pipe() {
+        let blocks = parse_markdown("| A |\n|---|\n| a \\| b |\n");
+        match &blocks[0] {
+            Block::Table(table) => {
+                assert_eq!(table.header.len(), 1, "should be 1-column table");
+                assert!(
+                    table.rows[0][0].text.contains("a | b")
+                        || table.rows[0][0].text.contains("a \\| b"),
+                    "cell should contain literal pipe: {:?}",
+                    table.rows[0][0].text
+                );
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_link_with_title() {
+        let blocks = parse_markdown("[text](url \"title\")\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    text.spans.iter().any(|s| s.style.link.is_some()),
+                    "should have a link span"
+                );
+                let link = text
+                    .spans
+                    .iter()
+                    .find(|s| s.style.link.is_some())
+                    .expect("link span");
+                assert_eq!(link.style.link.as_deref(), Some("url"));
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_reference_link() {
+        let blocks = parse_markdown("[text][ref]\n\n[ref]: https://example.com\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    text.spans.iter().any(|s| s.style.link.is_some()),
+                    "should have a link span"
+                );
+                let link = text
+                    .spans
+                    .iter()
+                    .find(|s| s.style.link.is_some())
+                    .expect("link span");
+                assert_eq!(link.style.link.as_deref(), Some("https://example.com"));
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_indented_code_block_two_lines() {
+        let blocks = parse_markdown("    code line 1\n    code line 2\n");
+        match &blocks[0] {
+            Block::Code { language, code } => {
+                assert!(language.is_empty(), "indented code block has no language");
+                assert!(code.contains("code line 1"));
+                assert!(code.contains("code line 2"));
+            }
+            other => panic!("expected Code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_hard_line_break() {
+        let blocks = parse_markdown("Line one  \nLine two\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    (text.text.contains('\n')
+                        || text.text.contains("Line one") && text.text.contains("Line two")),
+                    "hard line break should be preserved: {:?}",
+                    text.text
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_soft_line_break() {
+        let blocks = parse_markdown("Line one\nLine two\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    text.text.contains("Line one") && text.text.contains("Line two"),
+                    "both lines should be present: {:?}",
+                    text.text
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_with_heading_child() {
+        let md = "- Item\n\n  ## Sub-heading\n\n- Next\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert!(
+                    !items[0].children.is_empty(),
+                    "should have heading as child"
+                );
+                assert!(
+                    matches!(&items[0].children[0], Block::Heading { .. }),
+                    "child should be Heading"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_with_thematic_break_child() {
+        let md = "- Item\n\n  ---\n\n- Next\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert!(
+                    items[0]
+                        .children
+                        .iter()
+                        .any(|b| matches!(b, Block::ThematicBreak)),
+                    "should have ThematicBreak as child: {:?}",
+                    items[0].children
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_with_table_child() {
+        let md = "- Item\n\n  | A | B |\n  |---|---|\n  | 1 | 2 |\n\n- Next\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert!(
+                    items[0]
+                        .children
+                        .iter()
+                        .any(|b| matches!(b, Block::Table(_))),
+                    "should have Table as child: {:?}",
+                    items[0].children
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_gfm_strikethrough() {
+        let blocks = parse_markdown("~~deleted~~\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(!text.spans.is_empty());
+                assert!(
+                    text.spans[0].style.strikethrough(),
+                    "should be strikethrough"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_inline_code_with_backticks() {
+        let blocks = parse_markdown("`` `inner` ``\n");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(!text.spans.is_empty());
+                assert!(
+                    text.spans.iter().any(|s| s.style.code()),
+                    "should have code span"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
 }

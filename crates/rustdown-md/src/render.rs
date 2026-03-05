@@ -6858,4 +6858,239 @@ that we can observe the relationship between available width and estimated heigh
         assert!(!blocks.is_empty());
         assert!(height > 0.0);
     }
+
+    // ── Additional coverage tests ──────────────────────────────────
+
+    #[test]
+    fn render_code_block_inside_blockquote() {
+        let md = "> Some text\n>\n> ```rust\n> fn main() {}\n> ```\n>\n> More text\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_heading_inside_blockquote() {
+        let md = "> ## Heading inside quote\n> Normal text\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_deeply_nested_structure() {
+        // Blockquote > list > blockquote > paragraph
+        let md = "> - Item in quote\n>   > Nested quote\n>   > with text\n> - Second item\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_adjacent_code_blocks_spacing() {
+        let md = "```python\nprint('hello')\n```\n\n```rust\nfn main() {}\n```\n";
+        let (blocks, height) = headless_render(md);
+        let code_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Code { .. }))
+            .count();
+        assert_eq!(code_count, 2, "expected 2 code blocks");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_link_in_heading() {
+        let md = "## [Documentation](https://docs.rs)\n";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Heading { level, text } => {
+                assert_eq!(*level, 2);
+                assert!(
+                    text.spans.iter().any(|s| s.style.link.is_some()),
+                    "heading should contain a link span"
+                );
+            }
+            other => panic!("expected Heading, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_task_list_with_nested_children() {
+        let md =
+            "- [x] Done task\n  - Sub-item A\n  - Sub-item B\n- [ ] Pending task\n  - Sub-item C\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_ordered_list_start_zero() {
+        let md = "0. Zero\n1. One\n2. Two\n";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 0);
+                assert_eq!(items.len(), 3);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_ordered_list_start_large() {
+        let md = "999999. Item A\n1000000. Item B\n";
+        let (blocks, height) = headless_render(md);
+        match &blocks[0] {
+            Block::OrderedList { start, items } => {
+                assert_eq!(*start, 999_999);
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected OrderedList, got {other:?}"),
+        }
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_very_narrow_width() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("narrow");
+
+        let md = "# Heading\n\nA paragraph with some text.\n\n| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+        let narrow_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(100.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(narrow_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn render_very_wide_width() {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("wide");
+
+        let md = "# Heading\n\nShort paragraph.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let wide_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(5000.0, 768.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(wide_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn render_image_in_list_item() {
+        let md = "- ![screenshot](image.png)\n- Text item\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn render_mixed_inline_in_table_cell() {
+        let md = "| Feature | Description |\n|---------|-------------|\n| **Bold** `code` *italic* | [Link](url) ~~strike~~ |\n";
+        let (blocks, _) = headless_render(md);
+        match &blocks[0] {
+            Block::Table(table) => {
+                assert_eq!(table.rows.len(), 1);
+                // Cells should have spans for inline formatting
+                assert!(
+                    !table.rows[0][0].spans.is_empty(),
+                    "formatted cell should have spans"
+                );
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_empty_blocks_no_panic() {
+        // Various empty/whitespace blocks
+        for md in [
+            "",                  // empty document
+            " \n \n ",           // whitespace only
+            ">\n",               // empty blockquote
+            "- \n",              // empty list item
+            "| |\n|---|\n| |\n", // empty table cells
+            "```\n```\n",        // empty code block
+        ] {
+            let (_, height) = headless_render(md);
+            assert!(
+                height >= 0.0,
+                "empty block should have non-negative height for: {md:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_unicode_edge_cases() {
+        let md = "\
+# Héading with àccénts
+
+Paragraph with emoji 🎉🚀💻 and CJK 你好世界
+
+- Bullet with Ẃéïrd chars
+- ZWJ sequence: 👨\u{200d}👩\u{200d}👧\u{200d}👦
+- Combining: é (e + \u{0301})
+
+| Unicode | Test |
+|---------|------|
+| ™©®℠  | Special symbols |
+| ∀∃∑∏  | Math |
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn progressive_refinement_converges() {
+        // Run multiple render passes and verify heights stabilize.
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("converge");
+
+        let md = "# Title\n\nParagraph one.\n\n```\ncode\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n> Quote\n\n- List\n- Items\n";
+
+        let mut prev_height = 0.0_f32;
+        for _ in 0..5 {
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, md, None);
+                });
+            });
+            let h = cache.total_height;
+            if prev_height > 0.0 {
+                // Height should converge — difference between passes decreases.
+                let delta = (h - prev_height).abs();
+                assert!(
+                    delta < prev_height * 0.1,
+                    "height should stabilize, got delta={delta} at height={h}"
+                );
+            }
+            prev_height = h;
+        }
+    }
 }
