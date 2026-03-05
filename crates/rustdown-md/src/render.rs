@@ -4503,4 +4503,323 @@ Normal paragraph.
         assert_eq!(ua, 100, "alpha should be preserved");
         assert!(ur > 200, "unmultiplied R should be brightened, got {ur}");
     }
+
+    // ── Headless rendering: width-configurable helper ──────────────
+
+    /// Render markdown headlessly at a given screen width, returning
+    /// `(block_count, estimated_total_height, rendered_total_height)`.
+    fn headless_render_at_width(source: &str, width: f32) -> (usize, f32, f32) {
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("test_width");
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 768.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut rendered_height = 0.0_f32;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let before = ui.cursor().min.y;
+                viewer.show(ui, &mut cache, &style, source);
+                rendered_height = ui.cursor().min.y - before;
+            });
+        });
+
+        let body_size = 14.0;
+        let wrap_width = (width - 16.0).max(10.0); // approximate panel margin
+        cache.ensure_heights(body_size, wrap_width, &style);
+        (cache.blocks.len(), cache.total_height, rendered_height)
+    }
+
+    // ── 1. Height accuracy tests ───────────────────────────────────
+
+    #[test]
+    fn height_accuracy_heading_and_paragraph() {
+        let md = "# Main Title\n\nThis is a short paragraph with some text.\n";
+        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
+        assert!(estimated > 0.0);
+        assert!(rendered > 0.0);
+        let ratio = estimated / rendered;
+        assert!(
+            ratio > 0.2 && ratio < 5.0,
+            "heading+paragraph height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn height_accuracy_tables_only() {
+        let md = "\
+| A | B | C |
+|---|---|---|
+| 1 | 2 | 3 |
+| 4 | 5 | 6 |
+| 7 | 8 | 9 |
+
+| X | Y |
+|---|---|
+| a | b |
+";
+        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
+        assert!(estimated > 0.0);
+        assert!(rendered > 0.0);
+        let ratio = estimated / rendered;
+        assert!(
+            ratio > 0.2 && ratio < 5.0,
+            "table-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn height_accuracy_code_blocks_only() {
+        let md = "\
+```rust
+fn main() {
+    println!(\"hello\");
+}
+```
+
+```python
+for i in range(10):
+    print(i)
+```
+";
+        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
+        assert!(estimated > 0.0);
+        assert!(rendered > 0.0);
+        let ratio = estimated / rendered;
+        assert!(
+            ratio > 0.2 && ratio < 5.0,
+            "code-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn height_accuracy_lists_only() {
+        let md = "\
+- Item one
+- Item two
+- Item three
+  - Nested A
+  - Nested B
+- Item four
+
+1. First
+2. Second
+3. Third
+";
+        let (_, estimated, rendered) = headless_render_at_width(md, 1024.0);
+        assert!(estimated > 0.0);
+        assert!(rendered > 0.0);
+        let ratio = estimated / rendered;
+        assert!(
+            ratio > 0.2 && ratio < 5.0,
+            "list-only height ratio out of range: estimated={estimated}, rendered={rendered}, ratio={ratio}"
+        );
+    }
+
+    // ── 2. Scrollable rendering stress ─────────────────────────────
+
+    #[test]
+    fn scrollable_stress_large_mixed_20_positions() {
+        let doc = crate::stress::large_mixed_doc(100);
+        let (_, total_height) = headless_render_scrollable(&doc, None);
+        assert!(total_height > 0.0);
+        let step = total_height / 20.0;
+        for i in 0..20 {
+            let y = step * i as f32;
+            let _ = headless_render_scrollable(&doc, Some(y));
+        }
+    }
+
+    #[test]
+    fn scrollable_stress_pathological_no_crash() {
+        let doc = crate::stress::pathological_doc(50);
+        let _ = headless_render_scrollable(&doc, None);
+    }
+
+    #[test]
+    fn scrollable_stress_unicode_no_crash() {
+        let doc = crate::stress::unicode_stress_doc(50);
+        let _ = headless_render_scrollable(&doc, None);
+    }
+
+    #[test]
+    fn scrollable_stress_table_heavy_no_crash() {
+        let doc = crate::stress::table_heavy_doc(50);
+        let _ = headless_render_scrollable(&doc, None);
+    }
+
+    #[test]
+    fn scrollable_stress_emoji_heavy_no_crash() {
+        let doc = crate::stress::emoji_heavy_doc(50);
+        let _ = headless_render_scrollable(&doc, None);
+    }
+
+    #[test]
+    fn scrollable_stress_task_list_no_crash() {
+        let doc = crate::stress::task_list_doc(50);
+        let _ = headless_render_scrollable(&doc, None);
+    }
+
+    // ── 3. Layout consistency ──────────────────────────────────────
+
+    #[test]
+    fn layout_consistency_same_doc_twice() {
+        let md = "# Title\n\nParagraph **bold** and *italic*.\n\n## Sub\n\n- a\n- b\n";
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+
+        let mut cache1 = MarkdownCache::default();
+        cache1.ensure_parsed(md);
+        cache1.ensure_heights(14.0, 900.0, &style);
+
+        let mut cache2 = MarkdownCache::default();
+        cache2.ensure_parsed(md);
+        cache2.ensure_heights(14.0, 900.0, &style);
+
+        assert!(
+            (cache1.total_height - cache2.total_height).abs() < f32::EPSILON,
+            "same doc rendered twice should produce identical total_height: {} vs {}",
+            cache1.total_height,
+            cache2.total_height
+        );
+        assert_eq!(cache1.heights.len(), cache2.heights.len());
+        for (i, (h1, h2)) in cache1.heights.iter().zip(&cache2.heights).enumerate() {
+            assert!(
+                (h1 - h2).abs() < f32::EPSILON,
+                "block {i} height mismatch: {h1} vs {h2}"
+            );
+        }
+    }
+
+    // ── 4. Scrollable vs non-scrollable consistency ────────────────
+
+    #[test]
+    fn scrollable_vs_inline_block_count_matches() {
+        let md = "# Hi\n\nSmall doc.\n\n- one\n- two\n";
+        let (inline_blocks, _) = headless_render(md);
+        let (scrollable_count, _) = headless_render_scrollable(md, None);
+        assert_eq!(
+            inline_blocks.len(),
+            scrollable_count,
+            "block count should match between inline and scrollable rendering"
+        );
+    }
+
+    // ── 5. Width sensitivity ───────────────────────────────────────
+
+    #[test]
+    fn width_sensitivity_height_decreases_with_wider() {
+        let md = "\
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor \
+incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud \
+exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure \
+dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+
+Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt \
+mollit anim id est laborum. Curabitur pretium tincidunt lacus. Nulla gravida orci a \
+odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit.
+
+Another paragraph with more words to force wrapping behaviour at narrow widths so \
+that we can observe the relationship between available width and estimated height.
+";
+        let widths = [100.0, 400.0, 800.0, 1600.0, 3200.0];
+        let mut heights = Vec::new();
+        for &w in &widths {
+            let style = MarkdownStyle::colored(&egui::Visuals::dark());
+            let mut cache = MarkdownCache::default();
+            cache.ensure_parsed(md);
+            let wrap = (w - 16.0_f32).max(10.0);
+            cache.ensure_heights(14.0, wrap, &style);
+            heights.push((w, cache.total_height));
+        }
+        // Height at 100px should be >= height at 3200px (more wrapping at narrow widths).
+        let (_, h_narrow) = heights[0];
+        let (_, h_wide) = heights[heights.len() - 1];
+        assert!(
+            h_narrow >= h_wide,
+            "narrow ({h_narrow}) should have >= height than wide ({h_wide})"
+        );
+        // Also check monotonic non-increasing trend (allowing small tolerance).
+        for i in 1..heights.len() {
+            let (w_prev, h_prev) = heights[i - 1];
+            let (w_cur, h_cur) = heights[i];
+            assert!(
+                h_cur <= h_prev + 1.0,
+                "height should not increase significantly going from width {w_prev} ({h_prev}) to {w_cur} ({h_cur})"
+            );
+        }
+    }
+
+    // ── 6. Edge case rendering ─────────────────────────────────────
+
+    #[test]
+    fn edge_case_empty_string_scrollable() {
+        let (count, height) = headless_render_scrollable("", None);
+        assert_eq!(count, 0);
+        assert!((height - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn edge_case_single_heading_scrollable() {
+        let (count, height) = headless_render_scrollable("# Solo Heading", None);
+        assert_eq!(count, 1);
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn edge_case_1000_thematic_breaks() {
+        let md = "---\n\n".repeat(1000);
+        let (blocks, height) = headless_render(&md);
+        let break_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ThematicBreak))
+            .count();
+        assert_eq!(break_count, 1000, "expected 1000 thematic breaks");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn edge_case_deeply_nested_blockquotes_with_tables() {
+        let md = "\
+> > > > > | A | B |
+> > > > > |---|---|
+> > > > > | 1 | 2 |
+> > > > >
+> > > > > | C | D |
+> > > > > |---|---|
+> > > > > | 3 | 4 |
+";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+        // Should have at least one Quote block
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Quote(_))),
+            "should have at least one blockquote"
+        );
+    }
+
+    #[test]
+    fn edge_case_deeply_nested_blockquotes_scrollable() {
+        let md = "\
+> Level 1
+> > Level 2
+> > > Level 3
+> > > > Level 4
+> > > > > Level 5 with a table:
+> > > > >
+> > > > > | H1 | H2 |
+> > > > > |----|-----|
+> > > > > | v1 | v2  |
+";
+        let (count, height) = headless_render_scrollable(md, None);
+        assert!(count > 0);
+        assert!(height > 0.0);
+    }
 }
