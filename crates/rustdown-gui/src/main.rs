@@ -325,6 +325,14 @@ pub fn default_image_uri_scheme(path: Option<&Path>) -> String {
 }
 
 #[derive(Default)]
+struct PreviewStyleCache {
+    style: Option<MarkdownStyle>,
+    dark_mode: bool,
+    colored: bool,
+    image_uri: String,
+}
+
+#[derive(Default)]
 struct RustdownApp {
     doc: Document,
     mode: Mode,
@@ -344,6 +352,9 @@ struct RustdownApp {
     nav_scroll_applied_this_frame: bool,
     /// Target preview scroll Y for smooth `SideBySide` animation.
     side_by_side_scroll_target: Option<f32>,
+
+    /// Cached preview style; rebuilt only when theme/colour-mode/URI changes.
+    preview_style_cache: PreviewStyleCache,
 
     disk: DiskSyncState,
 }
@@ -1440,6 +1451,34 @@ impl RustdownApp {
         }
     }
 
+    /// Rebuild the cached `MarkdownStyle` when the theme, colour mode, or
+    /// image URI changes; otherwise reuse the previous value.
+    fn ensure_preview_style(&mut self, visuals: &egui::Visuals) {
+        let dark = visuals.dark_mode;
+        let colored = self.heading_color_mode;
+        let uri = &self.doc.image_uri_scheme;
+        let c = &self.preview_style_cache;
+
+        let needs_rebuild = match &c.style {
+            Some(_) => c.dark_mode != dark || c.colored != colored || c.image_uri != *uri,
+            None => true,
+        };
+
+        if needs_rebuild {
+            let mut style = if colored {
+                MarkdownStyle::colored(visuals)
+            } else {
+                MarkdownStyle::from_visuals(visuals)
+            };
+            style.image_base_uri.clone_from(uri);
+            let c = &mut self.preview_style_cache;
+            c.dark_mode = dark;
+            c.colored = colored;
+            c.image_uri.clone_from(uri);
+            c.style = Some(style);
+        }
+    }
+
     fn show_preview(&mut self, ui: &mut egui::Ui) {
         if self.mode == Mode::SideBySide
             && let Some(remaining) = self.doc.debounce_remaining(DEBOUNCE)
@@ -1453,24 +1492,21 @@ impl RustdownApp {
             self.doc.preview_dirty = false;
         }
 
-        let mut style = if self.heading_color_mode {
-            MarkdownStyle::colored(ui.visuals())
-        } else {
-            MarkdownStyle::from_visuals(ui.visuals())
-        };
-        style.image_base_uri = self.doc.image_uri_scheme.clone();
+        self.ensure_preview_style(ui.visuals());
 
         // Consume any pending nav-scroll target and pass it directly to the
         // ScrollArea, avoiding the ID-mismatch problem with external state lookup.
         let scroll_y = self.nav.pending_preview_scroll_y.take();
 
-        MarkdownViewer::new("preview_markdown").show_scrollable(
-            ui,
-            &mut self.doc.preview_cache,
-            &style,
-            self.doc.text.as_str(),
-            scroll_y,
-        );
+        if let Some(ref style) = self.preview_style_cache.style {
+            MarkdownViewer::new("preview_markdown").show_scrollable(
+                ui,
+                &mut self.doc.preview_cache,
+                style,
+                self.doc.text.as_str(),
+                scroll_y,
+            );
+        }
     }
 
     /// Resolve a pending [`NavScrollTarget`] into per-pane y-pixel targets.
