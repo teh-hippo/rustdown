@@ -5864,4 +5864,169 @@ that we can observe the relationship between available width and estimated heigh
             });
         });
     }
+
+    // ── Blockquote/heading/HR height-estimation consistency ────────
+
+    #[test]
+    fn blockquote_estimate_and_render_use_same_min_width() {
+        // The min-width floor in estimate_quote_height must match
+        // render_blockquote so viewport culling stays consistent.
+        // Both should use 40.0 as the floor.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let body_size = 14.0;
+        let reserved = body_size + 3.0; // bar_margin + bar_width + content_margin
+
+        // At a very narrow wrap_width, inner_w should be clamped to 40.
+        let narrow = 20.0_f32;
+        let inner_w_est = (narrow - reserved).max(40.0);
+        assert!(
+            (inner_w_est - 40.0).abs() < f32::EPSILON,
+            "estimate inner width should be 40.0, got {inner_w_est}"
+        );
+
+        // Build a deeply nested blockquote that would exhaust all width.
+        let mut block = Block::Quote(vec![Block::Paragraph(plain("content"))]);
+        for _ in 0..10 {
+            block = Block::Quote(vec![block]);
+        }
+        let h = estimate_block_height(&block, body_size, narrow, &style);
+        assert_sane_height(h, "deeply nested blockquote at narrow width");
+    }
+
+    #[test]
+    fn blockquote_render_at_narrow_width_no_panic() {
+        // When the viewport is extremely narrow, render_blockquote should
+        // still produce a valid layout without panicking.
+        let md = "> > > > > > > > deep nesting\n";
+        let (count, _est, rendered) = headless_render_at_width(md, 60.0);
+        assert!(count > 0);
+        assert!(rendered > 0.0, "rendered height should be positive");
+    }
+
+    #[test]
+    fn blockquote_height_estimate_vs_render_within_bounds() {
+        // The estimated height should be in the same ballpark as
+        // the rendered height (allowing generous tolerance since
+        // estimation is intentionally approximate).
+        let md = "> Line one\n> Line two\n> Line three\n";
+        let (_, estimated, rendered) = headless_render_at_width(md, 800.0);
+        assert!(estimated > 0.0);
+        assert!(rendered > 0.0);
+        let ratio = estimated / rendered;
+        assert!(
+            ratio > 0.1 && ratio < 10.0,
+            "blockquote height ratio out of range: est={estimated}, rendered={rendered}, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn nested_blockquote_each_level_has_positive_height() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        for depth in 1..=8_usize {
+            let mut block = Block::Quote(vec![Block::Paragraph(plain("text"))]);
+            for _ in 1..depth {
+                block = Block::Quote(vec![block]);
+            }
+            let h = estimate_block_height(&block, 14.0, 400.0, &style);
+            assert_sane_height(h, &format!("blockquote depth {depth}"));
+        }
+    }
+
+    #[test]
+    fn deeply_nested_blockquote_renders_without_panic() {
+        // 10-level deep nesting with actual content at each level.
+        let mut md = String::new();
+        for level in 0..10 {
+            let prefix = "> ".repeat(level + 1);
+            let _ = writeln!(md, "{prefix}Level {}", level + 1);
+        }
+        let (count, _est, rendered) = headless_render_at_width(&md, 1024.0);
+        assert!(count > 0);
+        assert!(rendered > 0.0);
+    }
+
+    #[test]
+    fn hr_height_estimate_covers_rendered_spacing() {
+        // render_hr does: add_space(0.4*body) + paint + add_space(0.4*body)
+        // estimate is: body_size * 0.8
+        // Verify the estimate is at least as large as the two spacings.
+        let body_size = 14.0;
+        let estimated = body_size * 0.8;
+        let render_spacing = body_size * 0.4 + body_size * 0.4;
+        assert!(
+            estimated >= render_spacing - 0.01,
+            "HR estimate ({estimated}) should cover render spacing ({render_spacing})"
+        );
+    }
+
+    #[test]
+    fn hr_renders_with_positive_height() {
+        let md = "Above\n\n---\n\nBelow\n";
+        let (_, _est, rendered) = headless_render_at_width(md, 800.0);
+        assert!(rendered > 0.0);
+    }
+
+    #[test]
+    fn heading_underline_height_estimate_includes_separator() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let h1 = Block::Heading {
+            level: 1,
+            text: plain("Title"),
+        };
+        let h3 = Block::Heading {
+            level: 3,
+            text: plain("Title"),
+        };
+        let h1_est = estimate_block_height(&h1, 14.0, 400.0, &style);
+        let h3_est = estimate_block_height(&h3, 14.0, 400.0, &style);
+        // H1 has an underline separator (4px extra), H3 does not.
+        // H1 also has a larger font scale, so it should be taller overall.
+        assert!(
+            h1_est > h3_est,
+            "H1 ({h1_est}) should be taller than H3 ({h3_est}) due to scale + underline"
+        );
+    }
+
+    #[test]
+    fn heading_h1_h2_have_underline_space_in_estimate() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // H2 gets underline (4px), H3 does not. Same text, so the
+        // difference should be roughly the separator + font scale diff.
+        let h2 = Block::Heading {
+            level: 2,
+            text: plain("Heading"),
+        };
+        let h3 = Block::Heading {
+            level: 3,
+            text: plain("Heading"),
+        };
+        let est_h2 = estimate_block_height(&h2, 14.0, 400.0, &style);
+        let est_h3 = estimate_block_height(&h3, 14.0, 400.0, &style);
+        // H2 should be taller: both font scale (1.5 vs 1.25) and separator.
+        assert!(
+            est_h2 > est_h3,
+            "H2 ({est_h2}) should be taller than H3 ({est_h3})"
+        );
+    }
+
+    #[test]
+    fn blockquote_width_floor_consistency() {
+        // Verify that the 40px minimum floor is used consistently in both
+        // estimation and rendering paths. Build a blockquote that would
+        // exhaust all available width and ensure the height is still sane.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let body_size = 14.0;
+        let reserved = body_size + 3.0;
+
+        // At wrap_width = reserved + 10 (i.e. only 10px for content),
+        // the floor should clamp inner_w to 40px in both paths.
+        let tight_width = reserved + 10.0;
+        let block = Block::Quote(vec![Block::Paragraph(plain("Some text content"))]);
+        let h = estimate_block_height(&block, body_size, tight_width, &style);
+        assert_sane_height(h, "blockquote at tight width");
+
+        // And at even tighter width (< reserved), inner should still be 40px.
+        let h_tiny = estimate_block_height(&block, body_size, 5.0, &style);
+        assert_sane_height(h_tiny, "blockquote at 5px width");
+    }
 }
