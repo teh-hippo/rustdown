@@ -652,6 +652,23 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
             state.push(InlineFlag::Link(Rc::from(dest_url.as_ref())));
         }
         Event::End(TagEnd::Link) => state.pop_link(),
+        // Render footnote references as bracketed text.
+        Event::FootnoteReference(label) => {
+            let style = state.style();
+            styled.push_text("[", style.clone());
+            styled.push_text(label, style.clone());
+            styled.push_text("]", style);
+        }
+        // Render inline HTML as plain text.
+        Event::InlineHtml(html) | Event::Html(html) => {
+            let style = state.style_with_code();
+            styled.push_text(html, style);
+        }
+        // Math events (not enabled by default, but handle gracefully).
+        Event::InlineMath(math) | Event::DisplayMath(math) => {
+            let style = state.style_with_code();
+            styled.push_text(math, style);
+        }
         _ => {}
     }
 }
