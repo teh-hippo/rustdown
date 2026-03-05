@@ -1053,7 +1053,7 @@ fn strengthen_color(color: egui::Color32) -> egui::Color32 {
     }
 }
 
-pub fn simple_hash(s: &str) -> u64 {
+pub(crate) fn simple_hash(s: &str) -> u64 {
     // FNV-1a–inspired 64-bit hash, processing 8 bytes at a time for throughput.
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
@@ -3178,6 +3178,120 @@ Normal paragraph.
             "short doc at wide viewport should not be excessively tall: {}",
             cache.total_height
         );
+    }
+
+    #[test]
+    fn empty_table_no_header_no_rows() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Table(Box::new(TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![],
+        }));
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert!(
+            h > 0.0,
+            "empty table should still have positive height, got {h}"
+        );
+    }
+
+    #[test]
+    fn estimate_height_zero_wrap_width_table() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Table(Box::new(TableData {
+            header: vec![StyledText {
+                text: "Col".to_owned(),
+                spans: vec![],
+            }],
+            alignments: vec![Alignment::None],
+            rows: vec![vec![StyledText {
+                text: "val".to_owned(),
+                spans: vec![],
+            }]],
+        }));
+        let h = estimate_block_height(&block, 14.0, 0.0, &style);
+        assert!(
+            h > 0.0,
+            "zero wrap_width table should not panic and have positive height"
+        );
+    }
+
+    #[test]
+    fn estimate_height_zero_wrap_width_list() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::UnorderedList(vec![ListItem {
+            content: StyledText {
+                text: "item".to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+            checked: None,
+        }]);
+        let h = estimate_block_height(&block, 14.0, 0.0, &style);
+        assert!(
+            h > 0.0,
+            "zero wrap_width list should not panic and have positive height"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_list_height_increases() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        let leaf = ListItem {
+            content: StyledText {
+                text: "leaf".to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+            checked: None,
+        };
+        // Build 10 levels of nesting: each level wraps the previous in a child UnorderedList
+        let mut nested = Block::UnorderedList(vec![leaf]);
+        for _ in 1..10 {
+            nested = Block::UnorderedList(vec![ListItem {
+                content: StyledText {
+                    text: "level".to_owned(),
+                    spans: vec![],
+                },
+                children: vec![nested],
+                checked: None,
+            }]);
+        }
+
+        let flat = Block::UnorderedList(vec![ListItem {
+            content: StyledText {
+                text: "single".to_owned(),
+                spans: vec![],
+            },
+            children: vec![],
+            checked: None,
+        }]);
+
+        let h_flat = estimate_block_height(&flat, 14.0, 400.0, &style);
+        let h_nested = estimate_block_height(&nested, 14.0, 400.0, &style);
+        assert!(
+            h_nested > h_flat,
+            "10-deep nested list ({h_nested}) should be taller than flat ({h_flat})"
+        );
+    }
+
+    #[test]
+    fn simple_hash_empty_string() {
+        let empty = simple_hash("");
+        let a = simple_hash("a");
+        let space = simple_hash(" ");
+        assert_ne!(empty, a, "empty hash should differ from 'a'");
+        assert_ne!(empty, space, "empty hash should differ from ' '");
+    }
+
+    #[test]
+    fn simple_hash_collision_resistance() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..1000 {
+            let h = simple_hash(&format!("string_{i}"));
+            assert!(seen.insert(h), "collision at i={i}: hash {h} already seen");
+        }
     }
 
     #[test]
