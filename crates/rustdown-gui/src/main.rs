@@ -1163,17 +1163,25 @@ impl RustdownApp {
         matches!(self.mode, Mode::Edit | Mode::SideBySide)
     }
 
-    /// Convert a byte offset to a scroll-y value in the currently active pane.
-    fn byte_to_scroll_y(&self, byte_offset: usize) -> Option<f32> {
-        if self.uses_editor() {
-            self.editor_byte_to_y(byte_offset)
-        } else {
-            Some(nav_panel::preview_byte_to_scroll_y(
-                &self.nav.outline,
-                byte_offset,
-                self.doc.preview_cache.total_height,
-            ))
+    /// Convert a heading byte offset to a preview scroll-y value.
+    ///
+    /// Uses exact heading Y positions from the parsed preview cache when
+    /// available, and falls back to byte-proportional mapping otherwise.
+    fn preview_nav_scroll_y(&self, byte_offset: usize) -> f32 {
+        if let Some(ordinal) = self
+            .nav
+            .outline
+            .iter()
+            .position(|h| h.byte_offset == byte_offset)
+            && let Some(y) = self.doc.preview_cache.heading_y(ordinal)
+        {
+            return y;
         }
+        nav_panel::preview_byte_to_scroll_y(
+            &self.nav.outline,
+            byte_offset,
+            self.doc.preview_cache.total_height,
+        )
     }
 
     /// Determine the current scroll position as a byte offset in the source
@@ -1373,7 +1381,7 @@ impl RustdownApp {
             };
 
             let editor_size = ui.available_size();
-            let scroll_to = self.nav.pending_scroll_y.take();
+            let scroll_to = self.nav.pending_editor_scroll_y.take();
             let mut scroll_area = egui::ScrollArea::both()
                 .id_salt("editor_scroll")
                 .auto_shrink([false; 2]);
@@ -1416,7 +1424,7 @@ impl RustdownApp {
 
         // Consume any pending nav-scroll target and pass it directly to the
         // ScrollArea, avoiding the ID-mismatch problem with external state lookup.
-        let scroll_y = self.nav.pending_scroll_y.take();
+        let scroll_y = self.nav.pending_preview_scroll_y.take();
 
         MarkdownViewer::new("preview_markdown").show_scrollable(
             ui,
@@ -1427,9 +1435,9 @@ impl RustdownApp {
         );
     }
 
-    /// Resolve a pending [`NavScrollTarget`] to a concrete y-pixel value and
-    /// store it in `pending_scroll_y`.  Must run *before* the scroll areas
-    /// render so the target is consumed on the same frame.
+    /// Resolve a pending [`NavScrollTarget`] into per-pane y-pixel targets.
+    /// Must run *before* the scroll areas render so targets are consumed
+    /// on the same frame.
     fn resolve_nav_scroll_target(&mut self, ctx: &egui::Context) {
         use nav_panel::NavScrollTarget;
         let Some(target) = self.nav.pending_scroll.take() else {
@@ -1438,11 +1446,27 @@ impl RustdownApp {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
         }
-        let target_y = match target {
-            NavScrollTarget::Top => Some(0.0_f32),
-            NavScrollTarget::ByteOffset(byte_offset) => self.byte_to_scroll_y(byte_offset),
+        let (editor_target_y, preview_target_y) = match target {
+            NavScrollTarget::Top => (Some(0.0_f32), Some(0.0_f32)),
+            NavScrollTarget::ByteOffset(byte_offset) => (
+                self.editor_byte_to_y(byte_offset),
+                Some(self.preview_nav_scroll_y(byte_offset)),
+            ),
         };
-        self.nav.pending_scroll_y = target_y;
+        match self.mode {
+            Mode::Edit => {
+                self.nav.pending_editor_scroll_y = editor_target_y;
+                self.nav.pending_preview_scroll_y = None;
+            }
+            Mode::Preview => {
+                self.nav.pending_editor_scroll_y = None;
+                self.nav.pending_preview_scroll_y = preview_target_y;
+            }
+            Mode::SideBySide => {
+                self.nav.pending_editor_scroll_y = editor_target_y;
+                self.nav.pending_preview_scroll_y = preview_target_y;
+            }
+        }
         ctx.request_repaint();
     }
 
@@ -1497,7 +1521,7 @@ impl RustdownApp {
         );
 
         // Store as pending — show_preview will consume it via vertical_scroll_offset.
-        self.nav.pending_scroll_y = Some(preview_y);
+        self.nav.pending_preview_scroll_y = Some(preview_y);
         ctx.request_repaint();
     }
 
@@ -2495,6 +2519,59 @@ mod tests {
             ..RustdownApp::default()
         };
         assert!(!app.uses_editor());
+    }
+
+    #[test]
+    fn resolve_nav_scroll_target_preview_sets_preview_only() {
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp {
+            mode: Mode::Preview,
+            ..RustdownApp::default()
+        };
+        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
+        app.resolve_nav_scroll_target(&ctx);
+        assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
+        assert!(app.nav.pending_editor_scroll_y.is_none());
+    }
+
+    #[test]
+    fn resolve_nav_scroll_target_side_by_side_sets_both_panes() {
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp {
+            mode: Mode::SideBySide,
+            ..RustdownApp::default()
+        };
+        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
+        app.resolve_nav_scroll_target(&ctx);
+        assert_eq!(app.nav.pending_editor_scroll_y, Some(0.0));
+        assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
+    }
+
+    #[test]
+    fn resolve_nav_scroll_target_preview_uses_heading_anchor_when_available() {
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp {
+            mode: Mode::Preview,
+            ..RustdownApp::default()
+        };
+        let md = "# A\n\ntext\n\n## B\n";
+        app.nav.outline = nav_outline::extract_headings(md);
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        app.doc.preview_cache.ensure_parsed(md);
+        app.doc.preview_cache.ensure_heights(14.0, 400.0, &style);
+        let b_offset = app.nav.outline[1].byte_offset;
+        let expected_y_opt = app.doc.preview_cache.heading_y(1);
+        assert!(expected_y_opt.is_some());
+        let expected_y = expected_y_opt.unwrap_or(0.0);
+
+        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(b_offset));
+        app.resolve_nav_scroll_target(&ctx);
+
+        let actual_y_opt = app.nav.pending_preview_scroll_y;
+        assert!(actual_y_opt.is_some());
+        let actual_y = actual_y_opt.unwrap_or(0.0);
+        assert!((actual_y - expected_y).abs() < 0.01);
+        assert!(app.nav.pending_editor_scroll_y.is_none());
     }
 
     #[test]

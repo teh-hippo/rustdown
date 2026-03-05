@@ -97,6 +97,21 @@ impl MarkdownCache {
         }
         self.total_height = acc;
     }
+
+    /// Return the Y offset for the `ordinal`th heading block (0-based).
+    #[must_use]
+    pub fn heading_y(&self, ordinal: usize) -> Option<f32> {
+        let mut seen = 0usize;
+        for (idx, block) in self.blocks.iter().enumerate() {
+            if matches!(block, Block::Heading { .. }) {
+                if seen == ordinal {
+                    return self.cum_y.get(idx).copied();
+                }
+                seen += 1;
+            }
+        }
+        None
+    }
 }
 
 // ── Viewer widget ──────────────────────────────────────────────────
@@ -1047,6 +1062,35 @@ mod tests {
                 "cum_y[{i}] should be sum of previous heights"
             );
         }
+    }
+
+    #[test]
+    fn heading_y_returns_ordered_offsets() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# A\n\ntext\n\n## B\n\nmore\n\n### C\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+
+        let y0_opt = cache.heading_y(0);
+        let y1_opt = cache.heading_y(1);
+        let y2_opt = cache.heading_y(2);
+        assert!(y0_opt.is_some());
+        assert!(y1_opt.is_some());
+        assert!(y2_opt.is_some());
+        let y0 = y0_opt.unwrap_or(0.0);
+        let y1 = y1_opt.unwrap_or(0.0);
+        let y2 = y2_opt.unwrap_or(0.0);
+        assert!(y0 <= y1, "H2 should not appear above H1");
+        assert!(y1 <= y2, "H3 should not appear above H2");
+    }
+
+    #[test]
+    fn heading_y_out_of_bounds_returns_none() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# A\n\n## B\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+        assert!(cache.heading_y(2).is_none());
     }
 
     #[test]

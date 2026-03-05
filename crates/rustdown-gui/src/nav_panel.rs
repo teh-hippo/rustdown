@@ -35,9 +35,10 @@ pub struct NavState {
     active_index: Option<usize>,
     /// Pending scroll request for the host to execute.
     pub pending_scroll: Option<NavScrollTarget>,
-    /// Resolved scroll-y target (pixels) to be consumed inside the scroll
-    /// area closure on the next frame for smooth animation.
-    pub pending_scroll_y: Option<f32>,
+    /// Pending editor scroll target in pixels.
+    pub pending_editor_scroll_y: Option<f32>,
+    /// Pending preview scroll target in pixels.
+    pub pending_preview_scroll_y: Option<f32>,
     /// Cached visible heading indices (recomputed only when state changes).
     cached_visible: Vec<usize>,
     /// Sequence counter for visible-heading cache invalidation.
@@ -60,7 +61,8 @@ impl Default for NavState {
             expanded: HashSet::new(),
             active_index: None,
             pending_scroll: None,
-            pending_scroll_y: None,
+            pending_editor_scroll_y: None,
+            pending_preview_scroll_y: None,
             cached_visible: Vec::new(),
             visible_seq: u64::MAX,
             visible_expanded_hash: u64::MAX,
@@ -129,6 +131,17 @@ impl NavState {
         self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
         self.expanded.clear();
+        let mut h1_indices = self
+            .outline
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.level == 1)
+            .map(|(idx, _)| idx);
+        if let Some(sole_h1) = h1_indices.next()
+            && h1_indices.next().is_none()
+        {
+            self.expanded.insert(sole_h1);
+        }
     }
 
     /// Force the next `refresh_outline` call to re-extract headings.
@@ -413,16 +426,12 @@ fn render_heading_row(
             text = text.color(color);
         }
 
-        let response = ui.add(
+        ui.add(
             egui::Label::new(text)
                 .truncate()
+                .selectable(false)
                 .sense(egui::Sense::click()),
-        );
-        // Override the text-select cursor that click-sense produces.
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-        }
-        response
+        )
     })
     .inner
 }
@@ -461,9 +470,33 @@ mod tests {
     #[test]
     fn refresh_outline_resets_expanded() {
         let mut state = make_state("# A\n## B\n");
-        state.expanded.insert(0);
+        state.expanded.insert(1);
         let s = Arc::new("# A\n## B\n### C\n".to_owned());
         state.refresh_outline(&s, 2);
+        assert_eq!(state.expanded, HashSet::from([0]));
+    }
+
+    #[test]
+    fn refresh_outline_auto_expands_single_h1() {
+        let mut state = NavState::default();
+        let s = Arc::new("# A\n## B\n".to_owned());
+        state.refresh_outline(&s, 1);
+        assert_eq!(state.expanded, HashSet::from([0]));
+    }
+
+    #[test]
+    fn refresh_outline_multiple_h1_does_not_auto_expand() {
+        let mut state = NavState::default();
+        let s = Arc::new("# A\n## B\n# C\n".to_owned());
+        state.refresh_outline(&s, 1);
+        assert!(state.expanded.is_empty());
+    }
+
+    #[test]
+    fn refresh_outline_no_h1_does_not_auto_expand() {
+        let mut state = NavState::default();
+        let s = Arc::new("## A\n## B\n".to_owned());
+        state.refresh_outline(&s, 1);
         assert!(state.expanded.is_empty());
     }
 
@@ -775,6 +808,8 @@ mod tests {
     fn stress_test_nav_expand_collapse() {
         let md = include_str!("../../../test-assets/stress-test.md");
         let mut state = make_state(md);
+        // Normalize to fully-collapsed baseline for this expand/collapse test.
+        state.expanded.clear();
 
         // Default depth=4 — should show some but not all headings
         let all = compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
