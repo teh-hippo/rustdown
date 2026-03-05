@@ -670,6 +670,9 @@ fn render_text_with_links(
         .unwrap_or_else(|| ui.visuals().text_color());
 
     ui.horizontal_wrapped(|ui| {
+        // Use zero horizontal spacing between inline spans so link and text
+        // widgets flow together without extra gaps.
+        ui.spacing_mut().item_spacing.x = 0.0;
         for span in &st.spans {
             let text = &st.text[span.start as usize..span.end as usize];
             let font_family = if span.style.code() {
