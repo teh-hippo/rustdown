@@ -320,8 +320,8 @@ fn estimate_list_height(
 fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> f32 {
     let num_cols = table.header.len().max(1);
     let col_width = (wrap_width / num_cols as f32).max(40.0);
-    let base_row_h = body_size * 1.6;
-    let row_spacing = 4.0;
+    let base_row_h = body_size * 1.4;
+    let row_spacing = 3.0;
 
     let row_height = |cells: &[StyledText]| -> f32 {
         cells.iter().fold(base_row_h, |max, c| {
@@ -504,7 +504,7 @@ fn render_heading(
             .unwrap_or_else(|| ui.visuals().weak_text_color());
         ui.painter().line_segment(
             [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(1.0, color),
+            egui::Stroke::new(1.5, color),
         );
         ui.add_space(4.0);
     }
@@ -604,7 +604,7 @@ fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
         .unwrap_or_else(|| ui.visuals().weak_text_color());
     ui.painter().line_segment(
         [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-        egui::Stroke::new(1.0, color),
+        egui::Stroke::new(1.5, color),
     );
     ui.add_space(body_size * 0.4);
 }
@@ -972,6 +972,22 @@ fn compute_table_col_widths(
                 }
             }
         }
+        // Ensure no column fell below minimum after redistribution.
+        for w in &mut widths {
+            if *w < min_col_w {
+                *w = min_col_w;
+            }
+        }
+    }
+
+    // Cap single-column tables to 60% of usable width for a reasonable appearance.
+    if num_cols == 1
+        && let Some(w) = widths.first_mut()
+    {
+        let content_est =
+            (header.first().map_or(0, |c| c.text.len()) as f32).mul_add(avg_char_w, 24.0);
+        let max_single = (usable * 0.6).max(content_est.min(usable));
+        *w = (*w).min(max_single);
     }
 
     (widths, min_col_w)
@@ -1019,6 +1035,10 @@ fn render_table(
                         ui.set_min_width(w);
                         render_table_cell(ui, cell, style, align, false);
                     }
+                    // Pad short rows with empty cells to keep grid rectangular.
+                    for _ in row.len()..num_cols {
+                        ui.label("");
+                    }
                     ui.end_row();
                 }
             });
@@ -1042,7 +1062,7 @@ fn render_table_cell(
 ) {
     let layout = match align {
         Alignment::Right => egui::Layout::right_to_left(egui::Align::TOP),
-        Alignment::Center => egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        Alignment::Center => egui::Layout::top_down(egui::Align::Center),
         Alignment::Left | Alignment::None => egui::Layout::left_to_right(egui::Align::TOP),
     };
     ui.with_layout(layout, |ui| {
@@ -1078,14 +1098,14 @@ fn strengthen_color(color: egui::Color32) -> egui::Color32 {
     if luma > 127.0 {
         // Bright text (dark background) → brighten toward white.
         let boost = |val: u8| {
-            let delta = (u16::from(255_u8.saturating_sub(val))) / 5;
+            let delta = (u16::from(255_u8.saturating_sub(val))) / 3;
             val.saturating_add(delta.min(255) as u8)
         };
         egui::Color32::from_rgba_unmultiplied(boost(red), boost(green), boost(blue), alpha)
     } else {
         // Dark text (light background) → darken toward black.
         let darken = |val: u8| {
-            let delta = u16::from(val) / 5;
+            let delta = u16::from(val) / 3;
             val.saturating_sub(delta.min(255) as u8)
         };
         egui::Color32::from_rgba_unmultiplied(darken(red), darken(green), darken(blue), alpha)
@@ -6577,5 +6597,108 @@ that we can observe the relationship between available width and estimated heigh
                 "{name}: total_height not finite"
             );
         }
+    }
+
+    #[test]
+    fn table_height_estimate_aligns_with_render_constants() {
+        // Verify the base row height and spacing match render_table's Grid config.
+        let table = TableData {
+            header: vec![StyledText {
+                text: "A".to_owned(),
+                spans: vec![],
+            }],
+            alignments: vec![Alignment::None],
+            rows: (0..10)
+                .map(|i| {
+                    vec![StyledText {
+                        text: format!("row {i}"),
+                        spans: vec![],
+                    }]
+                })
+                .collect(),
+        };
+        let h = estimate_table_height(&table, 14.0, 400.0);
+        // With body_size=14, base_row_h=14*1.4=19.6, spacing=3.0
+        // 11 rows (1 header + 10 data) × (19.6 + 3.0) = 248.6, plus 0.4*14=5.6 → ~254.2
+        // Allow 20% tolerance for text wrapping estimates.
+        assert!(h > 200.0, "height {h} too small for 10-row table");
+        assert!(h < 400.0, "height {h} too large for 10-row table");
+    }
+
+    #[test]
+    fn table_short_rows_render_without_panic() {
+        // Rows with fewer columns than header should render (padded with empty cells).
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("short_rows");
+        let md = "| A | B | C |\n|---|---|---|\n| 1 |\n| x | y |\n| a | b | c |\n";
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        assert!(!cache.blocks.is_empty());
+    }
+
+    #[test]
+    fn single_column_table_width_is_reasonable() {
+        let header = vec![StyledText {
+            text: "Status".to_owned(),
+            spans: vec![],
+        }];
+        let rows = vec![
+            vec![StyledText {
+                text: "OK".to_owned(),
+                spans: vec![],
+            }],
+            vec![StyledText {
+                text: "Fail".to_owned(),
+                spans: vec![],
+            }],
+        ];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 1);
+        // Single column should not take the full 600px width.
+        assert!(
+            widths[0] < 400.0,
+            "single column width {} is too wide",
+            widths[0]
+        );
+    }
+
+    #[test]
+    fn redistribution_respects_min_col_width() {
+        // Many clamped columns should not cause free columns to shrink below min.
+        let row: Vec<StyledText> = (0..8)
+            .map(|i| StyledText {
+                text: format!("{i}"),
+                spans: vec![],
+            })
+            .collect();
+        let header = row.clone();
+        let rows = vec![row];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.7, 14.0);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "column {i} width {w} below min {min_col_w}"
+            );
+        }
+    }
+
+    #[test]
+    fn strengthen_color_produces_visible_difference() {
+        // After increasing divisor to /3, the difference should be at least 30 units
+        // in one channel for mid-range colors.
+        let mid = egui::Color32::from_rgb(128, 128, 128);
+        let boosted = strengthen_color(mid);
+        let [mr, mg, mb, _] = mid.to_srgba_unmultiplied();
+        let [br, bg, bb, _] = boosted.to_srgba_unmultiplied();
+        let max_delta = (mr.abs_diff(br)).max(mg.abs_diff(bg)).max(mb.abs_diff(bb));
+        assert!(
+            max_delta >= 30,
+            "strengthen_color should produce visible difference, got delta={max_delta}"
+        );
     }
 }

@@ -2,7 +2,7 @@
 //! Configurable styles for Markdown preview rendering.
 
 /// Default heading font scales (H1-H6).
-pub const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.0, 0.95];
+pub const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.05, 1.0];
 
 /// Dracula-inspired heading colours for dark themes.
 pub const DARK_HEADING_COLORS: [egui::Color32; 6] = [
@@ -251,5 +251,17 @@ mod tests {
         assert_eq!(light.headings.len(), 6);
         assert!(dark.code_bg.is_some());
         assert!(light.code_bg.is_some());
+    }
+
+    #[test]
+    fn all_heading_scales_at_least_body_size() {
+        for (i, &scale) in HEADING_FONT_SCALES.iter().enumerate() {
+            assert!(
+                scale >= 1.0,
+                "H{} scale {} is smaller than body text",
+                i + 1,
+                scale
+            );
+        }
     }
 }
