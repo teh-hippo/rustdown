@@ -101,7 +101,7 @@ impl Default for DocumentStats {
 }
 
 pub fn bytecount_newlines(text: &str) -> usize {
-    memchr::memchr_iter(b'\n', text.as_bytes()).count()
+    rustdown_md::bytecount_newlines(text.as_bytes())
 }
 
 #[derive(Clone)]

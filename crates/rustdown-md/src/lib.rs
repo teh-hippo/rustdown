@@ -14,7 +14,7 @@ mod style;
 mod bench;
 
 pub use parse::heading_level_to_u8;
-pub use render::{MarkdownCache, MarkdownViewer};
+pub use render::{MarkdownCache, MarkdownViewer, bytecount_newlines};
 pub use style::{
     DARK_HEADING_COLORS, HEADING_FONT_SCALES, HeadingStyle, LIGHT_HEADING_COLORS, MarkdownStyle,
 };

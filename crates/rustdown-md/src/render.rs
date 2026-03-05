@@ -425,7 +425,8 @@ fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
 }
 
 /// Fast newline counting via memchr.
-fn bytecount_newlines(bytes: &[u8]) -> usize {
+#[must_use]
+pub fn bytecount_newlines(bytes: &[u8]) -> usize {
     memchr::memchr_iter(b'\n', bytes).count()
 }
 
