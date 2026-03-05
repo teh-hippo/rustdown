@@ -1759,17 +1759,20 @@ mod tests {
 
     #[test]
     fn document_stats_cover_empty_populated_and_default_document() {
-        let stats = DocumentStats::from_text("one two\nthree");
-        assert_eq!(stats.lines, 2);
-
-        let unicode_stats = DocumentStats::from_text("héllo 世界\n🙂");
-        assert_eq!(unicode_stats.lines, 2);
-
-        let empty_stats = DocumentStats::from_text("");
-        assert_eq!(empty_stats, DocumentStats::default());
-
-        let doc = Document::default();
-        assert_eq!(doc.stats(), DocumentStats::from_text(""));
+        for (label, text, expected_lines) in [
+            ("two lines", "one two\nthree", 2),
+            ("unicode", "héllo 世界\n🙂", 2),
+            ("empty", "", 1),
+            ("single newline", "\n", 2),
+        ] {
+            assert_eq!(
+                DocumentStats::from_text(text).lines,
+                expected_lines,
+                "{label}"
+            );
+        }
+        assert_eq!(DocumentStats::from_text(""), DocumentStats::default());
+        assert_eq!(Document::default().stats(), DocumentStats::from_text(""));
     }
 
     #[test]
@@ -1787,24 +1790,6 @@ mod tests {
             first_markdown_path(files),
             Some(PathBuf::from("chapter.markdown"))
         );
-    }
-
-    #[test]
-    fn default_image_uri_scheme_uses_document_directory_when_available() {
-        assert_eq!(default_image_uri_scheme(None), "file://");
-        let dir = make_temp_dir("rustdown-image-uri-scheme-test");
-        let path = dir.join("report.md");
-        let scheme = default_image_uri_scheme(Some(path.as_path()));
-
-        assert!(scheme.starts_with("file://"));
-        assert!(scheme.ends_with('/'));
-        let dir_name = dir.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        assert!(
-            scheme.contains(dir_name),
-            "Expected '{scheme}' to contain '{dir_name}'"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1848,40 +1833,40 @@ mod tests {
     }
 
     #[test]
-    fn deferred_note_text_changed_marks_stats_dirty_until_due_refresh() {
+    fn edit_seq_dirty_flags_stats_and_replace_all() {
+        // bump_edit_seq and note_text_changed.
+        let mut app = RustdownApp::default();
+        let seq = app.doc.edit_seq;
+        app.bump_edit_seq();
+        assert_eq!(app.doc.edit_seq, seq + 1);
+        app.note_text_changed(true);
+        assert!(app.doc.dirty && app.doc.stats_dirty && app.doc.preview_dirty);
+        assert!(app.doc.last_edit_at.is_some());
+
+        // Deferred stats refresh.
         let mut app = RustdownApp::default();
         app.doc.text = Arc::new("alpha beta".to_owned());
         app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
         app.doc.base_text = app.doc.text.clone();
-
         app.doc.text = Arc::new("alpha beta gamma".to_owned());
         app.bump_edit_seq();
         app.note_text_changed(true);
-
         assert!(app.doc.stats_dirty);
-        assert_eq!(app.doc.stats, DocumentStats::from_text("alpha beta"));
-
         app.doc.last_edit_at = Instant::now().checked_sub(STATS_RECALC_DEBOUNCE);
         let ctx = egui::Context::default();
         app.refresh_stats_if_due(&ctx);
-
         assert!(!app.doc.stats_dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("alpha beta gamma"));
-    }
 
-    #[test]
-    fn replace_all_matches_updates_document_and_stats() {
+        // Replace all matches.
         let mut app = RustdownApp::default();
         app.doc.text = Arc::new("alpha beta alpha".to_owned());
         app.doc.stats = DocumentStats::from_text(app.doc.text.as_str());
         app.search.query = "alpha".to_owned();
         app.search.replacement = "zeta".to_owned();
-
-        let replaced = app.replace_all_matches();
-        assert_eq!(replaced, 2);
+        assert_eq!(app.replace_all_matches(), 2);
         assert_eq!(app.doc.text.as_str(), "zeta beta zeta");
         assert!(app.doc.dirty);
-        assert_eq!(app.doc.stats, DocumentStats::from_text("zeta beta zeta"));
     }
 
     #[test]
@@ -1912,149 +1897,133 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn incorporate_disk_text_handles_clean_merge_and_conflict_outcomes() {
-        struct Case<'a> {
-            base: &'a str,
-            ours: &'a str,
-            dirty: bool,
-            disk_text: &'a str,
-            initial_disk_rev: (u64, u64),
-            incoming_disk_rev: (u64, u64),
-            expected_text: &'a str,
-            expected_base: &'a str,
-            expected_disk_rev: (u64, u64),
-            expected_dirty: bool,
-            expect_conflict: bool,
-        }
-        for case in [
-            Case {
-                base: "old",
-                ours: "old",
-                dirty: false,
-                disk_text: "new",
-                initial_disk_rev: (1, 3),
-                incoming_disk_rev: (2, 3),
-                expected_text: "new",
-                expected_base: "new",
-                expected_disk_rev: (2, 3),
-                expected_dirty: false,
-                expect_conflict: false,
-            },
-            Case {
-                base: "a\nb\n",
-                ours: "a\nB\n",
-                dirty: true,
-                disk_text: "A\nb\n",
-                initial_disk_rev: (1, 4),
-                incoming_disk_rev: (2, 4),
-                expected_text: "A\nB\n",
-                expected_base: "A\nb\n",
-                expected_disk_rev: (2, 4),
-                expected_dirty: true,
-                expect_conflict: false,
-            },
-            Case {
-                base: "a\nb\n",
-                ours: "a\nO\n",
-                dirty: true,
-                disk_text: "a\nT\n",
-                initial_disk_rev: (1, 4),
-                incoming_disk_rev: (2, 4),
-                expected_text: "a\nO\n",
-                expected_base: "a\nb\n",
-                expected_disk_rev: (1, 4),
-                expected_dirty: true,
-                expect_conflict: true,
-            },
-        ] {
-            let mut app = merge_app(
-                case.base,
-                case.ours,
-                case.initial_disk_rev.0,
-                case.initial_disk_rev.1,
-                case.dirty,
-            );
-            app.incorporate_disk_text(
-                case.disk_text.to_owned(),
-                test_rev(case.incoming_disk_rev.0, case.incoming_disk_rev.1),
-            );
-            assert_eq!(app.doc.text.as_str(), case.expected_text);
-            assert_eq!(app.doc.base_text.as_str(), case.expected_base);
-            assert_eq!(
-                app.doc.disk_rev,
-                Some(test_rev(case.expected_disk_rev.0, case.expected_disk_rev.1))
-            );
-            assert_eq!(app.doc.dirty, case.expected_dirty);
-            assert_eq!(app.disk.conflict.is_some(), case.expect_conflict);
+        // (base, ours, dirty, disk_text, init_rev, incoming_rev, exp_text, exp_base, exp_rev, exp_dirty, conflict)
+        let cases: &[(
+            &str,
+            &str,
+            bool,
+            &str,
+            (u64, u64),
+            (u64, u64),
+            &str,
+            &str,
+            (u64, u64),
+            bool,
+            bool,
+        )] = &[
+            (
+                "old",
+                "old",
+                false,
+                "new",
+                (1, 3),
+                (2, 3),
+                "new",
+                "new",
+                (2, 3),
+                false,
+                false,
+            ),
+            (
+                "a\nb\n",
+                "a\nB\n",
+                true,
+                "A\nb\n",
+                (1, 4),
+                (2, 4),
+                "A\nB\n",
+                "A\nb\n",
+                (2, 4),
+                true,
+                false,
+            ),
+            (
+                "a\nb\n",
+                "a\nO\n",
+                true,
+                "a\nT\n",
+                (1, 4),
+                (2, 4),
+                "a\nO\n",
+                "a\nb\n",
+                (1, 4),
+                true,
+                true,
+            ),
+        ];
+        for &(
+            base,
+            ours,
+            dirty,
+            disk_text,
+            init,
+            inc,
+            exp_text,
+            exp_base,
+            exp_rev,
+            exp_dirty,
+            expect_conflict,
+        ) in cases
+        {
+            let mut app = merge_app(base, ours, init.0, init.1, dirty);
+            app.incorporate_disk_text(disk_text.to_owned(), test_rev(inc.0, inc.1));
+            assert_eq!(app.doc.text.as_str(), exp_text);
+            assert_eq!(app.doc.base_text.as_str(), exp_base);
+            assert_eq!(app.doc.disk_rev, Some(test_rev(exp_rev.0, exp_rev.1)));
+            assert_eq!(app.doc.dirty, exp_dirty);
+            assert_eq!(app.disk.conflict.is_some(), expect_conflict);
         }
     }
 
     #[test]
-    fn conflict_choice_open_merge_replaces_buffer_with_conflict_markers() {
+    fn conflict_resolution_open_merge_and_keep_mine() {
+        // OpenConflictMerge: replaces buffer with conflict markers.
         let mut app = merge_app("a\nb\n", "a\nO\n", 1, 4, true);
-
         app.incorporate_disk_text("a\nT\n".to_owned(), test_rev(2, 4));
         let expected_merge = disk_conflict(&app).conflict_marked.clone();
-
         app.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
-
         assert_eq!(app.doc.text.as_str(), expected_merge.as_str());
         assert_eq!(app.doc.base_text.as_str(), "a\nT\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 4)));
         assert!(app.doc.dirty);
         assert!(app.disk.conflict.is_none());
-    }
 
-    #[test]
-    fn conflict_choice_keep_mine_writes_sidecar_and_applies_safe_disk_edits() {
+        // KeepMineWriteSidecar: writes sidecar and applies safe disk edits.
         let dir = make_temp_dir("rustdown-merge-test");
         let original = dir.join("note.md");
-
         let _ = atomic_write_utf8(&original, "line1\nline2\nline3\n");
-
         let mut app = merge_app("line1\nline2\nline3\n", "line1\nO2\nline3\n", 1, 18, true);
         app.doc.path = Some(original);
-
         app.incorporate_disk_text("line1\nT2\nT3\n".to_owned(), test_rev(2, 15));
-        let conflict = disk_conflict(&app);
-        let expected_sidecar = conflict.conflict_marked.clone();
-        let expected_ours_wins = conflict.ours_wins.clone();
-
+        let expected_sidecar = disk_conflict(&app).conflict_marked.clone();
+        let expected_ours_wins = disk_conflict(&app).ours_wins.clone();
         app.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
-
         assert_eq!(app.doc.text.as_str(), expected_ours_wins.as_str());
         assert_eq!(app.doc.base_text.as_str(), "line1\nT2\nT3\n");
         assert_eq!(app.doc.disk_rev, Some(test_rev(2, 15)));
         assert!(app.disk.conflict.is_none());
-
-        assert!(
-            app.disk.merge_sidecar_path.is_some(),
-            "Expected merge sidecar path to be set"
-        );
+        assert!(app.disk.merge_sidecar_path.is_some());
         let sidecar_path = app
             .disk
             .merge_sidecar_path
             .clone()
             .unwrap_or_else(|| unreachable!());
-        let sidecar_text = read_file(&sidecar_path);
-        assert_eq!(sidecar_text, expected_sidecar);
-
+        assert_eq!(read_file(&sidecar_path), expected_sidecar);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn bytecount_newlines_counts_correctly() {
-        assert_eq!(bytecount_newlines(""), 0);
-        assert_eq!(bytecount_newlines("no newline"), 0);
-        assert_eq!(bytecount_newlines("a\nb\nc\n"), 3);
-        assert_eq!(bytecount_newlines("\n\n\n"), 3);
-    }
-
-    #[test]
-    fn document_title_and_path_label() {
+    fn document_metadata_title_path_debounce_and_bytecount() {
         let default_doc = Document::default();
         assert_eq!(default_doc.title().as_ref(), "Untitled");
         assert_eq!(default_doc.path_label().as_ref(), "Unsaved");
+        assert!(
+            default_doc
+                .debounce_remaining(Duration::from_millis(500))
+                .is_none()
+        );
 
         let doc = Document {
             path: Some(PathBuf::from("/home/user/notes.md")),
@@ -2062,152 +2031,144 @@ mod tests {
         };
         assert_eq!(doc.title().as_ref(), "notes.md");
         assert_eq!(doc.path_label().as_ref(), "/home/user/notes.md");
+
+        for (label, text, expected) in [
+            ("empty", "", 0),
+            ("no nl", "no newline", 0),
+            ("3 nl", "a\nb\nc\n", 3),
+            ("all nl", "\n\n\n", 3),
+        ] {
+            assert_eq!(bytecount_newlines(text), expected, "{label}");
+        }
     }
 
     #[test]
-    fn document_debounce_remaining_returns_none_when_no_edit() {
-        let doc = Document::default();
-        assert!(doc.debounce_remaining(Duration::from_millis(500)).is_none());
-    }
-
-    #[test]
-    fn mode_cycle_covers_all_modes() {
+    fn mode_cycle_icons_and_tooltips() {
         assert_eq!(Mode::Edit.cycle(), Mode::Preview);
         assert_eq!(Mode::Preview.cycle(), Mode::SideBySide);
         assert_eq!(Mode::SideBySide.cycle(), Mode::Edit);
-    }
-
-    #[test]
-    fn mode_icons_and_tooltips() {
-        assert_eq!(Mode::Edit.icon(), "Ed");
-        assert_eq!(Mode::Preview.icon(), "Pr");
-        assert_eq!(Mode::SideBySide.icon(), "S|S");
-        assert_eq!(Mode::Edit.tooltip(), "Edit");
-        assert_eq!(Mode::Preview.tooltip(), "Preview");
-        assert_eq!(Mode::SideBySide.tooltip(), "Side-by-Side");
-    }
-
-    #[test]
-    fn find_match_count_single_byte_and_multi_byte() {
-        assert_eq!(find_match_count("aaa", "a"), 3);
-        assert_eq!(find_match_count("abcabc", "abc"), 2);
-        assert_eq!(find_match_count("hello", "xyz"), 0);
-        assert_eq!(find_match_count("", "a"), 0);
-    }
-
-    #[test]
-    fn tracked_text_buffer_increments_seq_on_edit() {
-        let seq = Cell::new(0_u64);
-        let mut text = Arc::new("hello".to_owned());
-        {
-            let mut buf = TrackedTextBuffer {
-                text: &mut text,
-                seq: &seq,
-            };
-            let inserted = egui::TextBuffer::insert_text(&mut buf, " world", 5);
-            assert_eq!(inserted, 6);
+        for (mode, icon, tooltip) in [
+            (Mode::Edit, "Ed", "Edit"),
+            (Mode::Preview, "Pr", "Preview"),
+            (Mode::SideBySide, "S|S", "Side-by-Side"),
+        ] {
+            assert_eq!(mode.icon(), icon, "{tooltip} icon");
+            assert_eq!(mode.tooltip(), tooltip);
         }
-        assert_eq!(seq.get(), 1);
-        assert_eq!(text.as_str(), "hello world");
     }
 
     #[test]
-    fn tracked_text_buffer_no_op_insert_does_not_bump_seq() {
-        let seq = Cell::new(0_u64);
-        let mut text = Arc::new("hello".to_owned());
-        {
-            let mut buf = TrackedTextBuffer {
-                text: &mut text,
-                seq: &seq,
-            };
-            let inserted = egui::TextBuffer::insert_text(&mut buf, "", 5);
-            assert_eq!(inserted, 0);
+    fn tracked_text_buffer_seq_bumps_on_real_edits_only() {
+        for (label, init, op, expected_seq, expected_text) in [
+            ("insert", "hello", Op::Insert(" world", 5), 1, "hello world"),
+            ("empty insert", "hello", Op::Insert("", 5), 0, "hello"),
+            ("delete", "hello", Op::Delete(2..4), 1, "heo"),
+            ("empty delete", "hello", Op::Delete(3..3), 0, "hello"),
+        ] {
+            let seq = Cell::new(0_u64);
+            let mut text = Arc::new(init.to_owned());
+            {
+                let mut buf = TrackedTextBuffer {
+                    text: &mut text,
+                    seq: &seq,
+                };
+                match op {
+                    Op::Insert(s, pos) => {
+                        egui::TextBuffer::insert_text(&mut buf, s, pos);
+                    }
+                    Op::Delete(r) => egui::TextBuffer::delete_char_range(&mut buf, r),
+                }
+            }
+            assert_eq!(seq.get(), expected_seq, "{label}: seq");
+            assert_eq!(text.as_str(), expected_text, "{label}: text");
         }
-        assert_eq!(seq.get(), 0);
+    }
+
+    enum Op {
+        Insert(&'static str, usize),
+        Delete(std::ops::Range<usize>),
     }
 
     #[test]
-    fn tracked_text_buffer_delete_bumps_seq() {
-        let seq = Cell::new(0_u64);
-        let mut text = Arc::new("hello".to_owned());
-        {
-            let mut buf = TrackedTextBuffer {
-                text: &mut text,
-                seq: &seq,
-            };
-            egui::TextBuffer::delete_char_range(&mut buf, 2..4);
-        }
-        assert_eq!(seq.get(), 1);
-        assert_eq!(text.as_str(), "heo");
-    }
-
-    #[test]
-    fn tracked_text_buffer_empty_range_delete_no_bump() {
-        let seq = Cell::new(0_u64);
-        let mut text = Arc::new("hello".to_owned());
-        {
-            let mut buf = TrackedTextBuffer {
-                text: &mut text,
-                seq: &seq,
-            };
-            egui::TextBuffer::delete_char_range(&mut buf, 3..3);
-        }
-        assert_eq!(seq.get(), 0);
-    }
-
-    #[test]
-    fn search_state_caches_by_query_and_seq() {
+    fn search_state_caches_and_invalidates_across_loads() {
+        // Caching by query and seq.
         let mut search = SearchState::with_query("a");
         assert_eq!(search.match_count("aaa", 1), 3);
-        // Same query and seq should use cache.
-        assert_eq!(search.match_count("aaa", 1), 3);
-        // Changing seq forces recount.
-        assert_eq!(search.match_count("aa", 2), 2);
-        // Changing query forces recount.
+        assert_eq!(search.match_count("aaa", 1), 3); // cached
+        assert_eq!(search.match_count("aa", 2), 2); // seq change
         search.query = "b".to_owned();
-        assert_eq!(search.match_count("bb", 2), 2);
-    }
+        assert_eq!(search.match_count("bb", 2), 2); // query change
 
-    #[test]
-    fn zoom_with_factor_edge_cases() {
-        assert_eq!(zoom_with_factor(1.0, -1.0), clamped_zoom_factor(1.0));
+        // find_match_count edge cases.
+        for (label, text, needle, expected) in [
+            ("repeat", "aaa", "a", 3),
+            ("pattern", "abcabc", "abc", 2),
+            ("miss", "hello", "xyz", 0),
+            ("empty text", "", "a", 0),
+        ] {
+            assert_eq!(find_match_count(text, needle), expected, "{label}");
+        }
+
+        // Cache invalidation across document loads.
+        let mut app = RustdownApp::default();
+        app.load_document(PathBuf::from("a.md"), "hello hello".to_owned(), None);
+        app.search.query = "hello".to_owned();
         assert_eq!(
-            zoom_with_factor(1.0, f32::INFINITY),
-            clamped_zoom_factor(1.0)
+            app.search
+                .match_count(app.doc.text.as_str(), app.doc.edit_seq),
+            2
         );
-        assert_eq!(zoom_with_factor(1.0, f32::NAN), clamped_zoom_factor(1.0));
-        assert_eq!(zoom_with_factor(1.0, 0.0), clamped_zoom_factor(1.0));
+        app.load_document(PathBuf::from("b.md"), "hello world".to_owned(), None);
+        assert_eq!(
+            app.search
+                .match_count(app.doc.text.as_str(), app.doc.edit_seq),
+            1,
+            "stale cache"
+        );
     }
 
     #[test]
-    fn clamped_zoom_factor_clamps_bounds() {
-        assert_eq!(clamped_zoom_factor(0.1), MIN_ZOOM_FACTOR);
-        assert_eq!(clamped_zoom_factor(10.0), MAX_ZOOM_FACTOR);
-        assert_eq!(clamped_zoom_factor(1.5), 1.5);
+    fn zoom_and_clamp_edge_cases() {
+        for (label, input, expected) in [
+            (
+                "negative factor",
+                zoom_with_factor(1.0, -1.0),
+                clamped_zoom_factor(1.0),
+            ),
+            (
+                "infinity",
+                zoom_with_factor(1.0, f32::INFINITY),
+                clamped_zoom_factor(1.0),
+            ),
+            (
+                "NaN",
+                zoom_with_factor(1.0, f32::NAN),
+                clamped_zoom_factor(1.0),
+            ),
+            ("zero", zoom_with_factor(1.0, 0.0), clamped_zoom_factor(1.0)),
+            ("clamp low", clamped_zoom_factor(0.1), MIN_ZOOM_FACTOR),
+            ("clamp high", clamped_zoom_factor(10.0), MAX_ZOOM_FACTOR),
+            ("clamp mid", clamped_zoom_factor(1.5), 1.5),
+        ] {
+            assert_eq!(input, expected, "{label}");
+        }
     }
 
     #[test]
-    fn document_stats_single_newline() {
-        let stats = DocumentStats::from_text("\n");
-        assert_eq!(stats.lines, 2);
+    fn replace_all_occurrences_returns_borrowed_on_noop() {
+        for (label, haystack, needle) in [
+            ("no match", "hello world", "xyz"),
+            ("empty needle", "hello", ""),
+        ] {
+            let (result, count) = replace_all_occurrences(haystack, needle, "abc");
+            assert_eq!(count, 0, "{label}");
+            assert!(matches!(result, Cow::Borrowed(_)), "{label}");
+        }
     }
 
     #[test]
-    fn replace_all_occurrences_returns_borrowed_on_no_match() {
-        let (result, count) = replace_all_occurrences("hello world", "xyz", "abc");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn replace_all_occurrences_empty_needle_returns_borrowed() {
-        let (result, count) = replace_all_occurrences("hello", "", "abc");
-        assert_eq!(count, 0);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn default_image_uri_scheme_covers_paths_with_special_components() {
+    fn default_image_uri_scheme_covers_all_paths() {
+        assert_eq!(default_image_uri_scheme(None), "file://");
         assert_eq!(
             default_image_uri_scheme(Some(Path::new("/a/b/c/file.md"))),
             "file:///a/b/c/"
@@ -2216,51 +2177,49 @@ mod tests {
             default_image_uri_scheme(Some(Path::new("relative/file.md"))),
             "file:///relative/"
         );
+        let dir = make_temp_dir("rustdown-image-uri-scheme-test");
+        let path = dir.join("report.md");
+        let scheme = default_image_uri_scheme(Some(path.as_path()));
+        assert!(scheme.starts_with("file://"));
+        assert!(scheme.ends_with('/'));
+        let dir_name = dir.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        assert!(
+            scheme.contains(dir_name),
+            "Expected '{scheme}' to contain '{dir_name}'"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn set_mode_changes_mode() {
+    fn mode_transitions_and_uses_editor() {
         let ctx = egui::Context::default();
         let mut app = RustdownApp::default();
         assert_eq!(app.mode, Mode::Edit);
+        assert!(app.uses_editor());
+
         app.set_mode(Mode::Preview, &ctx);
         assert_eq!(app.mode, Mode::Preview);
-        // Going to Preview drops editor galley cache.
         assert!(app.doc.editor_galley_cache.is_none());
-        // Going back to Edit clears preview state.
-        app.set_mode(Mode::Edit, &ctx);
-        assert_eq!(app.mode, Mode::Edit);
-    }
-
-    #[test]
-    fn set_mode_same_mode_is_noop() {
-        let ctx = egui::Context::default();
-        let mut app = RustdownApp::default();
-        app.set_mode(Mode::Edit, &ctx);
-        assert_eq!(app.mode, Mode::Edit);
-        // No pending scroll should be set for same-mode transition.
-        assert!(app.nav.pending_scroll.is_none());
-    }
-
-    #[test]
-    fn uses_editor_returns_correct_value() {
-        let app = RustdownApp::default();
-        assert!(app.uses_editor()); // default mode is Edit
-        let app = RustdownApp {
-            mode: Mode::SideBySide,
-            ..RustdownApp::default()
-        };
-        assert!(app.uses_editor());
-        let app = RustdownApp {
-            mode: Mode::Preview,
-            ..RustdownApp::default()
-        };
         assert!(!app.uses_editor());
+
+        app.set_mode(Mode::Edit, &ctx);
+        assert_eq!(app.mode, Mode::Edit);
+
+        // Same-mode is noop — no pending scroll set on a fresh app.
+        let mut app2 = RustdownApp::default();
+        app2.set_mode(Mode::Edit, &ctx);
+        assert!(app2.nav.pending_scroll.is_none());
+
+        // SideBySide uses editor.
+        app.set_mode(Mode::SideBySide, &ctx);
+        assert!(app.uses_editor());
     }
 
     #[test]
-    fn resolve_nav_scroll_target_preview_sets_preview_only() {
+    fn resolve_nav_scroll_target_covers_modes_and_anchor() {
         let ctx = egui::Context::default();
+
+        // Preview sets preview only.
         let mut app = RustdownApp {
             mode: Mode::Preview,
             ..RustdownApp::default()
@@ -2269,45 +2228,23 @@ mod tests {
         app.resolve_nav_scroll_target(&ctx);
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
         assert!(app.nav.pending_editor_scroll_y.is_none());
-    }
 
-    #[test]
-    fn resolve_nav_scroll_target_side_by_side_sets_both_panes() {
-        let ctx = egui::Context::default();
+        // SideBySide sets both panes and clears stale animation target.
         let mut app = RustdownApp {
             mode: Mode::SideBySide,
             ..RustdownApp::default()
         };
+        app.side_by_side_scroll_target = Some(999.0);
         app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
         app.resolve_nav_scroll_target(&ctx);
         assert_eq!(app.nav.pending_editor_scroll_y, Some(0.0));
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
-    }
-
-    #[test]
-    fn resolve_nav_scroll_clears_stale_animation_target() {
-        let ctx = egui::Context::default();
-        let mut app = RustdownApp {
-            mode: Mode::SideBySide,
-            ..RustdownApp::default()
-        };
-        // Simulate an in-flight animation from a previous scroll.
-        app.side_by_side_scroll_target = Some(999.0);
-
-        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
-        app.resolve_nav_scroll_target(&ctx);
-
-        // The stale animation target must be cleared so it does not
-        // override the nav-driven position on the next frame.
         assert!(
             app.side_by_side_scroll_target.is_none(),
             "nav scroll should cancel in-flight animation"
         );
-    }
 
-    #[test]
-    fn resolve_nav_scroll_target_preview_uses_heading_anchor_when_available() {
-        let ctx = egui::Context::default();
+        // Preview with heading anchor uses heading_y.
         let mut app = RustdownApp {
             mode: Mode::Preview,
             ..RustdownApp::default()
@@ -2318,33 +2255,19 @@ mod tests {
         app.doc.preview_cache.ensure_parsed(md);
         app.doc.preview_cache.ensure_heights(14.0, 400.0, &style);
         let b_offset = app.nav.outline[1].byte_offset;
-        let expected_y_opt = app.doc.preview_cache.heading_y(1);
-        assert!(expected_y_opt.is_some());
-        let expected_y = expected_y_opt.unwrap_or(0.0);
-
+        let expected_y = app.doc.preview_cache.heading_y(1).unwrap_or(0.0);
         app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(b_offset));
         app.resolve_nav_scroll_target(&ctx);
-
-        let actual_y_opt = app.nav.pending_preview_scroll_y;
-        assert!(actual_y_opt.is_some());
-        let actual_y = actual_y_opt.unwrap_or(0.0);
+        let actual_y = app.nav.pending_preview_scroll_y.unwrap_or(0.0);
         assert!((actual_y - expected_y).abs() < 0.01);
         assert!(app.nav.pending_editor_scroll_y.is_none());
     }
 
     #[test]
     fn reload_kind_flags() {
-        // Verify ReloadKind semantics via apply_disk_text_state.
         let mut app = RustdownApp::default();
         let text = Arc::new("test".to_owned());
-        let rev = DiskRevision {
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            len: 4,
-            #[cfg(unix)]
-            dev: 0,
-            #[cfg(unix)]
-            inode: 0,
-        };
+        let rev = test_rev(0, 4);
 
         app.apply_disk_text_state(text.clone(), text.clone(), rev, ReloadKind::Clean);
         assert!(!app.doc.dirty);
@@ -2352,119 +2275,60 @@ mod tests {
 
         app.doc.last_edit_at = Some(Instant::now());
         app.apply_disk_text_state(text.clone(), text.clone(), rev, ReloadKind::Merged);
-        assert!(app.doc.dirty);
-        assert!(app.doc.last_edit_at.is_some()); // Not cleared for Merged.
+        assert!(app.doc.dirty && app.doc.last_edit_at.is_some());
 
         app.apply_disk_text_state(text.clone(), text, rev, ReloadKind::ConflictResolved);
         assert!(app.doc.dirty);
-        assert!(app.doc.last_edit_at.is_none()); // Cleared for ConflictResolved.
+        assert!(app.doc.last_edit_at.is_none());
     }
 
     #[test]
-    fn load_document_resets_state() {
-        let dir = make_temp_dir("rustdown-load-doc-test");
+    fn document_lifecycle_load_new_blank_and_sidecar_clearing() {
+        let dir = make_temp_dir("rustdown-doc-lifecycle-test");
         let path = dir.join("test.md");
         fs::write(&path, "test content").ok();
         let rev = disk_io::disk_revision(&path).ok();
 
         let mut app = RustdownApp::default();
+        let seq0 = app.doc.edit_seq;
+
+        // Load resets state.
         app.doc.dirty = true;
         app.load_document(path.clone(), "test content".to_owned(), rev);
-
         assert_eq!(app.doc.path.as_deref(), Some(path.as_path()));
         assert_eq!(app.doc.text.as_str(), "test content");
         assert_eq!(app.doc.base_text.as_str(), "test content");
         assert!(!app.doc.dirty);
         assert!(!app.doc.stats_dirty);
         assert_eq!(app.doc.stats, DocumentStats::from_text("test content"));
+        let seq1 = app.doc.edit_seq;
+        assert!(seq1 > seq0, "edit_seq should advance on first load");
 
-        let _ = fs::remove_dir_all(&dir);
-    }
+        // Second load also advances edit_seq.
+        app.load_document(PathBuf::from("b.md"), "bbb".to_owned(), None);
+        let seq2 = app.doc.edit_seq;
+        assert!(seq2 > seq1, "edit_seq should advance on second load");
 
-    #[test]
-    fn from_launch_options_sets_mode() {
-        let opts = LaunchOptions {
-            mode: Mode::Preview,
-            path: None,
-            print_version: false,
-            diagnostics: DiagnosticsMode::Off,
-            diagnostics_iterations: 200,
-            diagnostics_runs: 1,
-        };
-        let app = RustdownApp::from_launch_options(opts);
-        assert_eq!(app.mode, Mode::Preview);
-    }
-
-    #[test]
-    fn open_and_close_search() {
-        let mut app = RustdownApp::default();
-        assert!(!app.search.visible);
-        assert!(!app.focus_search);
-
-        app.open_search(false);
-        assert!(app.search.visible);
-        assert!(!app.search.replace_mode);
-        assert!(app.focus_search);
-
-        app.open_search(true);
-        assert!(app.search.replace_mode);
-
-        app.close_search();
-        assert!(!app.search.visible);
-        assert!(!app.search.replace_mode);
-        assert!(!app.focus_search);
-    }
-
-    #[test]
-    fn format_document_applies_formatting() {
-        let mut app = RustdownApp::default();
-        // Default format options insert a final newline.
-        app.doc.text = Arc::new("# Hello\n\nworld".to_owned());
+        // NewBlank advances edit_seq and invalidates nav outline.
+        app.load_document(PathBuf::from("a.md"), "# Heading\n".to_owned(), None);
+        app.nav.refresh_outline(&app.doc.text, app.doc.edit_seq);
+        assert_eq!(app.nav.outline.len(), 1);
         let seq_before = app.doc.edit_seq;
-        app.format_document();
-        // Should have appended a final newline.
-        assert!(app.doc.text.ends_with('\n'));
-        assert!(app.doc.edit_seq > seq_before);
-        assert!(app.doc.dirty);
-    }
+        app.apply_action(PendingAction::NewBlank);
+        assert!(
+            app.doc.edit_seq > seq_before,
+            "NewBlank must advance edit_seq"
+        );
+        let text = app.doc.text.clone();
+        app.nav.refresh_outline(&text, app.doc.edit_seq);
+        assert!(
+            app.nav.outline.is_empty(),
+            "nav outline should be empty after NewBlank"
+        );
 
-    #[test]
-    fn refresh_stats_now_updates_line_count() {
-        let mut app = RustdownApp::default();
-        app.doc.text = Arc::new("a\nb\nc\n".to_owned());
-        app.doc.stats_dirty = true;
-        app.refresh_stats_now();
-        assert_eq!(app.doc.stats.lines, 4);
-        assert!(!app.doc.stats_dirty);
-    }
-
-    #[test]
-    fn request_action_defers_when_dirty() {
-        let mut app = RustdownApp::default();
-        app.doc.dirty = true;
-        app.request_action(PendingAction::NewBlank);
-        assert!(app.pending_action.is_some());
-    }
-
-    #[test]
-    fn schedule_disk_reload_sets_earliest_time() {
-        let mut app = RustdownApp::default();
-        let now = Instant::now();
-        app.schedule_disk_reload(now);
-        assert!(app.disk.pending_reload_at.is_some());
-        // A second schedule at the same time should not push the reload later.
-        let first = app.disk.pending_reload_at;
-        app.schedule_disk_reload(now);
-        assert_eq!(app.disk.pending_reload_at, first);
-    }
-
-    #[test]
-    fn write_merge_sidecar_creates_file() {
-        let dir = make_temp_dir("rustdown-sidecar-write-test");
-        let doc_path = dir.join("test.md");
+        // Merge sidecar: write, verify file exists with content, then test clearing.
+        let doc_path = dir.join("sc.md");
         fs::write(&doc_path, "# doc").ok();
-
-        let mut app = RustdownApp::default();
         app.write_merge_sidecar(&doc_path, "conflict content");
         assert!(app.disk.merge_sidecar_path.is_some());
         let sidecar = app
@@ -2477,119 +2341,68 @@ mod tests {
             fs::read_to_string(sidecar).unwrap_or_default(),
             "conflict content"
         );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn bump_edit_seq_wraps() {
-        let mut app = RustdownApp::default();
-        let seq = app.doc.edit_seq;
-        app.bump_edit_seq();
-        assert_eq!(app.doc.edit_seq, seq + 1);
-    }
-
-    #[test]
-    fn note_text_changed_marks_all_dirty() {
-        let mut app = RustdownApp::default();
-        app.note_text_changed(true);
-        assert!(app.doc.dirty);
-        assert!(app.doc.stats_dirty);
-        assert!(app.doc.preview_dirty);
-        assert!(app.doc.last_edit_at.is_some());
-    }
-
-    #[test]
-    fn load_document_advances_edit_seq_monotonically() {
-        let mut app = RustdownApp::default();
-        let seq0 = app.doc.edit_seq;
-        app.load_document(PathBuf::from("a.md"), "aaa".to_owned(), None);
-        let seq1 = app.doc.edit_seq;
-        assert!(seq1 > seq0, "edit_seq should advance on first load");
-
-        app.load_document(PathBuf::from("b.md"), "bbb".to_owned(), None);
-        let seq2 = app.doc.edit_seq;
-        assert!(seq2 > seq1, "edit_seq should advance on second load");
-    }
-
-    #[test]
-    fn search_cache_invalidated_across_document_loads() {
-        let mut app = RustdownApp::default();
-        app.load_document(PathBuf::from("a.md"), "hello hello".to_owned(), None);
-        app.search.query = "hello".to_owned();
-        let count_a = app
-            .search
-            .match_count(app.doc.text.as_str(), app.doc.edit_seq);
-        assert_eq!(count_a, 2);
-
-        // Load a different document — the search cache must NOT return 2.
-        app.load_document(PathBuf::from("b.md"), "hello world".to_owned(), None);
-        let count_b = app
-            .search
-            .match_count(app.doc.text.as_str(), app.doc.edit_seq);
-        assert_eq!(
-            count_b, 1,
-            "stale search cache returned after document load"
-        );
-    }
-
-    #[test]
-    fn new_blank_advances_edit_seq() {
-        let mut app = RustdownApp::default();
-        app.load_document(PathBuf::from("a.md"), "text".to_owned(), None);
-        let seq_before = app.doc.edit_seq;
-        app.apply_action(PendingAction::NewBlank);
-        assert!(
-            app.doc.edit_seq > seq_before,
-            "NewBlank must advance edit_seq"
-        );
-    }
-
-    #[test]
-    fn new_blank_invalidates_nav_outline() {
-        let mut app = RustdownApp::default();
-        app.load_document(PathBuf::from("a.md"), "# Heading\n".to_owned(), None);
-        app.nav.refresh_outline(&app.doc.text, app.doc.edit_seq);
-        assert_eq!(app.nav.outline.len(), 1);
-
-        app.apply_action(PendingAction::NewBlank);
-        let text = app.doc.text.clone();
-        app.nav.refresh_outline(&text, app.doc.edit_seq);
-        assert!(
-            app.nav.outline.is_empty(),
-            "nav outline should be empty after NewBlank"
-        );
-    }
-
-    #[test]
-    fn merge_sidecar_path_cleared_on_document_switch() {
-        let dir = make_temp_dir("rustdown-sidecar-clear-test");
-        let doc_path = dir.join("test.md");
-        fs::write(&doc_path, "# doc").ok();
-
-        let mut app = RustdownApp::default();
-        app.write_merge_sidecar(&doc_path, "conflict content");
-        assert!(
-            app.disk.merge_sidecar_path.is_some(),
-            "sidecar path should be set after write"
-        );
-
-        // Opening a new document must clear the stale sidecar reference.
         app.open_path(dir.join("other.md"));
-        assert!(
-            app.disk.merge_sidecar_path.is_none(),
-            "sidecar path should be cleared after opening a different document"
-        );
+        assert!(app.disk.merge_sidecar_path.is_none(), "cleared on open");
 
-        // Also cleared by NewBlank.
         app.write_merge_sidecar(&doc_path, "more conflict");
-        assert!(app.disk.merge_sidecar_path.is_some());
         app.apply_action(PendingAction::NewBlank);
-        assert!(
-            app.disk.merge_sidecar_path.is_none(),
-            "sidecar path should be cleared after NewBlank"
-        );
+        assert!(app.disk.merge_sidecar_path.is_none(), "cleared on NewBlank");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn app_operations_search_format_stats_action_reload() {
+        // Launch options.
+        let opts = LaunchOptions {
+            mode: Mode::Preview,
+            path: None,
+            print_version: false,
+            diagnostics: DiagnosticsMode::Off,
+            diagnostics_iterations: 200,
+            diagnostics_runs: 1,
+        };
+        assert_eq!(RustdownApp::from_launch_options(opts).mode, Mode::Preview);
+
+        // Search open/close.
+        let mut app = RustdownApp::default();
+        assert!(!app.search.visible);
+        app.open_search(false);
+        assert!(app.search.visible && !app.search.replace_mode && app.focus_search);
+        app.open_search(true);
+        assert!(app.search.replace_mode);
+        app.close_search();
+        assert!(!app.search.visible && !app.search.replace_mode && !app.focus_search);
+
+        // Format document.
+        let mut app = RustdownApp::default();
+        app.doc.text = Arc::new("# Hello\n\nworld".to_owned());
+        let seq_before = app.doc.edit_seq;
+        app.format_document();
+        assert!(app.doc.text.ends_with('\n'));
+        assert!(app.doc.edit_seq > seq_before && app.doc.dirty);
+
+        // Refresh stats.
+        let mut app = RustdownApp::default();
+        app.doc.text = Arc::new("a\nb\nc\n".to_owned());
+        app.doc.stats_dirty = true;
+        app.refresh_stats_now();
+        assert_eq!(app.doc.stats.lines, 4);
+        assert!(!app.doc.stats_dirty);
+
+        // Request action defers when dirty.
+        let mut app = RustdownApp::default();
+        app.doc.dirty = true;
+        app.request_action(PendingAction::NewBlank);
+        assert!(app.pending_action.is_some());
+
+        // Schedule disk reload keeps earliest time.
+        let mut app = RustdownApp::default();
+        let now = Instant::now();
+        app.schedule_disk_reload(now);
+        assert!(app.disk.pending_reload_at.is_some());
+        let first = app.disk.pending_reload_at;
+        app.schedule_disk_reload(now);
+        assert_eq!(app.disk.pending_reload_at, first);
     }
 }

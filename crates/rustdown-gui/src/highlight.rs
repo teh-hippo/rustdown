@@ -333,82 +333,85 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_renders_backtick_delimiters_and_content() {
+    fn inline_code_and_backtick_edge_cases() {
         let style = egui::Style::default();
         let visuals = egui::Visuals::dark();
-        let source = "Use `foo` here\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
 
+        // Normal inline code with delimiters.
+        let job = markdown_layout_job(&style, &visuals, "Use `foo` here\n", false);
         let code = section_for_snippet(&job, "foo");
         assert_eq!(code.format.background, visuals.faint_bg_color);
         assert_eq!(
             code.format.font_id,
             egui::TextStyle::Monospace.resolve(&style)
         );
-        // Backtick delimiters should be styled as weak text.
         let open_tick = job
             .sections
             .iter()
             .find(|s| s.byte_range.start == 4 && s.byte_range.end == 5);
-        assert!(open_tick.is_some(), "Expected section for opening backtick");
+        assert!(open_tick.is_some());
         assert_eq!(
             open_tick.unwrap_or_else(|| unreachable!()).format.color,
             visuals.weak_text_color()
         );
-    }
 
-    #[test]
-    fn unmatched_backtick_does_not_crash_and_emits_weak_section() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "text `orphan\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        // The unmatched backtick should produce a weak-text section.
+        // Unmatched backtick emits weak section.
+        let job = markdown_layout_job(&style, &visuals, "text `orphan\n", false);
         let tick = job
             .sections
             .iter()
             .find(|s| s.byte_range.start == 5 && s.byte_range.end == 6);
-        assert!(tick.is_some(), "Expected section for unmatched backtick");
+        assert!(tick.is_some());
         assert_eq!(
             tick.unwrap_or_else(|| unreachable!()).format.color,
             visuals.weak_text_color()
         );
+
+        // Multiple inline code spans.
+        let job = markdown_layout_job(&style, &visuals, "`a` and `b`\n", false);
+        assert_eq!(
+            section_for_snippet(&job, "a").format.background,
+            visuals.faint_bg_color
+        );
+        assert_eq!(
+            section_for_snippet(&job, "b").format.background,
+            visuals.faint_bg_color
+        );
+
+        // Double backtick doesn't panic and covers all bytes.
+        let source = "Use ``double`` backticks\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let covered: usize = job
+            .sections
+            .iter()
+            .map(|s| s.byte_range.end - s.byte_range.start)
+            .sum();
+        assert_eq!(covered, source.len());
     }
 
     #[test]
-    fn light_mode_heading_colors_differ_from_dark() {
+    fn heading_color_levels_themes_and_clamping() {
         let dark = egui::Visuals::dark();
         let light = egui::Visuals::light();
-        let dark_h1 = heading_color(&dark, 1, true);
-        let light_h1 = heading_color(&light, 1, true);
-        assert_ne!(dark_h1, light_h1);
-    }
 
-    #[test]
-    fn heading_color_clamps_at_palette_bounds() {
-        let visuals = egui::Visuals::dark();
-        let h0 = heading_color(&visuals, 0, true);
-        let h1 = heading_color(&visuals, 1, true);
-        let h7 = heading_color(&visuals, 7, true);
-        let h6 = heading_color(&visuals, 6, true);
-        // Level 0 (out of range) saturates to first palette entry.
-        assert_eq!(h0, h1);
-        // Level 7 (out of range) saturates to last palette entry.
-        assert_eq!(h7, h6);
-    }
+        // Dark vs light differ.
+        assert_ne!(
+            heading_color(&dark, 1, true),
+            heading_color(&light, 1, true)
+        );
 
-    #[test]
-    fn all_six_heading_levels_get_unique_colors() {
-        let visuals = egui::Visuals::dark();
-        let colors: Vec<_> = (1..=6)
-            .map(|level| heading_color(&visuals, level, true))
-            .collect();
+        // Clamping: level 0 → level 1, level 7 → level 6.
+        assert_eq!(heading_color(&dark, 0, true), heading_color(&dark, 1, true));
+        assert_eq!(heading_color(&dark, 7, true), heading_color(&dark, 6, true));
+
+        // All six levels unique.
+        let colors: Vec<_> = (1..=6).map(|l| heading_color(&dark, l, true)).collect();
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
                 assert_ne!(
                     colors[i],
                     colors[j],
-                    "Heading levels {} and {} share a color",
+                    "levels {} and {} share a color",
                     i + 1,
                     j + 1
                 );
@@ -417,38 +420,21 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_produces_single_base_section() {
+    fn plain_text_and_empty_source_sections() {
         let style = egui::Style::default();
         let visuals = egui::Visuals::dark();
-        let source = "just plain text\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        assert_eq!(job.sections.len(), 1);
-        assert_eq!(job.sections[0].byte_range, 0..source.len());
-        assert_eq!(job.sections[0].format.color, visuals.text_color());
-    }
 
-    #[test]
-    fn empty_source_produces_no_sections() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
+        let job = markdown_layout_job(&style, &visuals, "just plain text\n", false);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].byte_range, 0..16);
+        assert_eq!(job.sections[0].format.color, visuals.text_color());
+
         let job = markdown_layout_job(&style, &visuals, "", false);
         assert!(job.sections.is_empty());
     }
 
     #[test]
-    fn multiple_inline_code_spans_in_one_line() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "`a` and `b`\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        let a_sec = section_for_snippet(&job, "a");
-        let b_sec = section_for_snippet(&job, "b");
-        assert_eq!(a_sec.format.background, visuals.faint_bg_color);
-        assert_eq!(b_sec.format.background, visuals.faint_bg_color);
-    }
-
-    #[test]
-    fn table_rows_get_monospace_weak_format() {
+    fn table_rows_monospace_weak_and_batched() {
         let style = egui::Style::default();
         let visuals = egui::Visuals::dark();
         let source = "| A | B |\n|---|---|\n| 1 | 2 |\n";
@@ -459,146 +445,80 @@ mod tests {
             header_sec.format.font_id,
             egui::TextStyle::Monospace.resolve(&style)
         );
-    }
 
-    #[test]
-    fn table_rows_are_batched_into_single_section() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
+        // All pipe-lines batched into one section.
         let source = "| A |\n| B |\n| C |\n";
         let job = markdown_layout_job(&style, &visuals, source, false);
-        // All three pipe-lines should be batched into one Table section.
         assert_eq!(job.sections.len(), 1);
         assert_eq!(job.sections[0].byte_range, 0..source.len());
-    }
-
-    #[test]
-    fn backtick_fence_with_backtick_in_info_not_highlighted_as_fence() {
-        // CommonMark: backtick fence info strings must not contain backticks.
-        // Such lines should be treated as normal text, not fence delimiters.
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "```foo`bar\nsome text\n```\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        // The second line "some text" should be base-styled (not monospace
-        // code), because the first line is not a valid fence opener.
-        let text_sec = section_for_snippet(&job, "some text");
-        assert_eq!(
-            text_sec.format.color,
-            visuals.text_color(),
-            "content after invalid backtick fence should be base-styled, not code",
-        );
-    }
-
-    // ── Indentation-limit tests ─────────────────────────────────────
-
-    #[test]
-    fn four_space_indented_heading_not_styled_as_heading() {
-        // CommonMark: 4+ spaces makes it an indented code block, not a heading.
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "    # Not a heading\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        assert_eq!(job.sections.len(), 1);
-        assert_eq!(
-            job.sections[0].format.color,
-            visuals.text_color(),
-            "4-space indented heading should be base text, not heading"
-        );
-    }
-
-    #[test]
-    fn three_space_indented_heading_styled_as_heading() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "   # Heading\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        let heading_sec = section_for_snippet(&job, "Heading");
-        // Heading format uses a different color than body text.
-        assert_ne!(
-            heading_sec.format.color,
-            visuals.text_color(),
-            "3-space indented heading should be styled as heading"
-        );
-    }
-
-    #[test]
-    fn four_space_indented_fence_not_highlighted_as_fence() {
-        // 4-space indented fences are indented code blocks per CommonMark.
-        // The content line "    code" (no backticks) must NOT get the fenced
-        // code block styling (monospace + faint background).
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "    ```rust\n    code\n    ```\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        let code_sec = section_for_snippet(&job, "code");
-        assert_ne!(
-            code_sec.format.background, visuals.faint_bg_color,
-            "4-space indented content should not be fenced-code-styled"
-        );
     }
 
     // ── Edge-case tests ─────────────────────────────────────────────
 
     #[test]
-    fn heading_with_inline_code_styled_entirely_as_heading() {
-        // Heading detection takes priority: the whole line (including
-        // backticks) is styled as heading, not split into inline code.
+    fn edge_case_fences_and_heading_with_code() {
         let style = egui::Style::default();
         let visuals = egui::Visuals::dark();
-        let source = "# Title with `code`\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
+
+        // Invalid backtick fence (backtick in info) — content is base-styled.
+        let job = markdown_layout_job(&style, &visuals, "```foo`bar\nsome text\n```\n", false);
+        assert_eq!(
+            section_for_snippet(&job, "some text").format.color,
+            visuals.text_color()
+        );
+
+        // Heading with inline code — styled entirely as heading.
+        let job = markdown_layout_job(&style, &visuals, "# Title with `code`\n", false);
         let sec = section_for_snippet(&job, "Title with `code`");
-        assert_ne!(
-            sec.format.color,
+        assert_ne!(sec.format.color, visuals.text_color());
+        assert!(sec.format.font_id.size > egui::TextStyle::Body.resolve(&style).size);
+
+        // Long language name in fence.
+        let job = markdown_layout_job(
+            &style,
+            &visuals,
+            "```really-long-language-name\ncontent\n```\n",
+            false,
+        );
+        assert_eq!(
+            section_for_snippet(&job, "```really-long-language-name")
+                .format
+                .color,
+            visuals.weak_text_color()
+        );
+        assert_eq!(
+            section_for_snippet(&job, "content").format.background,
+            visuals.faint_bg_color
+        );
+    }
+
+    // ── Indentation-limit and edge-case tests ──────────────────────
+
+    #[test]
+    fn indentation_affects_heading_and_fence_detection() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+
+        // 4-space indented heading is NOT styled as heading.
+        let job = markdown_layout_job(&style, &visuals, "    # Not a heading\n", false);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(
+            job.sections[0].format.color,
             visuals.text_color(),
-            "heading line with backticks should be heading-styled, not base"
+            "4-space heading"
         );
-        // Font size should be scaled up for H1.
-        assert!(
-            sec.format.font_id.size > egui::TextStyle::Body.resolve(&style).size,
-            "H1 font should be larger than body"
-        );
-    }
 
-    #[test]
-    fn fence_with_long_language_name_highlighted_as_fence() {
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "```really-long-language-name\ncontent\n```\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        let fence_sec = section_for_snippet(&job, "```really-long-language-name");
-        assert_eq!(
-            fence_sec.format.color,
-            visuals.weak_text_color(),
-            "fence with unusual language should be weak-text styled"
-        );
-        let content_sec = section_for_snippet(&job, "content");
-        assert_eq!(
-            content_sec.format.background, visuals.faint_bg_color,
-            "content inside fenced block should have code background"
-        );
-    }
+        // 3-space indented heading IS styled as heading.
+        let job = markdown_layout_job(&style, &visuals, "   # Heading\n", false);
+        let sec = section_for_snippet(&job, "Heading");
+        assert_ne!(sec.format.color, visuals.text_color(), "3-space heading");
 
-    #[test]
-    fn double_backtick_inline_code_does_not_panic() {
-        // The highlighter matches single backticks greedily, so ``double``
-        // is parsed as two empty code spans around "double" (not a
-        // CommonMark double-backtick span). Verify no panic and full
-        // byte coverage.
-        let style = egui::Style::default();
-        let visuals = egui::Visuals::dark();
-        let source = "Use ``double`` backticks\n";
-        let job = markdown_layout_job(&style, &visuals, source, false);
-        let covered: usize = job
-            .sections
-            .iter()
-            .map(|s| s.byte_range.end - s.byte_range.start)
-            .sum();
-        assert_eq!(
-            covered,
-            source.len(),
-            "all bytes should be covered by sections"
+        // 4-space indented fence content is NOT fenced-code-styled.
+        let job = markdown_layout_job(&style, &visuals, "    ```rust\n    code\n    ```\n", false);
+        let sec = section_for_snippet(&job, "code");
+        assert_ne!(
+            sec.format.background, visuals.faint_bg_color,
+            "4-space fence"
         );
     }
 }

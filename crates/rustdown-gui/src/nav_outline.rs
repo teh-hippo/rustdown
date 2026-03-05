@@ -116,217 +116,189 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_basic_headings() {
+    fn extract_headings_covers_basic_edge_and_unicode_cases() {
+        // Basic headings.
         let md = "# Title\n\nSome text.\n\n## Section A\n\nMore text.\n\n### Sub-section\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 3);
-        assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].label(md), "Title");
-        assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].label(md), "Section A");
-        assert_eq!(headings[2].level, 3);
-        assert_eq!(headings[2].label(md), "Sub-section");
-    }
+        assert_eq!((headings[0].level, headings[0].label(md)), (1, "Title"));
+        assert_eq!((headings[1].level, headings[1].label(md)), (2, "Section A"));
+        assert_eq!(
+            (headings[2].level, headings[2].label(md)),
+            (3, "Sub-section")
+        );
 
-    #[test]
-    fn extract_headings_with_inline_code() {
+        // Inline code in heading.
         let md = "# Hello `world`\n\n## Plain\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 2);
-        // With byte-range approach, label spans from "Hello" to end of "world"
-        // including the backtick-wrapped region in the source
-        let label = headings[0].label(md);
-        assert!(label.contains("Hello"), "got: {label}");
-    }
+        assert!(headings[0].label(md).contains("Hello"));
 
-    #[test]
-    fn extract_headings_byte_offsets_increase() {
+        // Byte offsets strictly increase.
         let md = "# A\n\n## B\n\n### C\n\n#### D\n";
         let headings = extract_headings(md);
         for w in headings.windows(2) {
             assert!(w[0].byte_offset < w[1].byte_offset);
         }
-    }
 
-    #[test]
-    fn extract_empty_heading_is_skipped() {
-        let md = "# \n\n## Real\n";
-        let headings = extract_headings(md);
-        assert_eq!(headings.len(), 1);
-        assert_eq!(headings[0].label(md), "Real");
-    }
+        // Empty heading is skipped; whitespace-only heading too.
+        for md in ["# \n\n## Real\n", "#    \n## Real\n"] {
+            let headings = extract_headings(md);
+            assert_eq!(headings.len(), 1, "md={md:?}");
+            assert_eq!(headings[0].label(md), "Real");
+        }
 
-    #[test]
-    fn extract_no_headings() {
-        let md = "Just a paragraph.\n\nAnother one.\n";
-        let headings = extract_headings(md);
-        assert!(headings.is_empty());
-    }
+        // No headings.
+        assert!(extract_headings("Just a paragraph.\n").is_empty());
+        assert!(extract_headings("").is_empty());
 
-    #[test]
-    fn active_heading_at_start() {
-        let md = "# A\n\n## B\n\n### C\n";
-        let headings = extract_headings(md);
-        // Before any heading
-        assert_eq!(active_heading_index(&headings, 4, 0), Some(0));
-    }
-
-    #[test]
-    fn active_heading_between() {
-        let md = "# A\n\nParagraph.\n\n## B\n\nMore text.\n\n### C\n";
-        let headings = extract_headings(md);
-        // Position after "## B" but before "### C"
-        let b_offset = headings[1].byte_offset;
-        let c_offset = headings[2].byte_offset;
-        let mid = b_offset.midpoint(c_offset);
-        assert_eq!(active_heading_index(&headings, 4, mid), Some(1));
-    }
-
-    #[test]
-    fn active_heading_respects_max_depth() {
-        let md = "# A\n\n#### D\n\n## B\n";
-        let headings = extract_headings(md);
-        // With max_depth=2, the #### D is ignored
-        let d_offset = headings[1].byte_offset;
-        assert_eq!(active_heading_index(&headings, 2, d_offset), Some(0));
-    }
-
-    #[test]
-    fn active_heading_before_any() {
-        let md = "Some text.\n\n# A\n";
-        let headings = extract_headings(md);
-        assert_eq!(active_heading_index(&headings, 4, 0), None);
-    }
-
-    #[test]
-    fn extract_all_six_levels() {
+        // All six levels.
         let md = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 6);
         for (i, h) in headings.iter().enumerate() {
             assert_eq!(usize::from(h.level), i + 1);
         }
-    }
 
-    #[test]
-    fn setext_headings_extracted() {
+        // Setext headings.
         let md = "Title\n=====\n\nSection\n-------\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 2);
-        assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].label(md), "Title");
-        assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].label(md), "Section");
-    }
+        assert_eq!((headings[0].level, headings[0].label(md)), (1, "Title"));
+        assert_eq!((headings[1].level, headings[1].label(md)), (2, "Section"));
 
-    #[test]
-    fn heading_entry_is_compact() {
-        assert!(
-            std::mem::size_of::<HeadingEntry>() <= 24,
-            "HeadingEntry should be compact, got {} bytes",
-            std::mem::size_of::<HeadingEntry>()
-        );
-    }
-
-    // ── Edge-case stress tests ──────────────────────────────────────
-
-    #[test]
-    fn extract_empty_document() {
-        let headings = extract_headings("");
-        assert!(headings.is_empty());
-    }
-
-    #[test]
-    fn extract_only_headings_no_body() {
-        let md = "# A\n## B\n### C\n#### D\n##### E\n###### F\n";
-        let headings = extract_headings(md);
-        assert_eq!(headings.len(), 6);
-        for (i, h) in headings.iter().enumerate() {
-            assert_eq!(usize::from(h.level), i + 1);
-            assert!(!h.label(md).is_empty());
-        }
-    }
-
-    #[test]
-    fn extract_unicode_headings() {
+        // Unicode headings.
         let md = "# café\n## über\n### 日本語テスト\n#### 🦀 Rust\n";
         let headings = extract_headings(md);
         assert_eq!(headings.len(), 4);
         assert_eq!(headings[0].label(md), "café");
-        assert_eq!(headings[1].label(md), "über");
-        assert_eq!(headings[2].label(md), "日本語テスト");
         assert_eq!(headings[3].label(md), "🦀 Rust");
+
+        // HeadingEntry is compact.
+        assert!(std::mem::size_of::<HeadingEntry>() <= 24);
     }
 
     #[test]
-    fn extract_heading_with_only_whitespace() {
-        // Heading with only spaces should be skipped (trimmed to empty).
-        let md = "#    \n## Real\n";
+    fn active_heading_index_covers_all_boundary_cases() {
+        // At start.
+        let md = "# A\n\n## B\n\n### C\n";
         let headings = extract_headings(md);
-        assert_eq!(headings.len(), 1);
-        assert_eq!(headings[0].label(md), "Real");
-    }
+        assert_eq!(active_heading_index(&headings, 4, 0), Some(0));
 
-    #[test]
-    fn active_heading_empty_entries() {
+        // Between headings.
+        let md = "# A\n\nParagraph.\n\n## B\n\nMore text.\n\n### C\n";
+        let headings = extract_headings(md);
+        let mid = headings[1].byte_offset.midpoint(headings[2].byte_offset);
+        assert_eq!(active_heading_index(&headings, 4, mid), Some(1));
+
+        // Respects max_depth.
+        let md = "# A\n\n#### D\n\n## B\n";
+        let headings = extract_headings(md);
+        assert_eq!(
+            active_heading_index(&headings, 2, headings[1].byte_offset),
+            Some(0)
+        );
+
+        // Before any heading.
+        let md = "Some text.\n\n# A\n";
+        let headings = extract_headings(md);
+        assert_eq!(active_heading_index(&headings, 4, 0), None);
+
+        // Empty entries, single entry, max_depth=0.
         assert_eq!(active_heading_index(&[], 4, 0), None);
         assert_eq!(active_heading_index(&[], 4, 1000), None);
-    }
-
-    #[test]
-    fn active_heading_single_entry() {
         let md = "# Only\n";
         let headings = extract_headings(md);
         assert_eq!(active_heading_index(&headings, 4, 0), Some(0));
         assert_eq!(active_heading_index(&headings, 4, 100), Some(0));
-    }
-
-    #[test]
-    fn active_heading_exact_match_on_last() {
-        let md = "# A\n\n## B\n";
-        let headings = extract_headings(md);
-        let last_offset = headings.last().map_or(0, |h| h.byte_offset);
-        assert_eq!(
-            active_heading_index(&headings, 4, last_offset),
-            Some(headings.len() - 1)
-        );
-    }
-
-    #[test]
-    fn active_heading_max_depth_zero_returns_none() {
         let md = "# A\n## B\n";
         let headings = extract_headings(md);
-        // max_depth=0 should match nothing since all levels are >= 1.
         assert_eq!(active_heading_index(&headings, 0, 0), None);
+
+        // Exact match on last heading.
+        let md = "# A\n\n## B\n";
+        let headings = extract_headings(md);
+        let last = headings.last().map_or(0, |h| h.byte_offset);
+        assert_eq!(
+            active_heading_index(&headings, 4, last),
+            Some(headings.len() - 1)
+        );
+
+        // Far beyond document.
+        let md = "# A\n## B\n";
+        let headings = extract_headings(md);
+        assert_eq!(
+            active_heading_index(&headings, 6, usize::MAX),
+            Some(headings.len() - 1)
+        );
+
+        // Alternating H1/H6.
+        let md = "# A\n###### deep\n# B\n###### deeper\n";
+        let headings = extract_headings(md);
+        assert_eq!(
+            active_heading_index(&headings, 1, headings[1].byte_offset),
+            Some(0)
+        );
+        assert_eq!(
+            active_heading_index(&headings, 1, headings[3].byte_offset),
+            Some(2)
+        );
+        assert_eq!(
+            active_heading_index(&headings, 6, headings[1].byte_offset),
+            Some(1)
+        );
+        assert_eq!(
+            active_heading_index(&headings, 6, headings[3].byte_offset),
+            Some(3)
+        );
+
+        // All same level.
+        let md = "## A\n## B\n## C\n";
+        let headings = extract_headings(md);
+        for (i, h) in headings.iter().enumerate() {
+            assert_eq!(active_heading_index(&headings, 6, h.byte_offset), Some(i));
+        }
+
+        // Exact offset and one-byte-before for each heading.
+        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
+        let headings = extract_headings(md);
+        for (i, h) in headings.iter().enumerate() {
+            assert_eq!(
+                active_heading_index(&headings, 6, h.byte_offset),
+                Some(i),
+                "exact {i}"
+            );
+            if h.byte_offset > 0 {
+                assert!(
+                    active_heading_index(&headings, 6, h.byte_offset - 1).is_some_and(|v| v < i),
+                    "before {i}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn extract_many_headings_offsets_strictly_increase() {
+    fn stress_extract_and_active_heading_sweep() {
+        // 200 headings: offsets strictly increase.
+        use std::fmt::Write;
         let mut md = String::new();
         for i in 0..200 {
-            md.push_str("## Heading ");
-            md.push_str(&i.to_string());
-            md.push_str("\n\nSome body text.\n\n");
+            let _ = write!(md, "## Heading {i}\n\nBody.\n\n");
         }
         let headings = extract_headings(&md);
         assert_eq!(headings.len(), 200);
         for w in headings.windows(2) {
             assert!(w[0].byte_offset < w[1].byte_offset);
         }
-    }
 
-    #[test]
-    fn active_heading_binary_search_all_positions() {
+        // Walk all byte positions: index only advances forward.
         let md = "# A\n\ntext\n\n## B\n\ntext\n\n### C\n\ntext\n";
         let headings = extract_headings(md);
-        // Walk through every byte position and verify active_heading_index
-        // returns a valid index or None consistently.
         let mut last_idx: Option<usize> = None;
         for pos in 0..md.len() {
             let idx = active_heading_index(&headings, 6, pos);
             if let Some(i) = idx {
                 assert!(i < headings.len());
-                // Active index should only advance forward.
                 if let Some(prev) = last_idx {
                     assert!(i >= prev);
                 }
@@ -335,78 +307,12 @@ mod tests {
         }
     }
 
-    // ── active_heading_index boundary tests ────────────────────────
-
-    #[test]
-    fn active_heading_index_at_each_heading_offset() {
-        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
-        let headings = extract_headings(md);
-        // Exact offset of each heading should return that heading (or earlier).
-        for (i, h) in headings.iter().enumerate() {
-            let idx = active_heading_index(&headings, 6, h.byte_offset);
-            assert_eq!(idx, Some(i), "exact offset of heading {i}");
-        }
-    }
-
-    #[test]
-    fn active_heading_index_one_byte_before_each_heading() {
-        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
-        let headings = extract_headings(md);
-        for (i, h) in headings.iter().enumerate() {
-            if h.byte_offset == 0 {
-                continue;
-            }
-            let idx = active_heading_index(&headings, 6, h.byte_offset - 1);
-            // Should return the heading *before* this one.
-            assert!(idx.is_some_and(|v| v < i), "one byte before heading {i}");
-        }
-    }
-
-    #[test]
-    fn active_heading_index_far_beyond_document() {
-        let md = "# A\n## B\n";
-        let headings = extract_headings(md);
-        let idx = active_heading_index(&headings, 6, usize::MAX);
-        assert_eq!(idx, Some(headings.len() - 1));
-    }
-
-    #[test]
-    fn active_heading_index_alternating_h1_h6() {
-        let md = "# A\n###### deep\n# B\n###### deeper\n";
-        let headings = extract_headings(md);
-        assert_eq!(headings.len(), 4);
-        // At max_depth=1, only H1s are considered.
-        let deep_offset = headings[1].byte_offset;
-        assert_eq!(active_heading_index(&headings, 1, deep_offset), Some(0));
-        let deeper_offset = headings[3].byte_offset;
-        assert_eq!(active_heading_index(&headings, 1, deeper_offset), Some(2));
-        // At max_depth=6, all are considered.
-        assert_eq!(active_heading_index(&headings, 6, deep_offset), Some(1));
-        assert_eq!(active_heading_index(&headings, 6, deeper_offset), Some(3));
-    }
-
-    #[test]
-    fn active_heading_index_all_same_level() {
-        let md = "## A\n## B\n## C\n";
-        let headings = extract_headings(md);
-        for (i, h) in headings.iter().enumerate() {
-            let idx = active_heading_index(&headings, 6, h.byte_offset);
-            assert_eq!(idx, Some(i));
-        }
-    }
-
     // ── Cross-module: nav_outline ↔ render heading_y ordinal alignment ──
 
     #[test]
     fn heading_count_matches_render_heading_y_ordinals() {
-        // nav_outline::extract_headings skips empty headings.
-        // MarkdownCache::heading_y also skips empty headings (by design).
-        // Verify the two agree on heading count so ordinal-based nav-scroll
-        // lookups stay aligned.
         use rustdown_md::{MarkdownCache, MarkdownStyle};
-
         let style = MarkdownStyle::from_visuals(&eframe::egui::Visuals::dark());
-
         for md in [
             "# \n\n## Real\n",
             "# First\n\n## \n\n### Third\n",
@@ -418,19 +324,10 @@ mod tests {
             let mut cache = MarkdownCache::default();
             cache.ensure_parsed(md);
             cache.ensure_heights(14.0, 400.0, &style);
-
-            // Count how many ordinals heading_y accepts (bounded to
-            // a safe maximum since we're testing small inputs).
             let render_count = (0..100)
                 .take_while(|&ord| cache.heading_y(ord).is_some())
                 .count();
-            assert_eq!(
-                outline.len(),
-                render_count,
-                "heading ordinal count mismatch for: {md:?}\n  nav_outline={}, heading_y accepts={}",
-                outline.len(),
-                render_count
-            );
+            assert_eq!(outline.len(), render_count, "mismatch for: {md:?}");
         }
     }
 }

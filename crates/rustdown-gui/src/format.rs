@@ -278,7 +278,8 @@ mod tests {
     }
 
     #[test]
-    fn options_for_path_prefers_nearest_editorconfig_and_stops_at_root() {
+    fn options_for_path_editorconfig_resolution() {
+        // Nearest editorconfig with root=true stops upward search.
         let root = temp_dir_path("editorconfig-root");
         let nested = root.join("nested");
         assert!(fs::create_dir_all(&nested).is_ok());
@@ -292,17 +293,13 @@ mod tests {
         );
         let file = nested.join("note.md");
         write_text(&file, "# note");
-
         let options = options_for_path(Some(&file));
-
         assert!(!options.trim_trailing_whitespace);
         assert!(options.insert_final_newline);
         assert_eq!(options.end_of_line, Some(EndOfLine::CrLf));
-        let _ = fs::remove_dir_all(root);
-    }
+        let _ = fs::remove_dir_all(&root);
 
-    #[test]
-    fn options_for_path_supports_braced_markdown_pattern() {
+        // Braced markdown pattern.
         let root = temp_dir_path("editorconfig-pattern");
         assert!(fs::create_dir_all(&root).is_ok());
         write_text(
@@ -311,108 +308,73 @@ mod tests {
         );
         let file = root.join("readme.markdown");
         write_text(&file, "content");
-
-        let options = options_for_path(Some(&file));
-
-        assert!(!options.insert_final_newline);
+        assert!(!options_for_path(Some(&file)).insert_final_newline);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn glob_match_covers_star_prefix_suffix_and_middle() {
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("exact", "exact"));
-        assert!(!glob_match("exact", "other"));
-        assert!(glob_match("*.md", "README.md"));
-        assert!(!glob_match("*.md", "README.txt"));
-        assert!(glob_match("test*", "testing"));
-        assert!(!glob_match("test*", "other"));
-        assert!(glob_match("a*c", "abc"));
-        assert!(glob_match("a*c", "aXYZc"));
-        assert!(!glob_match("a*c", "aXYZd"));
-        // No wildcards and not equal.
-        assert!(!glob_match("abc", "def"));
+    fn glob_match_parameterized() {
+        for (label, pattern, input, expected) in [
+            ("wildcard", "*", "anything", true),
+            ("exact match", "exact", "exact", true),
+            ("exact miss", "exact", "other", false),
+            ("suffix *.md", "*.md", "README.md", true),
+            ("suffix miss", "*.md", "README.txt", false),
+            ("prefix", "test*", "testing", true),
+            ("prefix miss", "test*", "other", false),
+            ("middle", "a*c", "abc", true),
+            ("middle long", "a*c", "aXYZc", true),
+            ("middle miss", "a*c", "aXYZd", false),
+            ("no wildcard miss", "abc", "def", false),
+            ("multi star", "a*b*c", "aXbYc", true),
+            ("multi star miss", "a*b*c", "aXbYd", false),
+            ("star both ends", "*test*", "prefix-test-suffix", true),
+            ("empty both", "", "", true),
+            ("star short", "a*", "a", true),
+        ] {
+            assert_eq!(glob_match(pattern, input), expected, "{label}");
+        }
     }
 
     #[test]
-    fn parse_bool_recognizes_true_false_values() {
-        assert_eq!(parse_bool("true"), Some(true));
-        assert_eq!(parse_bool("false"), Some(false));
-        assert_eq!(parse_bool("TRUE"), Some(true));
-        assert_eq!(parse_bool("False"), Some(false));
-        assert_eq!(parse_bool(""), None);
-        assert_eq!(parse_bool("yes"), None);
-    }
-
-    #[test]
-    fn parse_eol_recognizes_lf_and_crlf() {
-        assert_eq!(parse_eol("lf"), Some(EndOfLine::Lf));
-        assert_eq!(parse_eol("crlf"), Some(EndOfLine::CrLf));
-        assert_eq!(parse_eol("LF"), Some(EndOfLine::Lf));
-        assert_eq!(parse_eol("CRLF"), Some(EndOfLine::CrLf));
-        assert_eq!(parse_eol("cr"), None);
-        assert_eq!(parse_eol(""), None);
-    }
-
-    #[test]
-    fn format_markdown_crlf_end_of_line() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: false,
-            insert_final_newline: true,
-            end_of_line: Some(EndOfLine::CrLf),
-        };
-        let result = format_markdown("a\nb", opts);
-        assert_eq!(result, "a\r\nb\r\n");
-    }
-
-    #[test]
-    fn format_markdown_no_final_newline() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: true,
-            insert_final_newline: false,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        // "hello  " has a hard break (trailing double space) which is preserved.
-        let result = format_markdown("hello  ", opts);
-        assert_eq!(result, "hello  ");
-    }
-
-    #[test]
-    fn options_for_path_returns_defaults_for_none() {
+    fn parse_helpers_and_section_matching() {
+        // parse_bool.
+        for (input, expected) in [
+            ("true", Some(true)),
+            ("false", Some(false)),
+            ("TRUE", Some(true)),
+            ("False", Some(false)),
+            ("", None),
+            ("yes", None),
+        ] {
+            assert_eq!(parse_bool(input), expected, "parse_bool({input:?})");
+        }
+        // parse_eol.
+        for (input, expected) in [
+            ("lf", Some(EndOfLine::Lf)),
+            ("crlf", Some(EndOfLine::CrLf)),
+            ("LF", Some(EndOfLine::Lf)),
+            ("CRLF", Some(EndOfLine::CrLf)),
+            ("cr", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_eol(input), expected, "parse_eol({input:?})");
+        }
+        // options_for_path defaults.
         let opts = options_for_path(None);
-        assert!(opts.trim_trailing_whitespace);
-        assert!(opts.insert_final_newline);
+        assert!(opts.trim_trailing_whitespace && opts.insert_final_newline);
         assert_eq!(opts.end_of_line, None);
-    }
 
-    #[test]
-    fn section_match_handles_markdown_extensions() {
+        // section_match.
         assert!(section_match("*.md", "test.md"));
-        // Case-insensitive match only applies for the *.{md,markdown} pattern.
         assert!(section_match("*.{md,markdown}", "test.MD"));
         assert!(section_match("*.{md,markdown}", "test.markdown"));
         assert!(!section_match("*.txt", "test.md"));
-    }
 
-    #[test]
-    fn glob_match_edge_cases() {
-        assert!(glob_match("a*b*c", "aXbYc"));
-        assert!(!glob_match("a*b*c", "aXbYd"));
-        assert!(glob_match("*test*", "prefix-test-suffix"));
-        assert!(glob_match("", ""));
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("a*", "a"));
-    }
-
-    #[test]
-    fn section_match_via_editorconfig_overrides() {
-        // section_match is exercised indirectly through editorconfig_overrides.
-        let cfg = "[*.md]\ntrim_trailing_whitespace = false\n";
-        let ov = editorconfig_overrides(cfg, "notes.md");
+        // editorconfig_overrides.
+        let ov = editorconfig_overrides("[*.md]\ntrim_trailing_whitespace = false\n", "notes.md");
         assert_eq!(ov.trim, Some(false));
-
-        // Non-matching section should not apply.
-        let ov2 = editorconfig_overrides(cfg, "notes.txt");
+        let ov2 = editorconfig_overrides("[*.md]\ntrim_trailing_whitespace = false\n", "notes.txt");
         assert_eq!(ov2.trim, None);
     }
 
@@ -443,123 +405,80 @@ mod tests {
     }
 
     #[test]
-    fn format_empty_and_final_newline_cases() {
-        // Empty with no final newline.
-        let opts = FormatOptions {
+    fn format_empty_final_newline_and_mixed_eol() {
+        let opts_no_nl = FormatOptions {
             trim_trailing_whitespace: true,
             insert_final_newline: false,
             end_of_line: Some(EndOfLine::Lf),
         };
-        assert_eq!(format_markdown("", opts), "");
+        assert_eq!(format_markdown("", opts_no_nl), "");
+        // Hard break preserved with no final newline.
+        assert_eq!(format_markdown("hello  ", opts_no_nl), "hello  ");
 
-        // Empty with insert_final_newline.
-        let opts = FormatOptions {
+        let opts_nl = FormatOptions {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             end_of_line: Some(EndOfLine::Lf),
         };
-        assert_eq!(format_markdown("", opts), "\n");
-    }
+        assert_eq!(format_markdown("", opts_nl), "\n");
 
-    // ── Fence indentation interaction (format.rs ↔ markdown_fence.rs) ──
-
-    #[test]
-    fn format_trims_whitespace_in_deeply_indented_pseudo_fence() {
-        // A line with 4+ leading spaces followed by ``` is NOT a code fence
-        // per CommonMark — it's an indented code block. format.rs must not
-        // treat it as a fence boundary, so trailing whitespace on lines
-        // "inside" should still be trimmed.
-        let source = "    ```\ntrailing tab\t\n    ```\n";
-        let result = format_markdown(source, DEFAULT_OPTIONS);
-        assert_eq!(
-            result, "    ```\ntrailing tab\n    ```\n",
-            "text between 4-space-indented pseudo-fences should be trimmed"
-        );
-    }
-
-    // ── Edge-case tests ─────────────────────────────────────────────
-
-    #[test]
-    fn format_fence_at_eof_gets_final_newline() {
-        // Fence closing without a trailing newline; insert_final_newline
-        // should append one.
-        let opts = FormatOptions {
-            trim_trailing_whitespace: true,
+        // CRLF end_of_line.
+        let opts_crlf = FormatOptions {
+            trim_trailing_whitespace: false,
             insert_final_newline: true,
-            end_of_line: Some(EndOfLine::Lf),
+            end_of_line: Some(EndOfLine::CrLf),
         };
-        let source = "text\n```\ncode\n```";
-        assert_eq!(format_markdown(source, opts), "text\n```\ncode\n```\n");
-    }
+        assert_eq!(format_markdown("a\nb", opts_crlf), "a\r\nb\r\n");
 
-    #[test]
-    fn format_mixed_crlf_cr_lf_all_normalize() {
-        // CRLF, lone CR, and LF in a single document.
-        let opts = FormatOptions {
+        // Mixed CRLF/CR/LF in a single document.
+        let opts_lf = FormatOptions {
             trim_trailing_whitespace: false,
             insert_final_newline: false,
             end_of_line: Some(EndOfLine::Lf),
         };
         assert_eq!(
-            format_markdown("line1\r\nline2\rline3\n", opts),
+            format_markdown("line1\r\nline2\rline3\n", opts_lf),
             "line1\nline2\nline3\n"
         );
     }
 
     #[test]
-    fn format_preserves_trailing_whitespace_inside_code_block() {
+    fn format_preservation_and_no_op_cases() {
         let opts = FormatOptions {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             end_of_line: Some(EndOfLine::Lf),
         };
-        let source = "```\n  code  \n```\n";
+        for (label, source, expected) in [
+            (
+                "already formatted",
+                "# Hello\n\nParagraph text.\n",
+                "# Hello\n\nParagraph text.\n",
+            ),
+            (
+                "preserves code block spaces",
+                "```\n  code  \n```\n",
+                "```\n  code  \n```\n",
+            ),
+            ("preserves hard break", "line  \nnext\n", "line  \nnext\n"),
+            (
+                "crlf normalization only",
+                "hello\r\nworld\r\n",
+                "hello\nworld\n",
+            ),
+            (
+                "fence at eof gets newline",
+                "text\n```\ncode\n```",
+                "text\n```\ncode\n```\n",
+            ),
+        ] {
+            assert_eq!(format_markdown(source, opts), expected, "{label}");
+        }
+        // 4-space-indented pseudo-fence: trailing whitespace still trimmed.
         assert_eq!(
-            format_markdown(source, opts),
-            source,
-            "spaces inside fenced code block must be preserved"
-        );
-    }
-
-    #[test]
-    fn format_preserves_hard_break_trailing_spaces() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: true,
-            insert_final_newline: true,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(
-            format_markdown("line  \nnext\n", opts),
-            "line  \nnext\n",
-            "two trailing spaces (hard break) must be kept"
-        );
-    }
-
-    #[test]
-    fn format_already_formatted_returns_unchanged() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: true,
-            insert_final_newline: true,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        let source = "# Hello\n\nParagraph text.\n";
-        assert_eq!(
-            format_markdown(source, opts),
-            source,
-            "already-formatted file should be unchanged"
-        );
-    }
-
-    #[test]
-    fn format_only_crlf_normalization_no_other_changes() {
-        let opts = FormatOptions {
-            trim_trailing_whitespace: true,
-            insert_final_newline: true,
-            end_of_line: Some(EndOfLine::Lf),
-        };
-        assert_eq!(
-            format_markdown("hello\r\nworld\r\n", opts),
-            "hello\nworld\n"
+            format_markdown("    ```\ntrailing tab\t\n    ```\n", DEFAULT_OPTIONS),
+            "    ```\ntrailing tab\n    ```\n",
+            "indented pseudo-fence"
         );
     }
 }

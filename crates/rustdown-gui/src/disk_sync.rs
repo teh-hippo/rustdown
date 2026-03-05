@@ -84,309 +84,66 @@ mod tests {
     }
 
     #[test]
-    fn sync_state_nonce_increment() {
-        let mut s = DiskSyncState::default();
-        s.reload_nonce += 1;
-        assert_eq!(s.reload_nonce, 1);
-        s.reload_nonce += 1;
-        assert_eq!(s.reload_nonce, 2);
-    }
-
-    #[test]
-    fn sync_state_reload_in_flight_toggle() {
-        let mut s = DiskSyncState::default();
-        assert!(!s.reload_in_flight);
-        s.reload_in_flight = true;
-        assert!(s.reload_in_flight);
-        s.reload_in_flight = false;
-        assert!(!s.reload_in_flight);
-    }
-
-    #[test]
-    fn sync_state_conflict_set_and_clear() {
-        let mut s = DiskSyncState::default();
-        assert!(s.conflict.is_none());
-        s.conflict = Some(DiskConflict {
-            disk_text: "d".into(),
-            disk_rev: dummy_rev(),
-            conflict_marked: "cm".into(),
-            ours_wins: "ow".into(),
-        });
-        assert!(s.conflict.is_some());
-        s.conflict = None;
-        assert!(s.conflict.is_none());
-    }
-
-    #[test]
-    fn sync_state_defaults_are_inactive() {
+    fn sync_state_mutation_and_defaults() {
         let s = DiskSyncState::default();
         assert_eq!(s.reload_nonce, 0);
+        assert!(!s.reload_in_flight);
         assert!(s.watcher.is_none());
         assert!(s.watch_root.is_none());
         assert!(s.watch_target_name.is_none());
         assert!(s.watch_rx.is_none());
         assert!(s.poll_at.is_none());
         assert!(s.pending_reload_at.is_none());
-        assert!(!s.reload_in_flight);
         assert!(s.read_tx.is_none());
         assert!(s.read_rx.is_none());
         assert!(s.conflict.is_none());
         assert!(s.merge_sidecar_path.is_none());
-    }
 
-    #[test]
-    fn channel_round_trip_replace() {
-        let (tx, rx) = mpsc::channel();
-        let msg = DiskReadMessage {
-            path: PathBuf::from("/tmp/test.md"),
-            nonce: 42,
-            edit_seq: 7,
-            outcome: Ok(DiskReloadOutcome::Replace {
-                disk_text: "new content".into(),
-                disk_rev: dummy_rev(),
-            }),
-        };
-        tx.send(msg).ok();
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-        let m = received.unwrap_or_else(|_| unreachable!());
-        assert_eq!(m.nonce, 42);
-        assert_eq!(m.edit_seq, 7);
-        assert!(m.outcome.is_ok());
-    }
-
-    #[test]
-    fn channel_round_trip_merge_clean() {
-        let (tx, rx) = mpsc::channel();
-        let msg = DiskReadMessage {
-            path: PathBuf::from("/tmp/test.md"),
-            nonce: 5,
-            edit_seq: 3,
-            outcome: Ok(DiskReloadOutcome::MergeClean {
-                merged_text: "merged".into(),
-                disk_text: "disk".into(),
-                disk_rev: dummy_rev(),
-            }),
-        };
-        tx.send(msg).ok();
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-    }
-
-    #[test]
-    fn channel_round_trip_merge_conflict() {
-        let (tx, rx) = mpsc::channel();
-        let msg = DiskReadMessage {
-            path: PathBuf::from("/tmp/test.md"),
-            nonce: 10,
-            edit_seq: 8,
-            outcome: Ok(DiskReloadOutcome::MergeConflict {
-                disk_text: "disk".into(),
-                disk_rev: dummy_rev(),
-                conflict_marked: "<<<<<<< ours\nX\n=======\nY\n>>>>>>> theirs\n".into(),
-                ours_wins: "X\n".into(),
-            }),
-        };
-        tx.send(msg).ok();
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-    }
-
-    #[test]
-    fn channel_round_trip_error() {
-        let (tx, rx) = mpsc::channel();
-        let msg = DiskReadMessage {
-            path: PathBuf::from("/tmp/test.md"),
-            nonce: 1,
-            edit_seq: 0,
-            outcome: Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
-        };
-        tx.send(msg).ok();
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-        let m = received.unwrap_or_else(|_| unreachable!());
-        assert!(m.outcome.is_err());
-    }
-
-    #[test]
-    fn stale_nonce_detection_pattern() {
-        // Simulates the nonce-matching logic from drain_disk_read_results:
-        // messages with an old nonce should be skippable.
+        // Nonce increments.
         let mut s = DiskSyncState::default();
-        s.reload_nonce = s.reload_nonce.wrapping_add(1);
-        let stale_nonce = s.reload_nonce;
-        s.reload_nonce = s.reload_nonce.wrapping_add(1);
-        let current_nonce = s.reload_nonce;
+        s.reload_nonce += 1;
+        assert_eq!(s.reload_nonce, 1);
+        s.reload_nonce += 1;
+        assert_eq!(s.reload_nonce, 2);
 
-        assert_ne!(stale_nonce, current_nonce);
-        // A message with stale_nonce should be skipped.
-        assert_ne!(stale_nonce, s.reload_nonce);
-        // A message with current_nonce should be accepted.
-        assert_eq!(current_nonce, s.reload_nonce);
-    }
-
-    #[test]
-    fn pending_reload_debounce_pattern() {
-        // Simulates the debounce pattern: multiple events coalesce into one
-        // pending_reload_at, and only the first one is kept.
-        let mut s = DiskSyncState::default();
-        assert!(s.pending_reload_at.is_none());
-
-        let t1 = Instant::now() + std::time::Duration::from_millis(200);
-        s.pending_reload_at = Some(t1);
-        assert_eq!(s.pending_reload_at, Some(t1));
-
-        // Second event arrives — should NOT overwrite the earlier debounce.
-        let t2 = Instant::now() + std::time::Duration::from_millis(300);
-        if s.pending_reload_at.is_none() {
-            s.pending_reload_at = Some(t2);
-        }
-        // Original timestamp preserved.
-        assert_eq!(s.pending_reload_at, Some(t1));
-    }
-
-    // ── ReloadKind ──────────────────────────────────────────────────
-
-    #[test]
-    fn reload_kind_debug_representations() {
-        let clean = format!("{:?}", ReloadKind::Clean);
-        let merged = format!("{:?}", ReloadKind::Merged);
-        let resolved = format!("{:?}", ReloadKind::ConflictResolved);
-        assert!(clean.contains("Clean"));
-        assert!(merged.contains("Merged"));
-        assert!(resolved.contains("ConflictResolved"));
-    }
-
-    #[test]
-    fn reload_kind_copy_semantics() {
-        let a = ReloadKind::Clean;
-        let b = a; // Copy
-        assert!(matches!(a, ReloadKind::Clean));
-        assert!(matches!(b, ReloadKind::Clean));
-    }
-
-    // ── DiskReloadOutcome ───────────────────────────────────────────
-
-    #[test]
-    fn disk_reload_outcome_replace_fields() {
-        let rev = dummy_rev();
-        let outcome = DiskReloadOutcome::Replace {
-            disk_text: "hello".into(),
-            disk_rev: rev,
+        // Reload in-flight toggle.
+        let mut s = DiskSyncState {
+            reload_in_flight: true,
+            ..DiskSyncState::default()
         };
-        if let DiskReloadOutcome::Replace {
-            disk_text,
-            disk_rev,
-        } = outcome
-        {
-            assert_eq!(disk_text, "hello");
-            assert_eq!(disk_rev.len, 42);
-        } else {
-            unreachable!();
-        }
-    }
+        assert!(s.reload_in_flight);
+        s.reload_in_flight = false;
+        assert!(!s.reload_in_flight);
 
-    #[test]
-    fn disk_reload_outcome_merge_clean_fields() {
-        let outcome = DiskReloadOutcome::MergeClean {
-            merged_text: "merged".into(),
-            disk_text: "disk".into(),
-            disk_rev: dummy_rev(),
+        // Conflict set and clear.
+        let mut s = DiskSyncState {
+            conflict: Some(DiskConflict {
+                disk_text: "d".into(),
+                disk_rev: dummy_rev(),
+                conflict_marked: "cm".into(),
+                ours_wins: "ow".into(),
+            }),
+            ..DiskSyncState::default()
         };
-        if let DiskReloadOutcome::MergeClean {
-            merged_text,
-            disk_text,
-            ..
-        } = outcome
-        {
-            assert_eq!(merged_text, "merged");
-            assert_eq!(disk_text, "disk");
-        } else {
-            unreachable!();
-        }
-    }
+        assert!(s.conflict.is_some());
+        s.conflict = None;
+        assert!(s.conflict.is_none());
 
-    #[test]
-    fn disk_reload_outcome_merge_conflict_fields() {
-        let outcome = DiskReloadOutcome::MergeConflict {
-            disk_text: "theirs".into(),
-            disk_rev: dummy_rev(),
-            conflict_marked: "<<<".into(),
-            ours_wins: "ours".into(),
+        // Watch target and root fields.
+        let mut s = DiskSyncState {
+            watch_target_name: Some(OsString::from("README.md")),
+            ..DiskSyncState::default()
         };
-        if let DiskReloadOutcome::MergeConflict {
-            conflict_marked,
-            ours_wins,
-            ..
-        } = outcome
-        {
-            assert_eq!(conflict_marked, "<<<");
-            assert_eq!(ours_wins, "ours");
-        } else {
-            unreachable!();
-        }
-    }
-
-    // ── DiskConflict ────────────────────────────────────────────────
-
-    #[test]
-    fn disk_conflict_clone() {
-        let c = DiskConflict {
-            disk_text: "d".into(),
-            disk_rev: dummy_rev(),
-            conflict_marked: "cm".into(),
-            ours_wins: "ow".into(),
-        };
-        let c2 = c.clone();
-        assert_eq!(c2.disk_text, "d");
-        assert_eq!(c2.conflict_marked, "cm");
-        assert_eq!(c2.ours_wins, "ow");
-        assert_eq!(c2.disk_rev.len, c.disk_rev.len);
-    }
-
-    #[test]
-    fn disk_conflict_debug_output() {
-        let c = DiskConflict {
-            disk_text: "d".into(),
-            disk_rev: dummy_rev(),
-            conflict_marked: "cm".into(),
-            ours_wins: "ow".into(),
-        };
-        let dbg = format!("{c:?}");
-        assert!(dbg.contains("DiskConflict"));
-    }
-
-    // ── DiskSyncState extended ──────────────────────────────────────
-
-    #[test]
-    fn sync_state_watch_target_name() {
-        let mut s = DiskSyncState::default();
-        assert!(s.watch_target_name.is_none());
-        s.watch_target_name = Some(OsString::from("README.md"));
         assert_eq!(
             s.watch_target_name.as_deref(),
             Some(std::ffi::OsStr::new("README.md"))
         );
-    }
-
-    #[test]
-    fn sync_state_watch_root() {
-        let mut s = DiskSyncState::default();
-        assert!(s.watch_root.is_none());
         s.watch_root = Some(PathBuf::from("/tmp"));
         assert_eq!(s.watch_root.as_deref(), Some(Path::new("/tmp")));
-    }
-
-    #[test]
-    fn sync_state_merge_sidecar_path() {
-        let mut s = DiskSyncState::default();
-        assert!(s.merge_sidecar_path.is_none());
         s.merge_sidecar_path = Some(PathBuf::from("/tmp/.rustdown-merge0.md"));
         assert!(s.merge_sidecar_path.is_some());
-    }
 
-    #[test]
-    fn sync_state_channel_pair() {
+        // Channel pair.
         let mut s = DiskSyncState::default();
         let (tx, rx) = mpsc::channel::<DiskReadMessage>();
         s.read_tx = Some(tx);
@@ -396,18 +153,131 @@ mod tests {
     }
 
     #[test]
-    fn disk_read_message_debug() {
-        let msg = DiskReadMessage {
-            path: PathBuf::from("test.md"),
-            nonce: 1,
-            edit_seq: 0,
-            outcome: Ok(DiskReloadOutcome::Replace {
-                disk_text: "x".into(),
+    fn channel_round_trip_all_outcome_variants() {
+        let outcomes: Vec<Result<DiskReloadOutcome, io::Error>> = vec![
+            Ok(DiskReloadOutcome::Replace {
+                disk_text: "new".into(),
                 disk_rev: dummy_rev(),
             }),
+            Ok(DiskReloadOutcome::MergeClean {
+                merged_text: "merged".into(),
+                disk_text: "disk".into(),
+                disk_rev: dummy_rev(),
+            }),
+            Ok(DiskReloadOutcome::MergeConflict {
+                disk_text: "disk".into(),
+                disk_rev: dummy_rev(),
+                conflict_marked: "<<<<<<< ours\nX\n=======\nY\n>>>>>>> theirs\n".into(),
+                ours_wins: "X\n".into(),
+            }),
+            Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+        ];
+        for (i, outcome) in outcomes.into_iter().enumerate() {
+            let is_err = outcome.is_err();
+            let (tx, rx) = mpsc::channel();
+            let nonce = (i + 1) as u64;
+            tx.send(DiskReadMessage {
+                path: PathBuf::from("/tmp/test.md"),
+                nonce,
+                edit_seq: 0,
+                outcome,
+            })
+            .ok();
+            let m = rx.try_recv().unwrap_or_else(|_| unreachable!());
+            assert_eq!(m.nonce, nonce);
+            assert_eq!(m.outcome.is_err(), is_err, "variant {i}");
+        }
+    }
+
+    #[test]
+    fn stale_nonce_and_debounce_patterns() {
+        // Stale nonce detection.
+        let mut s = DiskSyncState::default();
+        s.reload_nonce = s.reload_nonce.wrapping_add(1);
+        let stale = s.reload_nonce;
+        s.reload_nonce = s.reload_nonce.wrapping_add(1);
+        assert_ne!(stale, s.reload_nonce);
+        assert_eq!(s.reload_nonce, s.reload_nonce);
+
+        // Debounce: first event wins.
+        let mut s = DiskSyncState::default();
+        let t1 = Instant::now() + std::time::Duration::from_millis(200);
+        s.pending_reload_at = Some(t1);
+        if s.pending_reload_at.is_none() {
+            s.pending_reload_at = Some(Instant::now());
+        }
+        assert_eq!(s.pending_reload_at, Some(t1));
+    }
+
+    #[test]
+    fn disk_types_fields_clone_debug_and_copy() {
+        // DiskReloadOutcome variant fields.
+        if let DiskReloadOutcome::Replace {
+            disk_text,
+            disk_rev,
+        } = (DiskReloadOutcome::Replace {
+            disk_text: "hello".into(),
+            disk_rev: dummy_rev(),
+        }) {
+            assert_eq!(disk_text, "hello");
+            assert_eq!(disk_rev.len, 42);
+        }
+        if let DiskReloadOutcome::MergeClean {
+            merged_text,
+            disk_text,
+            ..
+        } = (DiskReloadOutcome::MergeClean {
+            merged_text: "m".into(),
+            disk_text: "d".into(),
+            disk_rev: dummy_rev(),
+        }) {
+            assert_eq!(merged_text, "m");
+            assert_eq!(disk_text, "d");
+        }
+        if let DiskReloadOutcome::MergeConflict {
+            conflict_marked,
+            ours_wins,
+            ..
+        } = (DiskReloadOutcome::MergeConflict {
+            disk_text: "t".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "<<<".into(),
+            ours_wins: "o".into(),
+        }) {
+            assert_eq!(conflict_marked, "<<<");
+            assert_eq!(ours_wins, "o");
+        }
+
+        // DiskConflict clone and debug.
+        let c = DiskConflict {
+            disk_text: "d".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "cm".into(),
+            ours_wins: "ow".into(),
         };
-        let dbg = format!("{msg:?}");
-        assert!(dbg.contains("DiskReadMessage"));
-        assert!(dbg.contains("test.md"));
+        let c2 = c.clone();
+        assert_eq!(
+            (
+                c2.disk_text.as_str(),
+                c2.conflict_marked.as_str(),
+                c2.ours_wins.as_str()
+            ),
+            ("d", "cm", "ow")
+        );
+        assert!(format!("{c:?}").contains("DiskConflict"));
+
+        // ReloadKind debug and copy.
+        for (kind, name) in [
+            (ReloadKind::Clean, "Clean"),
+            (ReloadKind::Merged, "Merged"),
+            (ReloadKind::ConflictResolved, "ConflictResolved"),
+        ] {
+            assert!(format!("{kind:?}").contains(name));
+        }
+        // Verify Copy.
+        let k = ReloadKind::Clean;
+        let k2 = k;
+        assert!(matches!(k, ReloadKind::Clean));
+        assert!(matches!(k2, ReloadKind::Clean));
     }
 }

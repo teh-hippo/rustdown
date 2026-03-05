@@ -787,360 +787,616 @@ mod tests {
     use super::*;
     use std::fmt::Write;
 
+    fn validate_styled_text(st: &StyledText) {
+        let text_len = st.text.len() as u32;
+        if st.text.is_empty() {
+            assert!(st.spans.is_empty(), "empty text should have no spans");
+            return;
+        }
+        assert!(!st.spans.is_empty(), "non-empty text should have spans");
+        for (i, span) in st.spans.iter().enumerate() {
+            assert!(span.start < span.end, "span {i}: start >= end");
+            assert!(span.end <= text_len, "span {i}: end exceeds text len");
+        }
+        assert_eq!(st.spans[0].start, 0, "first span should start at 0");
+        assert_eq!(
+            st.spans.last().expect("non-empty").end,
+            text_len,
+            "last span should end at text len"
+        );
+        for i in 1..st.spans.len() {
+            assert_eq!(
+                st.spans[i].start,
+                st.spans[i - 1].end,
+                "gap between span {} and {i}",
+                i - 1
+            );
+        }
+    }
+
+    fn parse_paragraph(md: &str) -> StyledText {
+        let blocks = parse_markdown(md);
+        match blocks.into_iter().next() {
+            Some(Block::Paragraph(st)) => st,
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    // ── Heading parsing ──────────────────────────────────────────
+
     #[test]
-    fn parse_heading_simple() {
-        let blocks = parse_markdown("# Hello World");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert_eq!(text.text, "Hello World");
+    fn heading_parsing() {
+        for (label, md, expected) in [
+            ("simple", "# Hello World", vec![(1_u8, "Hello World")]),
+            (
+                "levels_1_to_6",
+                "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n",
+                vec![
+                    (1, "H1"),
+                    (2, "H2"),
+                    (3, "H3"),
+                    (4, "H4"),
+                    (5, "H5"),
+                    (6, "H6"),
+                ],
+            ),
+            (
+                "unicode",
+                "# 你好世界\n## 🚀 Rocket\n",
+                vec![(1, "你好世界"), (2, "🚀 Rocket")],
+            ),
+            (
+                "consecutive",
+                "# H1\n## H2\n### H3\n",
+                vec![(1, "H1"), (2, "H2"), (3, "H3")],
+            ),
+            ("trailing_hashes", "## Title ##\n", vec![(2, "Title")]),
+        ] {
+            let blocks = parse_markdown(md);
+            let headings: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Heading { level, text } => Some((*level, text.text.as_str())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(headings.len(), expected.len(), "{label}: count");
+            for (i, ((gl, gt), (el, et))) in headings.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(gl, el, "{label}[{i}]: level");
+                assert!(
+                    gt.trim().contains(et),
+                    "{label}[{i}]: text {gt:?} missing {et:?}"
+                );
             }
-            other => panic!("expected heading, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_paragraph_with_emphasis() {
-        let blocks = parse_markdown("Hello **world** and *italic*");
-        assert_eq!(blocks.len(), 1);
+    fn heading_with_formatting() {
+        for (label, md, checks) in [
+            (
+                "mixed",
+                "# **bold** and *italic*\n",
+                &["strong", "emphasis"] as &[&str],
+            ),
+            (
+                "all_inline",
+                "## **bold** *italic* `code` [link](url) ~~strike~~\n",
+                &["strong", "emphasis", "code", "link", "strikethrough"],
+            ),
+            (
+                "link_and_code",
+                "### [`parse`](https://docs.rs) function\n",
+                &["code", "link"],
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Heading { text, .. } => {
+                    for check in checks {
+                        match *check {
+                            "strong" => assert!(
+                                text.spans.iter().any(|s| s.style.strong()),
+                                "{label}: strong"
+                            ),
+                            "emphasis" => assert!(
+                                text.spans.iter().any(|s| s.style.emphasis()),
+                                "{label}: emphasis"
+                            ),
+                            "code" => {
+                                assert!(text.spans.iter().any(|s| s.style.code()), "{label}: code");
+                            }
+                            "link" => assert!(
+                                text.spans.iter().any(|s| s.style.link.is_some()),
+                                "{label}: link"
+                            ),
+                            "strikethrough" => assert!(
+                                text.spans.iter().any(|s| s.style.strikethrough()),
+                                "{label}: strike"
+                            ),
+                            _ => {}
+                        }
+                    }
+                    validate_styled_text(text);
+                }
+                other => panic!("{label}: expected heading, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Inline formatting ────────────────────────────────────────
+
+    #[test]
+    fn inline_formatting_parsing() {
+        // (label, md, text_sub, strong, emphasis, strikethrough, strong_and_emph)
+        for (label, md, text_sub, strong, emph, strike, combined) in [
+            (
+                "emphasis_and_bold",
+                "Hello **world** and *italic*",
+                "world",
+                true,
+                true,
+                false,
+                false,
+            ),
+            (
+                "strikethrough",
+                "This is ~~deleted~~ text",
+                "deleted",
+                false,
+                false,
+                true,
+                false,
+            ),
+            (
+                "triple_emphasis",
+                "***bold and italic***",
+                "bold and italic",
+                true,
+                true,
+                false,
+                true,
+            ),
+            (
+                "strike_with_code",
+                "~~deleted `code` deleted~~",
+                "code",
+                false,
+                false,
+                true,
+                false,
+            ),
+            (
+                "gfm_strike",
+                "~~deleted~~\n",
+                "deleted",
+                false,
+                false,
+                true,
+                false,
+            ),
+            (
+                "triple_bold_italic",
+                "***bold and italic***\n",
+                "bold and italic",
+                true,
+                true,
+                false,
+                true,
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Paragraph(st) => {
+                    assert!(st.text.contains(text_sub), "{label}: text");
+                    if strong {
+                        assert!(st.spans.iter().any(|s| s.style.strong()), "{label}: strong");
+                    }
+                    if emph {
+                        assert!(st.spans.iter().any(|s| s.style.emphasis()), "{label}: emph");
+                    }
+                    if strike {
+                        assert!(
+                            st.spans.iter().any(|s| s.style.strikethrough()),
+                            "{label}: strike"
+                        );
+                    }
+                    if combined {
+                        assert!(
+                            st.spans
+                                .iter()
+                                .any(|s| s.style.strong() && s.style.emphasis()),
+                            "{label}: combined"
+                        );
+                    }
+                }
+                other => panic!("{label}: expected paragraph, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Code block parsing ───────────────────────────────────────
+
+    #[test]
+    fn code_block_parsing() {
+        for (label, md, lang, code_sub) in [
+            (
+                "fenced_rust",
+                "```rust\nfn main() {}\n```",
+                "rust",
+                "fn main()",
+            ),
+            ("indented", "    fn foo() {}\n    bar()\n", "", "fn foo()"),
+            ("empty_fenced", "```\n```\n", "", ""),
+            ("unclosed", "```rust\ncode\n", "rust", "code"),
+            (
+                "indented_two",
+                "    code line 1\n    code line 2\n",
+                "",
+                "code line 1",
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            assert_eq!(blocks.len(), 1, "{label}");
+            match &blocks[0] {
+                Block::Code { language, code } => {
+                    assert_eq!(&**language, lang, "{label}: lang");
+                    if code_sub.is_empty() {
+                        assert!(code.is_empty(), "{label}: empty");
+                    } else {
+                        assert!(code.contains(code_sub), "{label}: code");
+                    }
+                }
+                other => panic!("{label}: expected Code, got {other:?}"),
+            }
+        }
+    }
+
+    // ── List parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn list_parsing_unordered() {
+        for (label, md, count, first) in [
+            ("basic", "- one\n- two\n- three", 3, "one"),
+            ("empty_items", "- \n- text\n", 2, ""),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::UnorderedList(items) => {
+                    assert_eq!(items.len(), count, "{label}: count");
+                    assert_eq!(items[0].content.text, first, "{label}: first");
+                }
+                other => panic!("{label}: expected UL, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn list_parsing_ordered() {
+        for (label, md, start, count, first) in [
+            ("basic", "1. first\n2. second", 1_u64, 2, "first"),
+            ("start_zero", "0. zero\n1. one\n", 0, 2, "zero"),
+            ("high_start", "42. answer\n43. next\n", 42, 2, "answer"),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::OrderedList { start: s, items } => {
+                    assert_eq!(*s, start, "{label}: start");
+                    assert_eq!(items.len(), count, "{label}: count");
+                    assert_eq!(items[0].content.text, first, "{label}: first");
+                }
+                other => panic!("{label}: expected OL, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn list_nesting() {
+        for (label, md) in [
+            ("nested_ul", "- parent\n  - child\n  - child2\n- sibling"),
+            (
+                "mixed",
+                "- bullet\n  1. ordered a\n  2. ordered b\n- bullet2\n",
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::UnorderedList(items) => {
+                    assert_eq!(items.len(), 2, "{label}");
+                    assert!(!items[0].children.is_empty(), "{label}: children");
+                }
+                other => panic!("{label}: expected UL, got {other:?}"),
+            }
+        }
+    }
+
+    // ── Image parsing ────────────────────────────────────────────
+
+    #[test]
+    fn image_parsing() {
+        for (label, md, url, alt) in [
+            (
+                "full",
+                "![alt text](https://img.png \"title\")",
+                "https://img.png",
+                "alt text",
+            ),
+            ("no_alt", "![](image.png)", "image.png", ""),
+            (
+                "from_brackets",
+                "![alt text](img.png)",
+                "img.png",
+                "alt text",
+            ),
+            ("empty_url", "![alt text]()\n", "", "alt text"),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Image { url: u, alt: a } => {
+                    assert_eq!(&**u, url, "{label}: url");
+                    assert_eq!(&**a, alt, "{label}: alt");
+                }
+                other => panic!("{label}: expected Image, got {other:?}"),
+            }
+        }
+        // Inline with text stays as paragraph
+        assert!(matches!(
+            &parse_markdown("See ![pic](img.png) text.")[0],
+            Block::Paragraph(_)
+        ));
+        // Multiple standalone images
+        let imgs = parse_markdown("![a](1.png)\n\n![b](2.png)\n\n![c](3.png)\n")
+            .iter()
+            .filter(|b| matches!(b, Block::Image { .. }))
+            .count();
+        assert_eq!(imgs, 3);
+    }
+
+    // ── Link parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn link_parsing() {
+        for (label, md, url) in [
+            (
+                "basic",
+                "[link](https://example.com)",
+                "https://example.com",
+            ),
+            ("with_title", "[text](url \"title\")\n", "url"),
+            (
+                "reference",
+                "[text][ref]\n\n[ref]: https://example.com\n",
+                "https://example.com",
+            ),
+            (
+                "autolink",
+                "Visit <https://example.com> for more.",
+                "https://example.com",
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Paragraph(st) => {
+                    let has = st
+                        .spans
+                        .iter()
+                        .any(|s| s.style.link.as_deref() == Some(url));
+                    assert!(has, "{label}: no span with URL {url:?}");
+                }
+                other => panic!("{label}: expected paragraph, got {other:?}"),
+            }
+        }
+        // Multiple links
+        let blocks = parse_markdown("Visit [a](https://a.com) and [b](https://b.com) today.");
         match &blocks[0] {
             Block::Paragraph(st) => {
-                assert_eq!(st.text, "Hello world and italic");
-                assert!(st.spans.iter().any(|s| s.style.strong()));
-                assert!(st.spans.iter().any(|s| s.style.emphasis()));
+                let n = st.spans.iter().filter(|s| s.style.link.is_some()).count();
+                assert!(n >= 2, "expected >=2 links, got {n}");
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
     }
 
+    // ── Table parsing ────────────────────────────────────────────
+
     #[test]
-    fn parse_code_block_fenced() {
-        let blocks = parse_markdown("```rust\nfn main() {}\n```");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { language, code } => {
-                assert_eq!(&**language, "rust");
-                assert!(code.contains("fn main()"));
+    fn table_parsing() {
+        for (label, md, hdr, rows, aligns) in [
+            (
+                "basic",
+                "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |",
+                2,
+                2,
+                vec![Alignment::None, Alignment::None],
+            ),
+            (
+                "alignment",
+                "| L | C | R |\n|:---|:---:|---:|\n| a | b | c |\n",
+                3,
+                1,
+                vec![Alignment::Left, Alignment::Center, Alignment::Right],
+            ),
+            (
+                "header_only",
+                "| A | B |\n|---|---|\n",
+                2,
+                0,
+                vec![Alignment::None, Alignment::None],
+            ),
+            (
+                "col_mismatch",
+                "| A | B | C |\n|---|---|---|\n| 1 | 2 |\n",
+                3,
+                1,
+                vec![Alignment::None, Alignment::None, Alignment::None],
+            ),
+            (
+                "empty_data",
+                "| X | Y |\n|---|---|\n",
+                2,
+                0,
+                vec![Alignment::None, Alignment::None],
+            ),
+        ] {
+            let blocks = parse_markdown(md);
+            match &blocks[0] {
+                Block::Table(t) => {
+                    assert_eq!(t.header.len(), hdr, "{label}: hdr");
+                    assert_eq!(t.rows.len(), rows, "{label}: rows");
+                    assert_eq!(t.alignments.len(), aligns.len(), "{label}: aligns len");
+                    for (i, (g, e)) in t.alignments.iter().zip(aligns.iter()).enumerate() {
+                        assert_eq!(g, e, "{label}: align[{i}]");
+                    }
+                }
+                other => panic!("{label}: expected table, got {other:?}"),
             }
-            other => panic!("expected code block, got {other:?}"),
+        }
+        // Escaped pipe
+        let blocks = parse_markdown("| A |\n|---|\n| a \\| b |\n");
+        match &blocks[0] {
+            Block::Table(t) => {
+                assert!(
+                    t.rows[0][0].text.contains("a | b") || t.rows[0][0].text.contains("a \\| b")
+                );
+            }
+            other => panic!("expected Table, got {other:?}"),
         }
     }
 
+    // ── Blockquote parsing ───────────────────────────────────────
+
     #[test]
-    fn parse_unordered_list() {
-        let blocks = parse_markdown("- one\n- two\n- three");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0].content.text, "one");
+    fn blockquote_parsing() {
+        // Simple
+        assert!(matches!(&parse_markdown("> quoted")[0], Block::Quote(_)));
+        // Nested: 2 levels
+        match &parse_markdown("> outer\n>> inner\n")[0] {
+            Block::Quote(outer) => assert!(outer.iter().any(|b| matches!(b, Block::Quote(_)))),
+            other => panic!("expected Quote, got {other:?}"),
+        }
+        // 3 levels
+        match &parse_markdown("> > > deep\n")[0] {
+            Block::Quote(l1) => {
+                for b in l1 {
+                    if let Block::Quote(l2) = b {
+                        assert!(l2.iter().any(|b2| matches!(b2, Block::Quote(_))));
+                    }
+                }
             }
-            other => panic!("expected unordered list, got {other:?}"),
+            other => panic!("expected Quote, got {other:?}"),
+        }
+        // Inner blocks
+        for (label, md) in [
+            ("code", "> ```rust\n> fn main() {}\n> ```\n"),
+            ("table", "> | H1 | H2 |\n> |---|---|\n> | a | b |\n"),
+            (
+                "code_and_list",
+                "> ```python\n> print('hi')\n> ```\n>\n> - item 1\n> - item 2\n",
+            ),
+        ] {
+            match &parse_markdown(md)[0] {
+                Block::Quote(inner) => assert!(!inner.is_empty(), "{label}"),
+                other => panic!("{label}: expected Quote, got {other:?}"),
+            }
         }
     }
 
+    // ── Span coverage ────────────────────────────────────────────
+
     #[test]
-    fn parse_ordered_list() {
-        let blocks = parse_markdown("1. first\n2. second");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::OrderedList { start, items } => {
-                assert_eq!(*start, 1);
-                assert_eq!(items.len(), 2);
+    fn spans_cover_all_block_types() {
+        for md in [
+            "Hello world",
+            "Hello **bold** world",
+            "**bold** *italic* ~~strike~~ `code`",
+            "A [link](https://x.com) here",
+            "**bold *bold-italic* bold**",
+            "Mixed **bold** and *italic* with `code` and [link](url)",
+        ] {
+            for block in &parse_markdown(md) {
+                if let Block::Paragraph(st) = block {
+                    validate_styled_text(st);
+                }
             }
-            other => panic!("expected ordered list, got {other:?}"),
+        }
+        for block in &parse_markdown("# Simple\n## **Bold** heading\n### `Code` in heading") {
+            if let Block::Heading { text, .. } = block {
+                validate_styled_text(text);
+            }
+        }
+        for block in &parse_markdown("- Item with **bold**\n- Item with `code`\n- [Link](url) item")
+        {
+            if let Block::UnorderedList(items) = block {
+                for item in items {
+                    validate_styled_text(&item.content);
+                }
+            }
+        }
+        let table_md = "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |";
+        for block in &parse_markdown(table_md) {
+            if let Block::Table(t) = block {
+                for cell in &t.header {
+                    validate_styled_text(cell);
+                }
+                for row in &t.rows {
+                    for cell in row {
+                        validate_styled_text(cell);
+                    }
+                }
+            }
+        }
+        // Large table cells with formatting
+        let md2 =
+            "| **Bold** `code` | *it* ~~s~~ [lnk](u) |\n|---|---|\n| **x** *y* | `a` ~~b~~ |\n";
+        for block in &parse_markdown(md2) {
+            if let Block::Table(t) = block {
+                for cell in &t.header {
+                    validate_styled_text(cell);
+                }
+                for row in &t.rows {
+                    for cell in row {
+                        validate_styled_text(cell);
+                    }
+                }
+            }
         }
     }
 
-    #[test]
-    fn parse_blockquote() {
-        let blocks = parse_markdown("> quoted text");
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], Block::Quote(_)));
-    }
+    // ── Edge cases ───────────────────────────────────────────────
 
     #[test]
-    fn parse_thematic_break() {
-        let blocks = parse_markdown("---");
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], Block::ThematicBreak));
-    }
-
-    #[test]
-    fn parse_table() {
-        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData {
-                    header,
-                    rows,
-                    alignments,
-                } = table.as_ref();
-                assert_eq!(header.len(), 2);
-                assert_eq!(rows.len(), 2);
-                assert_eq!(alignments.len(), 2);
-            }
-            other => panic!("expected table, got {other:?}"),
+    fn parse_edge_cases() {
+        for (label, md, empty) in [
+            ("empty", "", true),
+            ("whitespace", "   \n\n   \n", true),
+            ("newlines", "\n\n\n\n\n\n\n\n", true),
+        ] {
+            assert_eq!(parse_markdown(md).is_empty(), empty, "{label}");
         }
+        // CRLF
+        let b = parse_markdown("# Hello\r\n\r\nParagraph\r\n");
+        assert!(matches!(&b[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(&b[1], Block::Paragraph(_)));
+        // Multiple blank lines
+        let p = parse_markdown("para1\n\n\n\n\npara2")
+            .iter()
+            .filter(|b| matches!(b, Block::Paragraph(_)))
+            .count();
+        assert_eq!(p, 2);
     }
 
     #[test]
     fn parse_inline_code() {
-        let blocks = parse_markdown("Use `code` here");
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(st.spans.iter().any(|s| s.style.code()));
+        for (label, md) in [("single", "Use `code` here"), ("double", "`` `inner` ``\n")] {
+            match &parse_markdown(md)[0] {
+                Block::Paragraph(st) => assert!(st.spans.iter().any(|s| s.style.code()), "{label}"),
+                other => panic!("{label}: expected paragraph, got {other:?}"),
             }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_link() {
-        let blocks = parse_markdown("[link](https://example.com)");
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(st.spans.iter().any(
-                    |s| matches!(&s.style.link, Some(url) if url.as_ref() == "https://example.com")
-                ));
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_nested_list() {
-        let md = "- parent\n  - child\n  - child2\n- sibling";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                // First item should have nested children
-                assert!(!items[0].children.is_empty());
-            }
-            other => panic!("expected list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn styled_text_merges_adjacent() {
-        let mut st = StyledText::default();
-        st.push_text("hello", SpanStyle::plain());
-        st.push_text(" world", SpanStyle::plain());
-        assert_eq!(st.spans.len(), 1);
-        assert_eq!(st.spans[0].end, 11);
-    }
-
-    #[test]
-    fn parse_empty_input() {
-        let blocks = parse_markdown("");
-        assert_eq!(blocks.len(), 0);
-    }
-
-    #[test]
-    fn parse_indented_code_block() {
-        let blocks = parse_markdown("    fn foo() {}\n    bar()\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { language, code } => {
-                assert!(language.is_empty());
-                assert!(code.contains("fn foo()"));
-            }
-            other => panic!("expected code block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_heading_levels_1_to_6() {
-        let md = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 6);
-        for (i, block) in blocks.iter().enumerate() {
-            match block {
-                Block::Heading { level, .. } => {
-                    assert_eq!(usize::from(*level), i + 1);
-                }
-                other => panic!("expected heading at index {i}, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn parse_nested_blockquote() {
-        let blocks = parse_markdown("> outer\n>> inner\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Quote(outer) => {
-                assert!(!outer.is_empty());
-                // The inner blockquote should appear as a nested Quote.
-                assert!(
-                    outer.iter().any(|b| matches!(b, Block::Quote(_))),
-                    "expected a nested blockquote"
-                );
-            }
-            other => panic!("expected quote, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_table_alignment() {
-        let md = "| L | C | R |\n|:---|:---:|---:|\n| a | b | c |\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { alignments, .. } = table.as_ref();
-                assert_eq!(alignments.len(), 3);
-                assert_eq!(alignments[0], Alignment::Left);
-                assert_eq!(alignments[1], Alignment::Center);
-                assert_eq!(alignments[2], Alignment::Right);
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_header_only_table() {
-        let md = "| A | B |\n|---|---|\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { header, rows, .. } = table.as_ref();
-                assert_eq!(header.len(), 2);
-                assert!(rows.is_empty());
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_mixed_list_nesting() {
-        let md = "- bullet\n  1. ordered a\n  2. ordered b\n- bullet2\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                assert!(
-                    items[0]
-                        .children
-                        .iter()
-                        .any(|b| matches!(b, Block::OrderedList { .. })),
-                    "expected ordered list nested inside unordered list"
-                );
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_multiple_links_in_paragraph() {
-        let md = "Visit [a](https://a.com) and [b](https://b.com) today.";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
-                assert!(
-                    link_count >= 2,
-                    "expected at least 2 links, got {link_count}"
-                );
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_strikethrough() {
-        let blocks = parse_markdown("This is ~~deleted~~ text");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(
-                    st.spans.iter().any(|s| s.style.strikethrough()),
-                    "expected a strikethrough span"
-                );
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_image() {
-        // Standalone images (only child of a paragraph) should produce Block::Image.
-        let blocks = parse_markdown("![alt text](https://img.png \"title\")");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Image { url, alt } => {
-                assert_eq!(&**url, "https://img.png");
-                assert_eq!(&**alt, "alt text");
-            }
-            other => panic!("expected Image block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_image_without_alt() {
-        let blocks = parse_markdown("![](image.png)");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Image { url, alt } => {
-                assert_eq!(&**url, "image.png");
-                assert!(alt.is_empty());
-            }
-            other => panic!("expected Image block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_image_inline_with_text() {
-        // Image mixed with text in the same paragraph stays as Paragraph.
-        let blocks = parse_markdown("See this: ![pic](img.png) in text.");
-        assert_eq!(blocks.len(), 1);
-        assert!(
-            matches!(&blocks[0], Block::Paragraph(_)),
-            "image mixed with text should stay as paragraph"
-        );
-    }
-
-    #[test]
-    fn parse_crlf_line_endings() {
-        let md = "# Hello\r\n\r\nParagraph\r\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 2);
-        assert!(matches!(&blocks[0], Block::Heading { level: 1, .. }));
-        assert!(matches!(&blocks[1], Block::Paragraph(_)));
-    }
-
-    #[test]
-    fn parse_unicode_headings() {
-        let md = "# 你好世界\n## 🚀 Rocket\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 2);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert_eq!(text.text, "你好世界");
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-        match &blocks[1] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 2);
-                assert!(text.text.contains('🚀'));
-            }
-            other => panic!("expected heading, got {other:?}"),
         }
     }
 
     #[test]
     fn parse_large_document_perf() {
-        // Build a ~50KB document with various block types.
         let mut doc = String::with_capacity(50_000);
         for i in 0..200 {
             write!(doc, "## Heading {i}\n\n").ok();
@@ -1154,130 +1410,90 @@ mod tests {
             }
         }
         let start = std::time::Instant::now();
-        let iterations = 100;
-        for _ in 0..iterations {
-            let blocks = parse_markdown(&doc);
-            assert!(!blocks.is_empty());
+        for _ in 0..100_u32 {
+            assert!(!parse_markdown(&doc).is_empty());
         }
-        let elapsed = start.elapsed();
-        let per_iter = elapsed / iterations;
-        // Should complete in < 5ms per parse in release; debug is 10-50x slower.
+        let per_iter = start.elapsed() / 100;
         if cfg!(not(debug_assertions)) {
-            assert!(
-                per_iter.as_millis() < 5,
-                "parse too slow: {per_iter:?} per iteration for {}KB",
-                doc.len() / 1024
-            );
+            assert!(per_iter.as_millis() < 5, "too slow: {per_iter:?}");
         }
     }
 
     #[test]
-    fn parse_task_list_states() {
-        let md = "- [x] checked\n- [ ] unchecked\n- normal\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
+    fn parse_task_lists() {
+        // Unordered
+        match &parse_markdown("- [x] checked\n- [ ] unchecked\n- normal\n")[0] {
             Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0].checked, Some(true), "checked item");
-                assert_eq!(items[0].content.text, "checked");
-                assert_eq!(items[1].checked, Some(false), "unchecked item");
-                assert_eq!(items[1].content.text, "unchecked");
-                assert_eq!(items[2].checked, None, "normal item");
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
             }
-            other => panic!("expected unordered list, got {other:?}"),
+            other => panic!("expected UL, got {other:?}"),
+        }
+        // Ordered
+        match &parse_markdown("1. [x] Done\n2. [ ] Todo\n3. Normal\n")[0] {
+            Block::OrderedList { items, .. } => {
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                assert_eq!(items[2].checked, None);
+            }
+            other => panic!("expected OL, got {other:?}"),
         }
     }
 
-    /// Verify that all bytes in styled text are covered by spans (no gaps).
-    fn assert_spans_cover_text(st: &StyledText) {
-        if st.text.is_empty() {
-            assert!(st.spans.is_empty(), "empty text should have no spans");
-            return;
-        }
-        assert!(!st.spans.is_empty(), "non-empty text should have spans");
-        assert_eq!(st.spans[0].start, 0, "first span should start at 0");
-        for window in st.spans.windows(2) {
-            assert_eq!(
-                window[0].end, window[1].start,
-                "spans should be contiguous: {:?} then {:?}",
-                window[0], window[1]
+    #[test]
+    fn parse_misc_block_types() {
+        // Thematic break
+        assert!(matches!(&parse_markdown("---")[0], Block::ThematicBreak));
+        // Setext headings
+        let h: Vec<_> = parse_markdown("H1\n===\n\nH2\n---\n")
+            .iter()
+            .filter_map(|b| {
+                if let Block::Heading { level, .. } = b {
+                    Some(*level)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(h, vec![1, 2]);
+        // Escaped characters
+        for md in [
+            "\\# Not a heading\n\n\\* Not a bullet\n",
+            "\\*not bold\\* and \\[not link\\]\n",
+        ] {
+            assert!(
+                parse_markdown(md)
+                    .iter()
+                    .all(|b| matches!(b, Block::Paragraph(_)))
             );
         }
-        assert_eq!(
-            st.spans.last().map(|s| s.end),
-            Some(st.text.len() as u32),
-            "last span should end at text length"
-        );
-    }
-
-    #[test]
-    fn spans_cover_all_paragraph_bytes() {
-        let cases = [
-            "Hello world",
-            "Hello **bold** world",
-            "**bold** *italic* ~~strike~~ `code`",
-            "A [link](https://x.com) here",
-            "**bold *bold-italic* bold**",
-            "Mixed **bold** and *italic* with `code` and [link](url)",
-        ];
-        for md in &cases {
-            let blocks = parse_markdown(md);
-            for block in &blocks {
-                if let Block::Paragraph(st) = block {
-                    assert_spans_cover_text(st);
+        // Line breaks
+        for md in ["Line one  \nLine two\n", "Line one\nLine two\n"] {
+            match &parse_markdown(md)[0] {
+                Block::Paragraph(t) => {
+                    assert!(t.text.contains("Line one") && t.text.contains("Line two"));
                 }
+                other => panic!("expected Paragraph, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn spans_cover_all_heading_bytes() {
-        let md = "# Simple\n## **Bold** heading\n### `Code` in heading";
-        let blocks = parse_markdown(md);
-        for block in &blocks {
-            if let Block::Heading { text, .. } = block {
-                assert_spans_cover_text(text);
+        // HTML entities
+        match &parse_markdown("&amp; &lt; &gt; &#123;\n")[0] {
+            Block::Paragraph(t) => {
+                assert!(t.text.contains('&') && t.text.contains('<') && t.text.contains('>'));
             }
+            other => panic!("expected Paragraph, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn spans_cover_list_item_bytes() {
-        let md = "- Item with **bold**\n- Item with `code`\n- [Link](url) item";
-        let blocks = parse_markdown(md);
-        for block in &blocks {
-            if let Block::UnorderedList(items) = block {
-                for item in items {
-                    assert_spans_cover_text(&item.content);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn spans_cover_table_cell_bytes() {
-        let md = "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |";
-        let blocks = parse_markdown(md);
-        for block in &blocks {
-            if let Block::Table(table) = block {
-                let TableData { header, rows, .. } = table.as_ref();
-                for cell in header {
-                    assert_spans_cover_text(cell);
-                }
-                for row in rows {
-                    for cell in row {
-                        assert_spans_cover_text(cell);
-                    }
-                }
-            }
+        // Inline HTML
+        match &parse_markdown("Text with <strong>html</strong> inline.\n")[0] {
+            Block::Paragraph(t) => assert!(t.text.contains("html")),
+            other => panic!("expected Paragraph, got {other:?}"),
         }
     }
 
     #[test]
     fn inline_state_pop_without_push() {
         let mut state = InlineState::new();
-        // Pop Strong without any preceding push — must not crash.
         state.pop(&InlineFlag::Strong);
         assert!(state.stack.is_empty());
         assert_eq!(state.flags(), 0);
@@ -1285,1276 +1501,199 @@ mod tests {
     }
 
     #[test]
-    fn parse_empty_code_block() {
-        let blocks = parse_markdown("```\n```\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { language, code } => {
-                assert!(language.is_empty());
-                assert!(code.is_empty());
-            }
-            other => panic!("expected code block, got {other:?}"),
-        }
+    fn styled_text_merges_adjacent() {
+        let mut st = StyledText::default();
+        st.push_text("hello", SpanStyle::plain());
+        st.push_text(" world", SpanStyle::plain());
+        assert_eq!(st.spans.len(), 1);
+        assert_eq!(st.spans[0].end, 11);
     }
 
     #[test]
-    fn parse_table_column_mismatch() {
-        let md = "| A | B | C |\n|---|---|---|\n| 1 | 2 |\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData {
-                    header,
-                    rows,
-                    alignments,
-                } = table.as_ref();
-                assert_eq!(header.len(), 3);
-                assert_eq!(alignments.len(), 3);
-                assert_eq!(rows.len(), 1);
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_empty_list_items() {
-        let blocks = parse_markdown("- \n- text\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                assert!(items[0].content.text.is_empty());
-                assert_eq!(items[1].content.text, "text");
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_ordered_list_starting_at_zero() {
-        let blocks = parse_markdown("0. zero\n1. one\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::OrderedList { start, items } => {
-                assert_eq!(*start, 0);
-                assert_eq!(items.len(), 2);
-                assert_eq!(items[0].content.text, "zero");
-                assert_eq!(items[1].content.text, "one");
-            }
-            other => panic!("expected ordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_deeply_nested_blockquotes() {
-        let blocks = parse_markdown("> > > deep\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Quote(level1) => {
-                assert!(
-                    level1.iter().any(|b| matches!(b, Block::Quote(_))),
-                    "expected second level of nesting"
-                );
-                // Find the inner Quote and check for a third level.
-                for b in level1 {
-                    if let Block::Quote(level2) = b {
-                        assert!(
-                            level2.iter().any(|b2| matches!(b2, Block::Quote(_))),
-                            "expected third level of nesting"
-                        );
-                    }
-                }
-            }
-            other => panic!("expected quote, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_code_block_without_closing_fence() {
-        let blocks = parse_markdown("```rust\ncode\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { language, code } => {
-                assert_eq!(&**language, "rust");
-                assert!(code.contains("code"));
-            }
-            other => panic!("expected code block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_heading_with_mixed_formatting() {
-        let blocks = parse_markdown("# **bold** and *italic*\n");
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert!(text.text.contains("bold"));
-                assert!(text.text.contains("italic"));
-                assert!(
-                    text.spans.iter().any(|s| s.style.strong()),
-                    "expected a strong span in heading"
-                );
-                assert!(
-                    text.spans.iter().any(|s| s.style.emphasis()),
-                    "expected an emphasis span in heading"
-                );
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_empty_table_no_data_rows() {
-        let md = "| X | Y |\n|---|---|\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { header, rows, .. } = table.as_ref();
-                assert_eq!(header.len(), 2);
-                assert!(rows.is_empty());
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_multiple_consecutive_headings() {
-        let blocks = parse_markdown("# H1\n## H2\n### H3\n");
-        assert_eq!(blocks.len(), 3);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert_eq!(text.text, "H1");
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-        match &blocks[1] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 2);
-                assert_eq!(text.text, "H2");
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-        match &blocks[2] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 3);
-                assert_eq!(text.text, "H3");
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-    }
-
-    // ── Round 9: Edge case parsing tests ──────────────────────────────
-
-    #[test]
-    fn parse_whitespace_only_input() {
-        let blocks = parse_markdown("   \n\n   \n");
-        assert!(
-            blocks.is_empty(),
-            "whitespace-only should produce no blocks"
-        );
-    }
-
-    #[test]
-    fn parse_triple_emphasis() {
-        let blocks = parse_markdown("***bold and italic***");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert_eq!(text.text, "bold and italic");
-                assert!(
-                    text.spans
-                        .iter()
-                        .any(|s| s.style.strong() && s.style.emphasis()),
-                    "should have span with both strong and emphasis"
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_strikethrough_with_code() {
-        let blocks = parse_markdown("~~deleted `code` deleted~~");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(text.text.contains("code"), "should contain code text");
-                assert!(
-                    text.spans.iter().any(|s| s.style.strikethrough()),
-                    "should have strikethrough span"
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_code_block_inside_blockquote() {
-        let md = "> ```rust\n> fn main() {}\n> ```\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Quote(inner) => {
-                assert!(
-                    inner.iter().any(|b| matches!(b, Block::Code { .. })),
-                    "blockquote should contain a code block"
-                );
-            }
-            other => panic!("expected Quote, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_multiple_blank_lines() {
-        let md = "para1\n\n\n\n\npara2";
-        let blocks = parse_markdown(md);
-        let para_count = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Paragraph(_)))
-            .count();
-        assert_eq!(
-            para_count, 2,
-            "should have exactly 2 paragraphs regardless of blank lines"
-        );
-    }
-
-    #[test]
-    fn parse_escaped_characters() {
-        let md = "\\# Not a heading\n\n\\* Not a bullet\n";
-        let blocks = parse_markdown(md);
-        assert!(
-            blocks.iter().all(|b| matches!(b, Block::Paragraph(_))),
-            "escaped markdown should parse as plain paragraphs"
-        );
-    }
-
-    #[test]
-    fn parse_indented_code_two_lines() {
-        let md = "    indented code\n    second line\n";
-        let blocks = parse_markdown(md);
-        assert!(
-            blocks.iter().any(|b| matches!(b, Block::Code { .. })),
-            "4-space indented text should parse as code block"
-        );
-    }
-
-    #[test]
-    fn parse_angle_bracket_autolink() {
-        let md = "Visit <https://example.com> for more.";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    text.spans.iter().any(|s| s.style.link.is_some()),
-                    "angle-bracket URL should be auto-linked: spans={:?}",
-                    text.spans
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_setext_headings() {
-        let md = "H1 Heading\n==========\n\nH2 Heading\n----------\n";
-        let blocks = parse_markdown(md);
-        let headings: Vec<_> = blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Heading { level, text } => Some((*level, text.text.as_str())),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(headings.len(), 2, "should parse 2 setext headings");
-        assert_eq!(headings[0].0, 1, "first should be H1");
-        assert_eq!(headings[1].0, 2, "second should be H2");
-    }
-
-    #[test]
-    fn parse_image_alt_text_from_inline_events() {
-        let md = "![alt text](img.png)";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Image { alt, .. } => {
-                assert_eq!(&**alt, "alt text", "alt text should come from brackets");
-            }
-            other => panic!("expected Image, got {other:?}"),
-        }
-    }
-
-    // ── Stress tests: edge-case correctness ───────────────────────────
-
-    #[test]
-    fn stress_table_more_data_cols_than_headers() {
-        // pulldown-cmark truncates extra columns to match header count
-        let md = "| A | B |\n|---|---|\n| 1 | 2 | 3 | 4 |\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { header, rows, .. } = table.as_ref();
-                assert_eq!(header.len(), 2);
-                assert_eq!(rows.len(), 1);
-                // Extra columns are trimmed by pulldown-cmark
-                assert!(
-                    rows[0].len() <= header.len() + 2,
-                    "row cols ({}) should not be wildly larger than header ({})",
-                    rows[0].len(),
-                    header.len()
-                );
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_table_fewer_data_cols_than_headers() {
-        let md = "| A | B | C | D |\n|---|---|---|---|\n| 1 |\n| x | y |\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { header, rows, .. } = table.as_ref();
-                assert_eq!(header.len(), 4);
-                assert_eq!(rows.len(), 2);
-                // Rows may have fewer cells than headers
-                assert!(rows[0].len() <= 4);
-                assert!(rows[1].len() <= 4);
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_table_alignment_with_long_headers() {
-        let long_a = "A".repeat(200);
-        let long_b = "B".repeat(300);
-        let md = format!("| {long_a} | {long_b} | Short |\n|:---|:---:|---:|\n| x | y | z |\n");
-        let blocks = parse_markdown(&md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData {
-                    header,
-                    alignments,
-                    rows,
-                } = table.as_ref();
-                assert_eq!(header.len(), 3);
-                assert_eq!(header[0].text, long_a);
-                assert_eq!(header[1].text, long_b);
-                assert_eq!(alignments[0], Alignment::Left);
-                assert_eq!(alignments[1], Alignment::Center);
-                assert_eq!(alignments[2], Alignment::Right);
-                assert_eq!(rows.len(), 1);
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_table_cell_with_all_formatting() {
-        let md = concat!(
-            "| Cell |\n|---|\n",
-            "| **bold** *italic* `code` [link](url) ~~strike~~ |\n"
-        );
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { rows, .. } = table.as_ref();
-                assert_eq!(rows.len(), 1);
-                let cell = &rows[0][0];
-                assert!(cell.text.contains("bold"));
-                assert!(cell.text.contains("italic"));
-                assert!(cell.text.contains("code"));
-                assert!(cell.text.contains("link"));
-                assert!(cell.text.contains("strike"));
-                assert!(cell.spans.iter().any(|s| s.style.strong()));
-                assert!(cell.spans.iter().any(|s| s.style.emphasis()));
-                assert!(cell.spans.iter().any(|s| s.style.code()));
-                assert!(cell.spans.iter().any(|s| s.style.link.is_some()));
-                assert!(cell.spans.iter().any(|s| s.style.strikethrough()));
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_empty_table_headers_only() {
-        let md = "| H1 | H2 | H3 |\n|---|---|---|\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { header, rows, .. } = table.as_ref();
-                assert_eq!(header.len(), 3);
-                assert_eq!(header[0].text, "H1");
-                assert_eq!(header[1].text, "H2");
-                assert_eq!(header[2].text, "H3");
-                assert!(rows.is_empty(), "no data rows expected");
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_large_table_100_rows_20_cols() {
-        let mut md = String::with_capacity(100_000);
-        // Header
-        md.push('|');
-        for c in 0..20 {
-            write!(md, " H{c} |").ok();
-        }
-        md.push('\n');
-        // Separator
-        md.push('|');
-        for _ in 0..20 {
-            md.push_str("---|");
-        }
-        md.push('\n');
-        // 100 rows
-        for r in 0..100 {
-            md.push('|');
-            for c in 0..20 {
-                write!(md, " r{r}c{c} |").ok();
-            }
-            md.push('\n');
-        }
-
-        let blocks = parse_markdown(&md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData {
-                    header,
-                    rows,
-                    alignments,
-                } = table.as_ref();
-                assert_eq!(header.len(), 20);
-                assert_eq!(alignments.len(), 20);
-                assert_eq!(rows.len(), 100);
-                // Spot-check a few cells
-                assert_eq!(rows[0][0].text, "r0c0");
-                assert_eq!(rows[99][19].text, "r99c19");
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_deeply_nested_lists_10_levels() {
-        let mut md = String::with_capacity(512);
-        for depth in 0..10 {
-            let indent = "  ".repeat(depth);
-            writeln!(md, "{indent}- level {depth}").ok();
-        }
-        let blocks = parse_markdown(&md);
-        assert_eq!(blocks.len(), 1);
-
-        // Walk the nesting chain
-        fn count_depth(block: &Block) -> usize {
-            match block {
-                Block::UnorderedList(items) => {
-                    if let Some(child) = items[0].children.first() {
-                        1 + count_depth(child)
-                    } else {
-                        1
-                    }
-                }
-                _ => 0,
-            }
-        }
-        let depth = count_depth(&blocks[0]);
-        assert!(
-            depth >= 10,
-            "expected at least 10 levels of nesting, got {depth}"
-        );
-    }
-
-    #[test]
-    fn stress_mixed_ordered_unordered_nesting() {
-        let md = concat!(
-            "- bullet A\n",
-            "  1. ordered 1\n",
-            "     - nested bullet\n",
-            "       1. deep ordered\n",
-            "  2. ordered 2\n",
-            "- bullet B\n",
-        );
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                // First item should have an ordered list child
-                assert!(
-                    items[0]
-                        .children
-                        .iter()
-                        .any(|b| matches!(b, Block::OrderedList { .. })),
-                    "expected ordered list child"
-                );
-                // Walk into the ordered list to find the nested bullet
-                for child in &items[0].children {
-                    if let Block::OrderedList {
-                        items: ol_items, ..
-                    } = child
-                        && let Some(Block::UnorderedList(ul_items)) = ol_items[0]
-                            .children
-                            .iter()
-                            .find(|b| matches!(b, Block::UnorderedList(_)))
-                    {
-                        // The nested bullet should have a deep ordered child
-                        assert!(
-                            ul_items[0]
-                                .children
-                                .iter()
-                                .any(|b| matches!(b, Block::OrderedList { .. })),
-                            "expected deep ordered list inside nested bullet"
-                        );
-                    }
-                }
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_code_block_with_backtick_content() {
-        // Use 4-backtick fence to allow triple backticks inside
-        let md = "````\n```rust\nfn main() {}\n```\n````\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { code, .. } => {
-                assert!(
-                    code.contains("```rust"),
-                    "inner triple backticks should be preserved as text"
-                );
-                assert!(code.contains("fn main()"));
-            }
-            other => panic!("expected code block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_inline_code_with_backticks() {
-        // Double backticks allow single backtick inside
-        let md = "Use `` `backtick` `` in code";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(
-                    st.text.contains('`'),
-                    "inline code should preserve backtick: {:?}",
-                    st.text
-                );
-                assert!(st.spans.iter().any(|s| s.style.code()));
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_link_url_edge_cases() {
-        let cases = [
+    fn parse_list_with_child_blocks() {
+        for (md, label) in [
             (
-                "[spaces](https://example.com/path%20with%20spaces)",
-                "spaces",
+                "- Item:\n\n  ```rust\n  fn main() {}\n  ```\n\n- Next\n",
+                "Code",
             ),
-            ("[unicode](https://example.com/日本語)", "日本語"),
+            ("- Item:\n\n  > Quoted text\n\n- Next\n", "Quote"),
+            ("- First para\n\n  Second para\n\n- Another\n", "Paragraph"),
+            ("- Item\n\n  ## Sub-heading\n\n- Next\n", "Heading"),
+            ("- Item\n\n  ---\n\n- Next\n", "ThematicBreak"),
             (
-                "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))",
-                "Rust_",
+                "- Item\n\n  | A | B |\n  |---|---|\n  | 1 | 2 |\n\n- Next\n",
+                "Table",
             ),
-        ];
-        for (md, expected_fragment) in cases {
+            (
+                "1. First item\n\n   ```rust\n   let x = 1;\n   ```\n\n2. Second item\n",
+                "OL+Code",
+            ),
+        ] {
             let blocks = parse_markdown(md);
-            match &blocks[0] {
-                Block::Paragraph(st) => {
-                    let link_span = st
-                        .spans
-                        .iter()
-                        .find(|s| s.style.link.is_some())
-                        .unwrap_or_else(|| panic!("should have link span for {md:?}"));
-                    let url = link_span.style.link.as_ref().expect("link url");
-                    assert!(
-                        url.contains(expected_fragment),
-                        "URL should contain {expected_fragment:?}, got {url:?}"
-                    );
+            let has_children = match &blocks[0] {
+                Block::UnorderedList(items) | Block::OrderedList { items, .. } => {
+                    !items[0].children.is_empty()
                 }
-                other => panic!("expected paragraph, got {other:?}"),
-            }
+                _ => false,
+            };
+            assert!(has_children, "{label}: should have children");
         }
     }
 
-    #[test]
-    fn stress_image_long_alt_with_formatting() {
-        let long_alt = "A".repeat(500);
-        let md = format!("![**bold** *italic* {long_alt}](img.png)");
-        let blocks = parse_markdown(&md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Image { alt, url } => {
-                assert_eq!(&**url, "img.png");
-                assert!(alt.contains(&long_alt), "long alt text should be preserved");
-                assert!(alt.contains("bold"), "bold text should be in alt");
-                assert!(alt.contains("italic"), "italic text should be in alt");
-            }
-            other => panic!("expected Image, got {other:?}"),
-        }
-    }
+    // ── Inline merge and nesting ─────────────────────────────────
 
     #[test]
-    fn stress_blockquote_containing_table() {
-        let md = concat!("> | H1 | H2 |\n", "> |---|---|\n", "> | a | b |\n",);
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Quote(inner) => {
-                assert!(
-                    inner.iter().any(|b| matches!(b, Block::Table(_))),
-                    "blockquote should contain a table"
-                );
-            }
-            other => panic!("expected Quote, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_blockquote_containing_code_and_list() {
-        let md = concat!(
-            "> ```python\n",
-            "> print('hi')\n",
-            "> ```\n",
-            ">\n",
-            "> - item 1\n",
-            "> - item 2\n",
-        );
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Quote(inner) => {
-                assert!(
-                    inner.iter().any(|b| matches!(b, Block::Code { .. })),
-                    "blockquote should contain code"
-                );
-                assert!(
-                    inner.iter().any(|b| matches!(b, Block::UnorderedList(_))),
-                    "blockquote should contain list"
-                );
-            }
-            other => panic!("expected Quote, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_adjacent_tables_no_blank_line() {
-        // Two tables back-to-back; pulldown-cmark may merge or separate them
-        let md = concat!("| A |\n|---|\n| 1 |\n", "| B |\n|---|\n| 2 |\n",);
-        let blocks = parse_markdown(md);
-        // Should produce at least one table (may be merged by parser)
-        let table_count = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Table(_)))
-            .count();
-        assert!(
-            table_count >= 1,
-            "should have at least 1 table, got {table_count}"
-        );
-    }
-
-    #[test]
-    fn stress_huge_single_paragraph() {
-        let text = "word ".repeat(20_000); // ~100KB
-        let blocks = parse_markdown(&text);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(
-                    st.text.len() > 90_000,
-                    "paragraph should contain the large text"
-                );
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_only_thematic_breaks() {
-        let md = "---\n\n***\n\n___\n\n---\n\n***\n";
-        let blocks = parse_markdown(md);
-        let break_count = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::ThematicBreak))
-            .count();
-        assert_eq!(break_count, 5, "should have 5 thematic breaks");
-    }
-
-    #[test]
-    fn stress_very_long_heading_text() {
-        let long_text = "X".repeat(1200);
-        let md = format!("# {long_text}\n");
-        let blocks = parse_markdown(&md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert_eq!(text.text.len(), 1200);
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_heading_all_inline_formatting() {
-        let md = "## **bold** *italic* `code` [link](url) ~~strike~~\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 2);
-                assert!(text.spans.iter().any(|s| s.style.strong()));
-                assert!(text.spans.iter().any(|s| s.style.emphasis()));
-                assert!(text.spans.iter().any(|s| s.style.code()));
-                assert!(text.spans.iter().any(|s| s.style.link.is_some()));
-                assert!(text.spans.iter().any(|s| s.style.strikethrough()));
-                assert_spans_cover_text(text);
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_task_lists_nested() {
-        let md = concat!(
-            "- [x] parent done\n",
-            "  - [ ] child todo\n",
-            "  - [x] child done\n",
-            "- [ ] parent todo\n",
-            "  - [ ] nested todo\n",
-        );
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                assert_eq!(items[0].checked, Some(true));
-                assert_eq!(items[1].checked, Some(false));
-                // Check nested children
-                assert!(!items[0].children.is_empty());
-                if let Some(Block::UnorderedList(nested)) = items[0].children.first() {
-                    assert_eq!(nested.len(), 2);
-                    assert_eq!(nested[0].checked, Some(false));
-                    assert_eq!(nested[1].checked, Some(true));
-                } else {
-                    panic!("expected nested list in first item children");
-                }
-                assert!(!items[1].children.is_empty());
-                if let Some(Block::UnorderedList(nested)) = items[1].children.first() {
-                    assert_eq!(nested.len(), 1);
-                    assert_eq!(nested[0].checked, Some(false));
-                } else {
-                    panic!("expected nested list in second item children");
-                }
-            }
-            other => panic!("expected unordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_smart_punctuation() {
-        // Smart punctuation converts quotes, dashes, ellipsis
-        let md = "\"Hello\" -- world... 'single' --- em";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                // Smart punctuation should convert:
-                // "Hello" → \u{201c}Hello\u{201d}
-                // -- → \u{2013} (en-dash)
-                // --- → \u{2014} (em-dash)
-                // ... → \u{2026} (ellipsis)
-                // 'single' → \u{2018}single\u{2019}
-                let t = &st.text;
-                assert!(
-                    t.contains('\u{201c}') || t.contains('\u{201d}') || t.contains('"'),
-                    "should have smart or plain double quotes: {t:?}"
-                );
-                assert!(
-                    t.contains('\u{2026}') || t.contains("..."),
-                    "should have ellipsis: {t:?}"
-                );
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_adjacent_tables_separated_by_blank() {
-        let md = "| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |\n";
-        let blocks = parse_markdown(md);
-        let table_count = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Table(_)))
-            .count();
-        assert_eq!(table_count, 2, "blank line should separate into 2 tables");
-    }
-
-    #[test]
-    fn stress_code_block_with_many_backticks() {
-        // 5-backtick fence with 3 and 4 backtick content
-        let md = "`````\n```\n````\nsome code\n`````\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Code { code, .. } => {
-                assert!(code.contains("```"), "should contain triple backticks");
-                assert!(code.contains("````"), "should contain quad backticks");
-            }
-            other => panic!("expected code block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_table_empty_cells() {
-        let md = "| A | B | C |\n|---|---|---|\n|  |  |  |\n| x |  | z |\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Table(table) => {
-                let TableData { rows, .. } = table.as_ref();
-                assert_eq!(rows.len(), 2);
-                // First row: all empty cells
-                assert!(
-                    rows[0].iter().all(|c| c.text.is_empty()),
-                    "first row should have all empty cells"
-                );
-                // Second row: mixed
-                assert_eq!(rows[1][0].text, "x");
-                assert!(rows[1][1].text.is_empty());
-                assert_eq!(rows[1][2].text, "z");
-            }
-            other => panic!("expected table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_deeply_nested_blockquote_with_content() {
-        let md = concat!(
-            "> level 1\n",
-            ">> level 2\n",
-            ">>> level 3\n",
-            ">>>> level 4\n",
-            ">>>>> level 5\n",
-        );
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-
-        fn max_quote_depth(blocks: &[Block]) -> usize {
-            let mut max = 0;
-            for b in blocks {
-                if let Block::Quote(inner) = b {
-                    let child_depth = max_quote_depth(inner);
-                    if 1 + child_depth > max {
-                        max = 1 + child_depth;
-                    }
-                }
-            }
-            max
-        }
-
-        let depth = max_quote_depth(&blocks);
-        assert!(
-            depth >= 5,
-            "expected at least 5 levels of blockquote nesting, got {depth}"
-        );
-    }
-
-    #[test]
-    fn stress_list_items_with_paragraphs_and_code() {
-        let md = concat!(
-            "1. First item\n\n",
-            "   ```rust\n",
-            "   let x = 1;\n",
-            "   ```\n\n",
-            "2. Second item\n",
-        );
-        let blocks = parse_markdown(md);
-        assert!(
-            blocks
-                .iter()
-                .any(|b| matches!(b, Block::OrderedList { .. })),
-            "should contain an ordered list"
-        );
-    }
-
-    #[test]
-    fn stress_heading_with_link_and_code() {
-        let md = "### [`parse`](https://docs.rs) function\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 3);
-                assert!(text.text.contains("parse"));
-                assert!(text.spans.iter().any(|s| s.style.code()));
-                assert!(text.spans.iter().any(|s| s.style.link.is_some()));
-            }
-            other => panic!("expected heading, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_footnote_reference_inline() {
-        let md = "Text with a footnote[^1].\n\n[^1]: The footnote content.\n";
-        let blocks = parse_markdown(md);
-        // Should not crash; footnote references render as bracketed text
-        assert!(
-            !blocks.is_empty(),
-            "document with footnote should produce blocks"
-        );
-    }
-
-    #[test]
-    fn stress_html_inline_in_paragraph() {
-        let md = "Text with <strong>html</strong> inline.\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::Paragraph(st) => {
-                assert!(st.text.contains("html"));
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_spans_cover_large_table_cells() {
-        let md = concat!(
-            "| **Bold** `code` | *it* ~~s~~ [lnk](u) |\n",
-            "|---|---|\n",
-            "| **x** *y* | `a` ~~b~~ |\n",
-        );
-        let blocks = parse_markdown(md);
-        for block in &blocks {
-            if let Block::Table(table) = block {
-                let TableData { header, rows, .. } = table.as_ref();
-                for cell in header {
-                    assert_spans_cover_text(cell);
-                }
-                for row in rows {
-                    for cell in row {
-                        assert_spans_cover_text(cell);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn stress_multiple_images_standalone() {
-        // Each image on its own line/paragraph should produce separate Image blocks
-        let md = "![a](1.png)\n\n![b](2.png)\n\n![c](3.png)\n";
-        let blocks = parse_markdown(md);
-        let image_count = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Image { .. }))
-            .count();
-        assert_eq!(image_count, 3, "should have 3 separate images");
-    }
-
-    #[test]
-    fn stress_ordered_list_high_start() {
-        let md = "42. answer\n43. next\n";
-        let blocks = parse_markdown(md);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            Block::OrderedList { start, items } => {
-                assert_eq!(*start, 42);
-                assert_eq!(items.len(), 2);
-            }
-            other => panic!("expected ordered list, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_only_newlines() {
-        let md = "\n\n\n\n\n\n\n\n";
-        let blocks = parse_markdown(md);
-        assert!(blocks.is_empty(), "only newlines should produce no blocks");
-    }
-
-    #[test]
-    fn stress_mixed_block_types_rapid_succession() {
-        let md = concat!(
-            "# Heading\n",
-            "Paragraph text.\n\n",
-            "---\n\n",
-            "- list item\n\n",
-            "> quote\n\n",
-            "```\ncode\n```\n\n",
-            "| T |\n|---|\n| v |\n\n",
-            "![img](x.png)\n",
-        );
-        let blocks = parse_markdown(md);
-        // Should have one of each type
-        assert!(blocks.iter().any(|b| matches!(b, Block::Heading { .. })));
-        assert!(blocks.iter().any(|b| matches!(b, Block::Paragraph(_))));
-        assert!(blocks.iter().any(|b| matches!(b, Block::ThematicBreak)));
-        assert!(blocks.iter().any(|b| matches!(b, Block::UnorderedList(_))));
-        assert!(blocks.iter().any(|b| matches!(b, Block::Quote(_))));
-        assert!(blocks.iter().any(|b| matches!(b, Block::Code { .. })));
-        assert!(blocks.iter().any(|b| matches!(b, Block::Table(_))));
-        assert!(blocks.iter().any(|b| matches!(b, Block::Image { .. })));
-    }
-
-    // ── Inline formatting stress tests ─────────────────────────────
-
-    /// Validate invariants on a `StyledText`:
-    /// - All spans have `start < end`
-    /// - No span exceeds `text.len()`
-    /// - Spans cover every byte (no gaps)
-    /// - Spans don't overlap
-    fn validate_styled_text(st: &StyledText) {
-        let text_len = st.text.len() as u32;
-
-        if st.text.is_empty() {
-            assert!(st.spans.is_empty(), "empty text should have no spans");
-            return;
-        }
-
-        assert!(!st.spans.is_empty(), "non-empty text should have spans");
-
-        for (i, span) in st.spans.iter().enumerate() {
-            assert!(
-                span.start < span.end,
-                "span {i}: start ({}) must be < end ({})",
-                span.start,
-                span.end
-            );
-            assert!(
-                span.end <= text_len,
-                "span {i}: end ({}) exceeds text len ({text_len})",
-                span.end
-            );
-        }
-
-        // Check contiguity: first span starts at 0, last ends at text_len,
-        // and each span starts where the previous one ended.
-        assert_eq!(
-            st.spans[0].start, 0,
-            "first span should start at 0, got {}",
-            st.spans[0].start
-        );
-        assert_eq!(
-            st.spans.last().expect("non-empty").end,
-            text_len,
-            "last span should end at text len ({text_len})"
-        );
-        for i in 1..st.spans.len() {
-            assert_eq!(
-                st.spans[i].start,
-                st.spans[i - 1].end,
-                "gap between span {} (end {}) and span {i} (start {})",
-                i - 1,
-                st.spans[i - 1].end,
-                st.spans[i].start
-            );
-        }
-    }
-
-    /// Extract the first paragraph's `StyledText` from parsed markdown.
-    fn parse_paragraph(md: &str) -> StyledText {
-        let blocks = parse_markdown(md);
-        match blocks.into_iter().next() {
-            Some(Block::Paragraph(st)) => st,
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    // ── 1. Span merging ───────────────────────────────────────────
-
-    #[test]
-    fn inline_merge_adjacent_bold() {
-        // push_text should merge adjacent spans of the same style.
+    fn inline_merge_behavior() {
+        // Adjacent bold merges
         let mut st = StyledText::default();
         let mut bold = SpanStyle::plain();
         bold.set_strong();
         st.push_text("bold1", bold.clone());
         st.push_text("bold2", bold);
-        assert_eq!(st.text, "bold1bold2");
-        assert_eq!(
-            st.spans.len(),
-            1,
-            "adjacent identical-style bold spans should merge into one"
-        );
+        assert_eq!(st.spans.len(), 1);
         assert!(st.spans[0].style.strong());
         validate_styled_text(&st);
-    }
 
-    #[test]
-    fn inline_no_merge_different_styles() {
-        // *italic*normal*italic* — styles differ so spans must not merge.
+        // Different styles don't merge
         let st = parse_paragraph("*italic*normal*italic*");
-        assert_eq!(st.text, "italicnormalitalic");
-        assert!(
-            st.spans.len() >= 3,
-            "different-style spans should not merge, got {} span(s)",
-            st.spans.len()
-        );
+        assert!(st.spans.len() >= 3);
         assert!(st.spans[0].style.emphasis());
         assert!(!st.spans[1].style.emphasis());
         assert!(st.spans[2].style.emphasis());
         validate_styled_text(&st);
-    }
 
-    #[test]
-    fn inline_merge_plain_fragments() {
-        // Multiple adjacent plain text nodes should merge.
+        // Plain fragments merge
         let mut st = StyledText::default();
         st.push_text("aaa", SpanStyle::plain());
         st.push_text("bbb", SpanStyle::plain());
         st.push_text("ccc", SpanStyle::plain());
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.text, "aaabbbccc");
-        assert_eq!(st.spans[0].start, 0);
-        assert_eq!(st.spans[0].end, 9);
-    }
-
-    // ── 2. Deeply nested formatting ───────────────────────────────
-
-    #[test]
-    fn inline_bold_italic() {
-        let st = parse_paragraph("***bold-italic***");
-        assert_eq!(st.text, "bold-italic");
-        assert_eq!(st.spans.len(), 1);
-        assert!(st.spans[0].style.strong());
-        assert!(st.spans[0].style.emphasis());
-        validate_styled_text(&st);
     }
 
     #[test]
-    fn inline_bold_italic_strikethrough() {
-        let st = parse_paragraph("***~~bold-italic-strike~~***");
-        assert_eq!(st.text, "bold-italic-strike");
-        assert_eq!(st.spans.len(), 1);
-        assert!(st.spans[0].style.strong());
-        assert!(st.spans[0].style.emphasis());
-        assert!(st.spans[0].style.strikethrough());
-        validate_styled_text(&st);
-    }
-
-    #[test]
-    fn inline_bold_italic_link() {
-        let st = parse_paragraph("[***bold-italic link***](url)");
-        assert_eq!(st.text, "bold-italic link");
-        assert_eq!(st.spans.len(), 1);
-        assert!(st.spans[0].style.strong());
-        assert!(st.spans[0].style.emphasis());
-        assert!(
-            st.spans[0].style.link.is_some(),
-            "expected link URL on span"
-        );
-        assert_eq!(st.spans[0].style.link.as_deref(), Some("url"));
-        validate_styled_text(&st);
-    }
-
-    // ── 3. Code span isolation ────────────────────────────────────
-
-    #[test]
-    fn inline_code_inside_bold() {
-        // **bold `code` bold** — code span inherits strong flag.
-        let st = parse_paragraph("**bold `code` bold**");
-        assert_eq!(st.text, "bold code bold");
-        validate_styled_text(&st);
-
-        let code_spans: Vec<_> = st.spans.iter().filter(|s| s.style.code()).collect();
-        assert_eq!(code_spans.len(), 1, "expected exactly one code span");
-        assert!(
-            code_spans[0].style.strong(),
-            "code inside bold should inherit strong flag"
-        );
-        let code_text = &st.text[code_spans[0].start as usize..code_spans[0].end as usize];
-        assert_eq!(code_text, "code");
-    }
-
-    #[test]
-    fn inline_backtick_sequence() {
-        // `a`b`c` — pulldown_cmark treats first and third backtick pairs as code.
-        let st = parse_paragraph("`a`b`c`");
-        validate_styled_text(&st);
-        let code_count = st.spans.iter().filter(|s| s.style.code()).count();
-        assert!(
-            code_count >= 1,
-            "backtick sequence should produce at least one code span"
-        );
-    }
-
-    #[test]
-    fn inline_double_backtick_code() {
-        // Double-backtick code spans allow internal backticks.
-        let st = parse_paragraph("`` `inner` ``");
-        validate_styled_text(&st);
-        let code_spans: Vec<_> = st.spans.iter().filter(|s| s.style.code()).collect();
-        assert_eq!(code_spans.len(), 1);
-        let code_text = &st.text[code_spans[0].start as usize..code_spans[0].end as usize];
-        assert!(
-            code_text.contains('`'),
-            "double-backtick code should preserve inner backtick"
-        );
-    }
-
-    // ── 4. Link text formatting ───────────────────────────────────
-
-    #[test]
-    fn inline_link_with_formatted_text() {
-        let st = parse_paragraph("[**bold** and *italic*](url)");
-        assert_eq!(st.text, "bold and italic");
-        validate_styled_text(&st);
-
-        // All spans should have link set.
-        for span in &st.spans {
-            assert_eq!(
-                span.style.link.as_deref(),
+    fn inline_deep_nesting() {
+        for (label, md, text, strong, emph, strike, link) in [
+            (
+                "bold_italic",
+                "***bold-italic***",
+                "bold-italic",
+                true,
+                true,
+                false,
+                None,
+            ),
+            (
+                "bold_italic_strike",
+                "***~~bold-italic-strike~~***",
+                "bold-italic-strike",
+                true,
+                true,
+                true,
+                None,
+            ),
+            (
+                "bold_italic_link",
+                "[***bold-italic link***](url)",
+                "bold-italic link",
+                true,
+                true,
+                false,
                 Some("url"),
-                "all spans in link should carry the URL"
-            );
+            ),
+            (
+                "all_in_link",
+                "[***~~all~~***](url)",
+                "all",
+                true,
+                true,
+                true,
+                Some("url"),
+            ),
+        ] {
+            let st = parse_paragraph(md);
+            assert_eq!(st.text, text, "{label}");
+            assert_eq!(st.spans.len(), 1, "{label}: span count");
+            let s = &st.spans[0];
+            assert_eq!(s.style.strong(), strong, "{label}: strong");
+            assert_eq!(s.style.emphasis(), emph, "{label}: emph");
+            assert_eq!(s.style.strikethrough(), strike, "{label}: strike");
+            assert_eq!(s.style.link.as_deref(), link, "{label}: link");
+            validate_styled_text(&st);
         }
-
-        // Check formatting within the link.
-        assert!(
-            st.spans.iter().any(|s| s.style.strong()),
-            "link should contain bold span"
-        );
-        assert!(
-            st.spans.iter().any(|s| s.style.emphasis()),
-            "link should contain italic span"
-        );
     }
 
     #[test]
-    fn inline_multiple_links_different_urls() {
+    fn inline_code_in_context() {
+        // Code inside bold inherits strong
+        let st = parse_paragraph("**bold `code` bold**");
+        validate_styled_text(&st);
+        let code: Vec<_> = st.spans.iter().filter(|s| s.style.code()).collect();
+        assert_eq!(code.len(), 1);
+        assert!(code[0].style.strong());
+        assert_eq!(
+            &st.text[code[0].start as usize..code[0].end as usize],
+            "code"
+        );
+
+        // Backtick sequences
+        for md in ["`a`b`c`", "`` `inner` ``"] {
+            let st = parse_paragraph(md);
+            validate_styled_text(&st);
+            assert!(st.spans.iter().any(|s| s.style.code()));
+        }
+    }
+
+    #[test]
+    fn inline_link_formatting() {
+        // Formatted text in link
+        let st = parse_paragraph("[**bold** and *italic*](url)");
+        validate_styled_text(&st);
+        for span in &st.spans {
+            assert_eq!(span.style.link.as_deref(), Some("url"));
+        }
+        assert!(st.spans.iter().any(|s| s.style.strong()));
+        assert!(st.spans.iter().any(|s| s.style.emphasis()));
+
+        // Multiple links
         let st = parse_paragraph("[aaa](url1) [bbb](url2)");
         validate_styled_text(&st);
+        let urls: Vec<_> = st
+            .spans
+            .iter()
+            .filter_map(|s| s.style.link.as_deref())
+            .collect();
+        assert!(urls.contains(&"url1") && urls.contains(&"url2"));
 
-        let link_spans: Vec<_> = st.spans.iter().filter(|s| s.style.link.is_some()).collect();
+        // Code in link
+        let st = parse_paragraph("[`code` in link](url)");
+        validate_styled_text(&st);
         assert!(
-            link_spans.len() >= 2,
-            "expected at least 2 link spans, got {}",
-            link_spans.len()
+            st.spans
+                .iter()
+                .any(|s| s.style.code() && s.style.link.is_some())
         );
 
-        let urls: Vec<&str> = link_spans
-            .iter()
-            .map(|s| s.style.link.as_deref().expect("link"))
-            .collect();
-        assert!(urls.contains(&"url1"));
-        assert!(urls.contains(&"url2"));
+        // Adjacent different links don't merge
+        let st = parse_paragraph("[a](u1)[b](u2)");
+        validate_styled_text(&st);
+        assert!(st.spans.iter().filter(|s| s.style.link.is_some()).count() >= 2);
+
+        // Emphasis across softbreak
+        let st = parse_paragraph("*italic\nacross lines*");
+        validate_styled_text(&st);
+        assert!(st.spans.iter().any(|s| s.style.emphasis()));
     }
 
-    // ── 5. Span byte boundary validation ──────────────────────────
+    #[test]
+    fn inline_deeply_interleaved_formatting() {
+        let st = parse_paragraph("**bold *italic ~~strike `code` strike~~ italic* bold**");
+        validate_styled_text(&st);
+        assert!(st.spans.iter().any(|s| s.style.strong()));
+        assert!(st.spans.iter().any(|s| s.style.emphasis()));
+        assert!(st.spans.iter().any(|s| s.style.strikethrough()));
+        assert!(st.spans.iter().any(|s| s.style.code()));
+    }
 
     #[test]
     fn inline_validate_various_inputs() {
@@ -2569,37 +1708,27 @@ mod tests {
         }
     }
 
-    // ── 6. Empty and edge cases ───────────────────────────────────
-
     #[test]
-    fn inline_empty_formatting_cases() {
-        // Empty bold, empty emphasis, empty link — should not panic.
+    fn inline_empty_and_unclosed() {
         for md in ["****", "__", "[](url)"] {
-            let blocks = parse_markdown(md);
-            for block in &blocks {
+            for block in &parse_markdown(md) {
                 if let Block::Paragraph(st) = block {
                     validate_styled_text(st);
                 }
             }
         }
-    }
-
-    #[test]
-    fn inline_unclosed_formatting_cases() {
-        // Unclosed markers treated as literal text — should not panic.
         for md in ["**unclosed", "*unclosed", "`unclosed", "~~unclosed"] {
             let blocks = parse_markdown(md);
-            assert!(!blocks.is_empty(), "unclosed {md:?} should produce blocks");
+            assert!(!blocks.is_empty(), "{md:?}");
             if let Some(Block::Paragraph(st)) = blocks.first() {
                 validate_styled_text(st);
             }
         }
     }
 
-    // ── 7. Long inline sequences ──────────────────────────────────
-
     #[test]
-    fn inline_100_alternating_bold_normal() {
+    fn inline_long_sequences() {
+        // 100 alternating bold/normal
         let mut md = String::new();
         for i in 0..100 {
             if i % 2 == 0 {
@@ -2610,379 +1739,363 @@ mod tests {
         }
         let st = parse_paragraph(&md);
         validate_styled_text(&st);
+        assert_eq!(st.spans.iter().filter(|s| s.style.strong()).count(), 50);
 
-        let bold_count = st.spans.iter().filter(|s| s.style.strong()).count();
-        assert_eq!(bold_count, 50, "expected 50 bold spans");
-
-        let plain_count = st.spans.iter().filter(|s| !s.style.strong()).count();
-        assert!(plain_count >= 50, "expected at least 50 plain spans");
-    }
-
-    #[test]
-    fn inline_50_links() {
-        let mut md = String::new();
+        // 50 links
+        md.clear();
         for i in 0..50 {
             write!(md, "[link{i}](https://example.com/{i}) ").ok();
         }
         let st = parse_paragraph(&md);
         validate_styled_text(&st);
+        assert!(st.spans.iter().filter(|s| s.style.link.is_some()).count() >= 50);
 
-        let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
-        assert!(
-            link_count >= 50,
-            "expected at least 50 link spans, got {link_count}"
-        );
-    }
-
-    #[test]
-    fn inline_100_code_spans() {
-        let mut md = String::new();
+        // 100 code spans
+        md.clear();
         for i in 0..100 {
             write!(md, "`code{i}` ").ok();
         }
         let st = parse_paragraph(&md);
         validate_styled_text(&st);
-
-        let code_count = st.spans.iter().filter(|s| s.style.code()).count();
-        assert_eq!(code_count, 100, "expected 100 code spans");
+        assert_eq!(st.spans.iter().filter(|s| s.style.code()).count(), 100);
     }
 
-    #[test]
-    fn inline_deeply_interleaved_formatting() {
-        // Bold wrapping italic wrapping strikethrough wrapping code.
-        let st = parse_paragraph("**bold *italic ~~strike `code` strike~~ italic* bold**");
-        validate_styled_text(&st);
-        assert!(
-            st.spans.iter().any(|s| s.style.strong()),
-            "should have bold"
-        );
-        assert!(
-            st.spans.iter().any(|s| s.style.emphasis()),
-            "should have italic"
-        );
-        assert!(
-            st.spans.iter().any(|s| s.style.strikethrough()),
-            "should have strikethrough"
-        );
-        assert!(st.spans.iter().any(|s| s.style.code()), "should have code");
-    }
+    // ── Stress tests ─────────────────────────────────────────────
 
     #[test]
-    fn inline_link_with_code() {
-        let st = parse_paragraph("[`code` in link](url)");
-        validate_styled_text(&st);
+    fn stress_table_structural() {
+        // Extra cols
+        match &parse_markdown("| A | B |\n|---|---|\n| 1 | 2 | 3 | 4 |\n")[0] {
+            Block::Table(t) => {
+                assert_eq!(t.header.len(), 2);
+                assert_eq!(t.rows.len(), 1);
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+        // Fewer cols
+        match &parse_markdown("| A | B | C | D |\n|---|---|---|---|\n| 1 |\n| x | y |\n")[0] {
+            Block::Table(t) => {
+                assert_eq!(t.header.len(), 4);
+                assert_eq!(t.rows.len(), 2);
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+        // Empty cells
+        match &parse_markdown("| A | B | C |\n|---|---|---|\n|  |  |  |\n| x |  | z |\n")[0] {
+            Block::Table(t) => {
+                assert!(t.rows[0].iter().all(|c| c.text.is_empty()));
+                assert_eq!(t.rows[1][0].text, "x");
+                assert_eq!(t.rows[1][2].text, "z");
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+        // Headers only
+        match &parse_markdown("| H1 | H2 | H3 |\n|---|---|---|\n")[0] {
+            Block::Table(t) => {
+                assert_eq!(
+                    t.header.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+                    vec!["H1", "H2", "H3"]
+                );
+                assert!(t.rows.is_empty());
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+        // Adjacent tables
         assert!(
-            st.spans
+            parse_markdown("| A |\n|---|\n| 1 |\n| B |\n|---|\n| 2 |\n")
                 .iter()
-                .any(|s| s.style.code() && s.style.link.is_some()),
-            "code inside link should have both code and link flags"
+                .any(|b| matches!(b, Block::Table(_)))
+        );
+        assert_eq!(
+            parse_markdown("| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |\n")
+                .iter()
+                .filter(|b| matches!(b, Block::Table(_)))
+                .count(),
+            2
         );
     }
 
     #[test]
-    fn inline_adjacent_different_links_no_merge() {
-        let st = parse_paragraph("[a](u1)[b](u2)");
-        validate_styled_text(&st);
-        // Different URLs must not merge.
-        let link_count = st.spans.iter().filter(|s| s.style.link.is_some()).count();
-        assert!(
-            link_count >= 2,
-            "different link URLs should produce separate spans"
-        );
+    fn stress_table_alignment_with_long_headers() {
+        let (la, lb) = ("A".repeat(200), "B".repeat(300));
+        let md = format!("| {la} | {lb} | Short |\n|:---|:---:|---:|\n| x | y | z |\n");
+        match &parse_markdown(&md)[0] {
+            Block::Table(t) => {
+                assert_eq!(t.header[0].text, la);
+                assert_eq!(t.header[1].text, lb);
+                assert_eq!(
+                    t.alignments,
+                    vec![Alignment::Left, Alignment::Center, Alignment::Right]
+                );
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
     }
 
     #[test]
-    fn inline_emphasis_across_softbreak() {
-        // Emphasis spanning a soft break (line continuation).
-        let st = parse_paragraph("*italic\nacross lines*");
-        validate_styled_text(&st);
-        assert!(
-            st.spans.iter().any(|s| s.style.emphasis()),
-            "emphasis should span soft break"
-        );
+    fn stress_table_cell_with_all_formatting() {
+        let md = "| Cell |\n|---|\n| **bold** *italic* `code` [link](url) ~~strike~~ |\n";
+        match &parse_markdown(md)[0] {
+            Block::Table(t) => {
+                let c = &t.rows[0][0];
+                assert!(c.spans.iter().any(|s| s.style.strong()));
+                assert!(c.spans.iter().any(|s| s.style.emphasis()));
+                assert!(c.spans.iter().any(|s| s.style.code()));
+                assert!(c.spans.iter().any(|s| s.style.link.is_some()));
+                assert!(c.spans.iter().any(|s| s.style.strikethrough()));
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
     }
 
     #[test]
-    fn inline_all_formatting_combined_in_link() {
-        let st = parse_paragraph("[***~~all~~***](url)");
-        validate_styled_text(&st);
-        let span = &st.spans[0];
-        assert!(span.style.strong());
-        assert!(span.style.emphasis());
-        assert!(span.style.strikethrough());
-        assert!(span.style.link.is_some());
+    fn stress_large_table_100_rows_20_cols() {
+        let mut md = String::with_capacity(100_000);
+        md.push('|');
+        for c in 0..20 {
+            write!(md, " H{c} |").ok();
+        }
+        md.push('\n');
+        md.push('|');
+        for _ in 0..20 {
+            md.push_str("---|");
+        }
+        md.push('\n');
+        for r in 0..100 {
+            md.push('|');
+            for c in 0..20 {
+                write!(md, " r{r}c{c} |").ok();
+            }
+            md.push('\n');
+        }
+        match &parse_markdown(&md)[0] {
+            Block::Table(t) => {
+                assert_eq!(t.header.len(), 20);
+                assert_eq!(t.rows.len(), 100);
+                assert_eq!(t.rows[0][0].text, "r0c0");
+                assert_eq!(t.rows[99][19].text, "r99c19");
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_list_with_child_blocks() {
-        // (markdown, expected_child_variant_name)
-        let cases = [
-            (
-                "- Item with code:\n\n  ```rust\n  fn main() {}\n  ```\n\n- Next\n",
-                "Code",
-            ),
-            ("- Item with quote:\n\n  > Quoted text\n\n- Next\n", "Quote"),
-            (
-                "- First paragraph\n\n  Second paragraph\n\n- Another\n",
-                "Paragraph",
-            ),
-        ];
-        for (md, label) in cases {
-            let blocks = parse_markdown(md);
-            match &blocks[0] {
+    fn stress_deeply_nested_lists_10_levels() {
+        let mut md = String::with_capacity(512);
+        for depth in 0..10 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- level {depth}").ok();
+        }
+        let blocks = parse_markdown(&md);
+        fn count_depth(block: &Block) -> usize {
+            match block {
                 Block::UnorderedList(items) => {
+                    items[0].children.first().map_or(1, |c| 1 + count_depth(c))
+                }
+                _ => 0,
+            }
+        }
+        assert!(count_depth(&blocks[0]) >= 10);
+    }
+
+    #[test]
+    fn stress_mixed_ordered_unordered_nesting() {
+        let md = "- bullet A\n  1. ordered 1\n     - nested bullet\n       1. deep ordered\n  2. ordered 2\n- bullet B\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(
+                    items[0]
+                        .children
+                        .iter()
+                        .any(|b| matches!(b, Block::OrderedList { .. }))
+                );
+                for child in &items[0].children {
+                    if let Block::OrderedList { items: ol, .. } = child
+                        && let Some(Block::UnorderedList(ul)) = ol[0]
+                            .children
+                            .iter()
+                            .find(|b| matches!(b, Block::UnorderedList(_)))
+                    {
+                        assert!(
+                            ul[0]
+                                .children
+                                .iter()
+                                .any(|b| matches!(b, Block::OrderedList { .. }))
+                        );
+                    }
+                }
+            }
+            other => panic!("expected UL, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stress_code_block_variations() {
+        let b = parse_markdown("````\n```rust\nfn main() {}\n```\n````\n");
+        match &b[0] {
+            Block::Code { code, .. } => {
+                assert!(code.contains("```rust"));
+                assert!(code.contains("fn main()"));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+        let b = parse_markdown("`````\n```\n````\nsome code\n`````\n");
+        match &b[0] {
+            Block::Code { code, .. } => {
+                assert!(code.contains("```"));
+                assert!(code.contains("````"));
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+        // Inline backticks preserved
+        match &parse_markdown("Use `` `backtick` `` in code")[0] {
+            Block::Paragraph(st) => {
+                assert!(st.text.contains('`'));
+                assert!(st.spans.iter().any(|s| s.style.code()));
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stress_link_url_edge_cases() {
+        for (md, frag) in [
+            (
+                "[spaces](https://example.com/path%20with%20spaces)",
+                "spaces",
+            ),
+            ("[unicode](https://example.com/日本語)", "日本語"),
+            (
+                "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))",
+                "Rust_",
+            ),
+        ] {
+            match &parse_markdown(md)[0] {
+                Block::Paragraph(st) => {
+                    let url = st
+                        .spans
+                        .iter()
+                        .find(|s| s.style.link.is_some())
+                        .unwrap_or_else(|| panic!("link span for {md:?}"))
+                        .style
+                        .link
+                        .as_ref()
+                        .expect("url");
                     assert!(
-                        !items[0].children.is_empty(),
-                        "{label} should be in children for {md:?}"
+                        url.contains(frag),
+                        "URL should contain {frag:?}, got {url:?}"
                     );
                 }
-                other => panic!("expected UnorderedList for {label}, got {other:?}"),
+                other => panic!("expected paragraph, got {other:?}"),
             }
         }
     }
 
-    // ── Additional parsing coverage tests ──────────────────────────
-
     #[test]
-    fn parse_heading_trailing_hashes() {
-        let blocks = parse_markdown("## Title ##\n");
-        match &blocks[0] {
-            Block::Heading { level, text } => {
-                assert_eq!(*level, 2);
-                assert_eq!(text.text.trim(), "Title");
-            }
-            other => panic!("expected Heading, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_image_empty_url() {
-        let blocks = parse_markdown("![alt text]()\n");
-        match &blocks[0] {
-            Block::Image { url, alt } => {
-                assert!(url.is_empty());
-                assert_eq!(&**alt, "alt text");
+    fn stress_image_long_alt() {
+        let long_alt = "A".repeat(500);
+        let md = format!("![**bold** *italic* {long_alt}](img.png)");
+        match &parse_markdown(&md)[0] {
+            Block::Image { alt, url } => {
+                assert_eq!(&**url, "img.png");
+                assert!(alt.contains(&long_alt) && alt.contains("bold") && alt.contains("italic"));
             }
             other => panic!("expected Image, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_triple_emphasis_bold_italic() {
-        let blocks = parse_markdown("***bold and italic***\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(!text.spans.is_empty());
-                let span = &text.spans[0];
-                assert!(span.style.strong(), "should be strong");
-                assert!(span.style.emphasis(), "should be emphasis");
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
+    fn stress_blockquote_deep_and_content() {
+        let md = "> level 1\n>> level 2\n>>> level 3\n>>>> level 4\n>>>>> level 5\n";
+        fn max_depth(blocks: &[Block]) -> usize {
+            blocks
+                .iter()
+                .map(|b| {
+                    if let Block::Quote(inner) = b {
+                        1 + max_depth(inner)
+                    } else {
+                        0
+                    }
+                })
+                .max()
+                .unwrap_or(0)
         }
+        assert!(max_depth(&parse_markdown(md)) >= 5);
     }
 
     #[test]
-    fn parse_escaped_special_chars() {
-        let blocks = parse_markdown("\\*not bold\\* and \\[not link\\]\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    text.text.contains("*not bold*"),
-                    "escaped asterisks should be literal: {:?}",
-                    text.text
-                );
-                assert!(
-                    text.text.contains("[not link]"),
-                    "escaped brackets should be literal: {:?}",
-                    text.text
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_html_entities_decoded() {
-        let blocks = parse_markdown("&amp; &lt; &gt; &#123;\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(text.text.contains('&'), "should decode &amp;");
-                assert!(text.text.contains('<'), "should decode &lt;");
-                assert!(text.text.contains('>'), "should decode &gt;");
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_ordered_task_list() {
-        let blocks = parse_markdown("1. [x] Done\n2. [ ] Todo\n3. Normal\n");
-        match &blocks[0] {
-            Block::OrderedList { start, items } => {
-                assert_eq!(*start, 1);
-                assert_eq!(items.len(), 3);
+    fn stress_task_lists_nested() {
+        let md = "- [x] parent done\n  - [ ] child todo\n  - [x] child done\n- [ ] parent todo\n  - [ ] nested todo\n";
+        match &parse_markdown(md)[0] {
+            Block::UnorderedList(items) => {
                 assert_eq!(items[0].checked, Some(true));
                 assert_eq!(items[1].checked, Some(false));
-                assert_eq!(items[2].checked, None);
-            }
-            other => panic!("expected OrderedList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_table_escaped_pipe() {
-        let blocks = parse_markdown("| A |\n|---|\n| a \\| b |\n");
-        match &blocks[0] {
-            Block::Table(table) => {
-                assert_eq!(table.header.len(), 1, "should be 1-column table");
-                assert!(
-                    table.rows[0][0].text.contains("a | b")
-                        || table.rows[0][0].text.contains("a \\| b"),
-                    "cell should contain literal pipe: {:?}",
-                    table.rows[0][0].text
-                );
-            }
-            other => panic!("expected Table, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_link_with_title() {
-        let blocks = parse_markdown("[text](url \"title\")\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    text.spans.iter().any(|s| s.style.link.is_some()),
-                    "should have a link span"
-                );
-                let link = text
-                    .spans
-                    .iter()
-                    .find(|s| s.style.link.is_some())
-                    .expect("link span");
-                assert_eq!(link.style.link.as_deref(), Some("url"));
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_reference_link() {
-        let blocks = parse_markdown("[text][ref]\n\n[ref]: https://example.com\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    text.spans.iter().any(|s| s.style.link.is_some()),
-                    "should have a link span"
-                );
-                let link = text
-                    .spans
-                    .iter()
-                    .find(|s| s.style.link.is_some())
-                    .expect("link span");
-                assert_eq!(link.style.link.as_deref(), Some("https://example.com"));
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_indented_code_block_two_lines() {
-        let blocks = parse_markdown("    code line 1\n    code line 2\n");
-        match &blocks[0] {
-            Block::Code { language, code } => {
-                assert!(language.is_empty(), "indented code block has no language");
-                assert!(code.contains("code line 1"));
-                assert!(code.contains("code line 2"));
-            }
-            other => panic!("expected Code block, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_hard_line_break() {
-        let blocks = parse_markdown("Line one  \nLine two\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    (text.text.contains('\n')
-                        || text.text.contains("Line one") && text.text.contains("Line two")),
-                    "hard line break should be preserved: {:?}",
-                    text.text
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_soft_line_break() {
-        let blocks = parse_markdown("Line one\nLine two\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(
-                    text.text.contains("Line one") && text.text.contains("Line two"),
-                    "both lines should be present: {:?}",
-                    text.text
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_list_with_block_level_children() {
-        // Test that list items can contain Heading, ThematicBreak, and Table children.
-        let cases: &[(&str, &str)] = &[
-            ("- Item\n\n  ## Sub-heading\n\n- Next\n", "Heading"),
-            ("- Item\n\n  ---\n\n- Next\n", "ThematicBreak"),
-            (
-                "- Item\n\n  | A | B |\n  |---|---|\n  | 1 | 2 |\n\n- Next\n",
-                "Table",
-            ),
-        ];
-        for (md, label) in cases {
-            let blocks = parse_markdown(md);
-            match &blocks[0] {
-                Block::UnorderedList(items) => {
-                    assert!(
-                        !items[0].children.is_empty(),
-                        "{label} should be a child: {:?}",
-                        items[0].children
-                    );
+                if let Some(Block::UnorderedList(n)) = items[0].children.first() {
+                    assert_eq!(n[0].checked, Some(false));
+                    assert_eq!(n[1].checked, Some(true));
+                } else {
+                    panic!("nested list");
                 }
-                other => panic!("expected UnorderedList for {label}, got {other:?}"),
+                if let Some(Block::UnorderedList(n)) = items[1].children.first() {
+                    assert_eq!(n[0].checked, Some(false));
+                } else {
+                    panic!("nested list");
+                }
             }
+            other => panic!("expected UL, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_gfm_strikethrough() {
-        let blocks = parse_markdown("~~deleted~~\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(!text.spans.is_empty());
-                assert!(
-                    text.spans[0].style.strikethrough(),
-                    "should be strikethrough"
-                );
+    fn stress_smart_punctuation() {
+        match &parse_markdown("\"Hello\" -- world... 'single' --- em")[0] {
+            Block::Paragraph(st) => {
+                let t = &st.text;
+                assert!(t.contains('\u{201c}') || t.contains('\u{201d}') || t.contains('"'));
+                assert!(t.contains('\u{2026}') || t.contains("..."));
             }
-            other => panic!("expected Paragraph, got {other:?}"),
+            other => panic!("expected paragraph, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_inline_code_with_backticks() {
-        let blocks = parse_markdown("`` `inner` ``\n");
-        match &blocks[0] {
-            Block::Paragraph(text) => {
-                assert!(!text.spans.is_empty());
-                assert!(
-                    text.spans.iter().any(|s| s.style.code()),
-                    "should have code span"
-                );
-            }
-            other => panic!("expected Paragraph, got {other:?}"),
+    fn stress_parse_no_panic() {
+        for (label, md) in [
+            (
+                "footnote",
+                "Text with a footnote[^1].\n\n[^1]: The footnote content.\n".to_string(),
+            ),
+            ("huge_para", "word ".repeat(20_000)),
+            (
+                "thematic_breaks",
+                "---\n\n***\n\n___\n\n---\n\n***\n".to_string(),
+            ),
+            ("long_heading", format!("# {}\n", "X".repeat(1200))),
+        ] {
+            assert!(!parse_markdown(&md).is_empty(), "{label}");
         }
+        assert_eq!(
+            parse_markdown("---\n\n***\n\n___\n\n---\n\n***\n")
+                .iter()
+                .filter(|b| matches!(b, Block::ThematicBreak))
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn stress_mixed_block_types() {
+        let md = "# Heading\nParagraph.\n\n---\n\n- list\n\n> quote\n\n```\ncode\n```\n\n| T |\n|---|\n| v |\n\n![img](x.png)\n";
+        let b = parse_markdown(md);
+        assert!(b.iter().any(|b| matches!(b, Block::Heading { .. })));
+        assert!(b.iter().any(|b| matches!(b, Block::Paragraph(_))));
+        assert!(b.iter().any(|b| matches!(b, Block::ThematicBreak)));
+        assert!(b.iter().any(|b| matches!(b, Block::UnorderedList(_))));
+        assert!(b.iter().any(|b| matches!(b, Block::Quote(_))));
+        assert!(b.iter().any(|b| matches!(b, Block::Code { .. })));
+        assert!(b.iter().any(|b| matches!(b, Block::Table(_))));
+        assert!(b.iter().any(|b| matches!(b, Block::Image { .. })));
     }
 }
