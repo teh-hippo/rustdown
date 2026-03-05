@@ -911,6 +911,25 @@ mod tests {
         }
     }
 
+    // ── Type size assertions ──────────────────────────────────────
+
+    #[test]
+    fn type_sizes_are_compact() {
+        assert_eq!(
+            std::mem::size_of::<SpanStyle>(),
+            2,
+            "SpanStyle should be 2 bytes"
+        );
+        assert_eq!(std::mem::size_of::<Span>(), 12, "Span should be 12 bytes");
+        // Block enum is 88 bytes due to StyledText containing String + Vec<Span> + Vec<Rc<str>>.
+        // The Span size reduction (24→12) more than compensates at typical span-per-block ratios.
+        let block_size = std::mem::size_of::<Block>();
+        assert!(
+            block_size <= 96,
+            "Block is {block_size} bytes, should be <= 96"
+        );
+    }
+
     // ── Heading parsing ──────────────────────────────────────────
 
     #[test]

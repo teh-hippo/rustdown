@@ -43,10 +43,17 @@ pub struct NavState {
     cached_visible: Vec<(usize, bool)>,
     /// Sequence counter for visible-heading cache invalidation.
     visible_seq: u64,
-    /// The expanded set hash when `cached_visible` was last computed.
-    visible_expanded_hash: u64,
     /// The `max_depth` when `cached_visible` was last computed.
     visible_max_depth: u8,
+    /// Dirty counter for expanded set — incremented on any expand/collapse.
+    expanded_gen: u64,
+    /// The generation at which visible headings were last recomputed.
+    visible_expanded_gen: u64,
+    /// Cached min heading level for the current outline + `max_depth`.
+    cached_min_level: u8,
+    /// The `outline_seq` and `max_depth` when `cached_min_level` was computed.
+    min_level_seq: u64,
+    min_level_depth: u8,
 }
 
 impl Default for NavState {
@@ -65,8 +72,12 @@ impl Default for NavState {
             pending_preview_scroll_y: None,
             cached_visible: Vec::new(),
             visible_seq: u64::MAX,
-            visible_expanded_hash: u64::MAX,
             visible_max_depth: 0,
+            expanded_gen: 0,
+            visible_expanded_gen: u64::MAX,
+            cached_min_level: 1,
+            min_level_seq: u64::MAX,
+            min_level_depth: 0,
         }
     }
 }
@@ -213,6 +224,7 @@ impl NavState {
         self.outline_seq = edit_seq;
         self.expanded.clear();
         self.expanded.resize(self.outline.len(), false);
+        self.expanded_gen = self.expanded_gen.wrapping_add(1);
         let mut h1_indices = self
             .outline
             .iter()
@@ -247,9 +259,9 @@ impl NavState {
         self.max_depth = (self.max_depth + 1).min(6);
     }
 
-    /// Cheap hash of the expanded set for cache invalidation.
+    /// Cheap hash of the expanded set — used only in tests.
+    #[cfg(test)]
     fn expanded_hash(&self) -> u64 {
-        // Hash the Vec<bool> as a bitwise fingerprint.
         let mut h: u64 = self.expanded.len() as u64;
         for (idx, &val) in self.expanded.iter().enumerate() {
             if val {
@@ -292,13 +304,19 @@ impl NavState {
         });
         ui.separator();
 
-        let min_level = self
-            .outline
-            .iter()
-            .filter(|h| h.level <= self.max_depth)
-            .map(|h| h.level)
-            .min()
-            .unwrap_or(1);
+        // Cache min_level — only recompute when outline or max_depth changes.
+        if self.min_level_seq != self.outline_seq || self.min_level_depth != self.max_depth {
+            self.cached_min_level = self
+                .outline
+                .iter()
+                .filter(|h| h.level <= self.max_depth)
+                .map(|h| h.level)
+                .min()
+                .unwrap_or(1);
+            self.min_level_seq = self.outline_seq;
+            self.min_level_depth = self.max_depth;
+        }
+        let min_level = self.cached_min_level;
 
         let source = Arc::clone(&self.outline_source);
         let max_depth = self.max_depth;
@@ -306,15 +324,16 @@ impl NavState {
 
         // Compute visible headings: a heading is visible if it's at min_level
         // or all its ancestors are expanded.  Cache to avoid Vec allocation each frame.
-        let expanded_hash = self.expanded_hash();
+        // Use generation counter instead of per-frame hash computation.
+        let expanded_dirty = self.visible_expanded_gen != self.expanded_gen;
         if self.visible_seq != self.outline_seq
-            || self.visible_expanded_hash != expanded_hash
+            || expanded_dirty
             || self.visible_max_depth != max_depth
         {
             self.cached_visible =
                 compute_visible_headings(&self.outline, &self.expanded, max_depth, min_level);
             self.visible_seq = self.outline_seq;
-            self.visible_expanded_hash = expanded_hash;
+            self.visible_expanded_gen = self.expanded_gen;
             self.visible_max_depth = max_depth;
         }
 
@@ -343,6 +362,7 @@ impl NavState {
                         && toggle_idx < self.expanded.len()
                     {
                         self.expanded[toggle_idx] = !self.expanded[toggle_idx];
+                        self.expanded_gen = self.expanded_gen.wrapping_add(1);
                     }
                 }
             });

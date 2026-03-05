@@ -989,14 +989,24 @@ impl RustdownApp {
                 }
 
                 // Partial cache hit: text unchanged but zoom/wrap changed.
-                // Reuse the cached LayoutJob (skip O(n) highlight scan).
-                let job = if let Some(cache) = editor_galley_cache.as_ref()
+                // Reuse cached sections (skip O(n) highlight scan) and rebuild
+                // the LayoutJob from the document text — avoids cloning a full
+                // LayoutJob which would duplicate the entire source text.
+                let (job, sections) = if let Some(cache) = editor_galley_cache.as_ref()
                     && cache.content_seq == seq
                     && cache.content_color_mode == heading_color_mode
                 {
-                    let mut job = cache.layout_job.clone();
-                    job.wrap.max_width = wrap_width;
-                    job
+                    let job = egui::text::LayoutJob {
+                        text: string.to_owned(),
+                        sections: cache.layout_sections.clone(),
+                        wrap: egui::text::TextWrapping {
+                            max_width: wrap_width,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    // Reuse existing sections allocation by not cloning again
+                    (job, None)
                 } else {
                     let mut job = highlight::markdown_layout_job(
                         ui.style(),
@@ -1005,25 +1015,35 @@ impl RustdownApp {
                         heading_color_mode,
                     );
                     job.wrap.max_width = wrap_width;
-                    job
+                    let sections = job.sections.clone();
+                    (job, Some(sections))
                 };
 
-                let layout_job_copy = job.clone();
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                 let row_byte_offsets = if nav_visible {
                     editor::build_row_byte_offsets(&galley, string)
                 } else {
                     Vec::new()
                 };
-                *editor_galley_cache = Some(EditorGalleyCache {
-                    content_seq: seq,
-                    content_color_mode: heading_color_mode,
-                    wrap_width_bits,
-                    zoom_factor_bits,
-                    layout_job: layout_job_copy,
-                    galley: galley.clone(),
-                    row_byte_offsets,
-                });
+
+                // On partial hit, only update metadata (keep existing sections).
+                // On full rebuild, store the new sections.
+                if let Some(sections) = sections {
+                    *editor_galley_cache = Some(EditorGalleyCache {
+                        content_seq: seq,
+                        content_color_mode: heading_color_mode,
+                        wrap_width_bits,
+                        zoom_factor_bits,
+                        layout_sections: sections,
+                        galley: galley.clone(),
+                        row_byte_offsets,
+                    });
+                } else if let Some(cache) = editor_galley_cache.as_mut() {
+                    cache.wrap_width_bits = wrap_width_bits;
+                    cache.zoom_factor_bits = zoom_factor_bits;
+                    cache.galley = galley.clone();
+                    cache.row_byte_offsets = row_byte_offsets;
+                }
                 galley
             };
 

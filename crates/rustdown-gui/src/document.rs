@@ -144,7 +144,10 @@ pub struct EditorGalleyCache {
     pub content_color_mode: bool,
     pub wrap_width_bits: u32,
     pub zoom_factor_bits: u32,
-    pub layout_job: egui::text::LayoutJob,
+    /// Cached layout sections (byte ranges + format) — avoids storing a full
+    /// copy of the document text. The text is rebuilt from `Document.text` on
+    /// partial cache hits, saving ~1× document size in steady-state memory.
+    pub layout_sections: Vec<egui::text::LayoutSection>,
     pub galley: Arc<egui::Galley>,
     pub row_byte_offsets: Vec<(f32, u32)>,
 }
