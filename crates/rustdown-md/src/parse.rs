@@ -22,7 +22,7 @@ pub enum Block {
     Code {
         /// Language tag from fenced code blocks (e.g. "rust", "python").
         language: Box<str>,
-        code: String,
+        code: Box<str>,
     },
     Quote(Vec<Self>),
     UnorderedList(Vec<ListItem>),
@@ -69,6 +69,8 @@ pub struct ListItem {
 pub struct StyledText {
     pub text: String,
     pub spans: Vec<Span>,
+    /// Deduplicated link URLs referenced by `SpanStyle::link_idx`.
+    pub links: Vec<Rc<str>>,
     /// Cached character count (avoids repeated O(n) UTF-8 scans for non-ASCII text).
     pub char_count: u32,
     /// Whether any span has a link (avoids linear scan in render path).
@@ -76,17 +78,19 @@ pub struct StyledText {
 }
 
 /// Inline formatting flags that can be combined (e.g., bold + italic).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpanStyle {
     /// Bitfield: bit 0 = strong, 1 = emphasis, 2 = strikethrough, 3 = code.
     flags: u8,
-    pub link: Option<Rc<str>>,
+    /// Index into `StyledText::links`, or `NO_LINK` if no link.
+    pub(crate) link_idx: u8,
 }
 
 const FLAG_STRONG: u8 = 1;
 const FLAG_EMPHASIS: u8 = 2;
 const FLAG_STRIKETHROUGH: u8 = 4;
 const FLAG_CODE: u8 = 8;
+const NO_LINK: u8 = u8::MAX;
 
 impl SpanStyle {
     #[cfg(test)]
@@ -94,12 +98,17 @@ impl SpanStyle {
     pub const fn plain() -> Self {
         Self {
             flags: 0,
-            link: None,
+            link_idx: NO_LINK,
         }
     }
 
     #[must_use]
-    pub const fn strong(&self) -> bool {
+    pub const fn has_link(self) -> bool {
+        self.link_idx != NO_LINK
+    }
+
+    #[must_use]
+    pub const fn strong(self) -> bool {
         self.flags & FLAG_STRONG != 0
     }
 
@@ -109,7 +118,7 @@ impl SpanStyle {
     }
 
     #[must_use]
-    pub const fn emphasis(&self) -> bool {
+    pub const fn emphasis(self) -> bool {
         self.flags & FLAG_EMPHASIS != 0
     }
 
@@ -119,7 +128,7 @@ impl SpanStyle {
     }
 
     #[must_use]
-    pub const fn strikethrough(&self) -> bool {
+    pub const fn strikethrough(self) -> bool {
         self.flags & FLAG_STRIKETHROUGH != 0
     }
 
@@ -130,7 +139,7 @@ impl SpanStyle {
     }
 
     #[must_use]
-    pub const fn code(&self) -> bool {
+    pub const fn code(self) -> bool {
         self.flags & FLAG_CODE != 0
     }
 
@@ -142,8 +151,8 @@ impl SpanStyle {
 
 /// An inline formatting span within a `StyledText`.
 ///
-/// Uses `u32` offsets to keep the struct compact (32 bytes instead of 40).
-/// Documents larger than 4 GiB are unsupported.
+/// Uses `u32` offsets and a 2-byte `SpanStyle` (flags + link index) to keep
+/// the struct at 12 bytes, improving cache locality during block iteration.
 #[derive(Clone, Debug)]
 pub struct Span {
     pub start: u32,
@@ -157,8 +166,13 @@ impl StyledText {
         let start = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
         self.text.push_str(s);
         let end = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
-        self.char_count = self.char_count.saturating_add(s.chars().count() as u32);
-        if style.link.is_some() {
+        let char_count = if s.is_ascii() {
+            s.len()
+        } else {
+            s.chars().count()
+        };
+        self.char_count = self.char_count.saturating_add(char_count as u32);
+        if style.has_link() {
             self.has_links = true;
         }
         if start < end {
@@ -172,6 +186,31 @@ impl StyledText {
             }
             self.spans.push(Span { start, end, style });
         }
+    }
+
+    /// Look up a link URL by index, returning `None` for `NO_LINK`.
+    #[must_use]
+    pub fn link_url(&self, link_idx: u8) -> Option<&Rc<str>> {
+        if link_idx == NO_LINK {
+            None
+        } else {
+            self.links.get(link_idx as usize)
+        }
+    }
+
+    /// Intern a link URL, reusing an existing entry if the same URL is already stored.
+    fn intern_link(&mut self, url: Rc<str>) -> u8 {
+        for (i, existing) in self.links.iter().enumerate() {
+            if Rc::ptr_eq(existing, &url) || **existing == *url {
+                return i as u8;
+            }
+        }
+        let idx = self.links.len();
+        if idx >= NO_LINK as usize {
+            return NO_LINK; // saturate — won't create hyperlink but won't crash
+        }
+        self.links.push(url);
+        idx as u8
     }
 }
 
@@ -397,7 +436,10 @@ fn parse_code_block(events: &[Event<'_>], language: Box<str>, blocks: &mut Vec<B
             _ => consumed += 1,
         }
     }
-    blocks.push(Block::Code { language, code });
+    blocks.push(Block::Code {
+        language,
+        code: code.into_boxed_str(),
+    });
     consumed
 }
 
@@ -673,22 +715,6 @@ impl InlineState {
         f
     }
 
-    /// Current `SpanStyle` — O(1), no stack traversal.
-    fn style(&self) -> SpanStyle {
-        SpanStyle {
-            flags: self.flags(),
-            link: self.cached_link.clone(),
-        }
-    }
-
-    /// Current `SpanStyle` with the code flag set.
-    fn style_with_code(&self) -> SpanStyle {
-        SpanStyle {
-            flags: self.flags() | FLAG_CODE,
-            link: self.cached_link.clone(),
-        }
-    }
-
     fn push(&mut self, flag: InlineFlag) {
         match &flag {
             InlineFlag::Strong => self.strong_count += 1,
@@ -746,21 +772,45 @@ impl InlineState {
 }
 
 fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut InlineState) {
+    /// Resolve the link index for the current inline context.
+    fn resolve_link(state: &InlineState, styled: &mut StyledText) -> u8 {
+        match state.cached_link.as_ref() {
+            Some(url) => styled.intern_link(Rc::clone(url)),
+            None => NO_LINK,
+        }
+    }
+
     match event {
         Event::Text(t) => {
-            let style = state.style();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags(),
+                link_idx,
+            };
             styled.push_text(t, style);
         }
         Event::Code(c) => {
-            let style = state.style_with_code();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags() | FLAG_CODE,
+                link_idx,
+            };
             styled.push_text(c, style);
         }
         Event::SoftBreak => {
-            let style = state.style();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags(),
+                link_idx,
+            };
             styled.push_text(" ", style);
         }
         Event::HardBreak => {
-            let style = state.style();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags(),
+                link_idx,
+            };
             styled.push_text("\n", style);
         }
         Event::Start(Tag::Strong) => state.push(InlineFlag::Strong),
@@ -775,8 +825,11 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
         Event::End(TagEnd::Link) => state.pop_link(),
         // Render footnote references as bracketed text.
         Event::FootnoteReference(label) => {
-            // Build bracket text in one shot to avoid multiple style clones.
-            let style = state.style();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags(),
+                link_idx,
+            };
             let mut ref_text = String::with_capacity(label.len() + 2);
             ref_text.push('[');
             ref_text.push_str(label);
@@ -785,12 +838,20 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
         }
         // Render inline HTML as plain text.
         Event::InlineHtml(html) | Event::Html(html) => {
-            let style = state.style_with_code();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags() | FLAG_CODE,
+                link_idx,
+            };
             styled.push_text(html, style);
         }
         // Math events (not enabled by default, but handle gracefully).
         Event::InlineMath(math) | Event::DisplayMath(math) => {
-            let style = state.style_with_code();
+            let link_idx = resolve_link(state, styled);
+            let style = SpanStyle {
+                flags: state.flags() | FLAG_CODE,
+                link_idx,
+            };
             styled.push_text(math, style);
         }
         _ => {}
@@ -935,7 +996,7 @@ mod tests {
                                 assert!(text.spans.iter().any(|s| s.style.code()), "{label}: code");
                             }
                             "link" => assert!(
-                                text.spans.iter().any(|s| s.style.link.is_some()),
+                                text.spans.iter().any(|s| s.style.has_link()),
                                 "{label}: link"
                             ),
                             "strikethrough" => assert!(
@@ -1208,7 +1269,7 @@ mod tests {
                     let has = st
                         .spans
                         .iter()
-                        .any(|s| s.style.link.as_deref() == Some(url));
+                        .any(|s| st.link_url(s.style.link_idx).map(Rc::as_ref) == Some(url));
                     assert!(has, "{label}: no span with URL {url:?}");
                 }
                 other => panic!("{label}: expected paragraph, got {other:?}"),
@@ -1218,7 +1279,7 @@ mod tests {
         let blocks = parse_markdown("Visit [a](https://a.com) and [b](https://b.com) today.");
         match &blocks[0] {
             Block::Paragraph(st) => {
-                let n = st.spans.iter().filter(|s| s.style.link.is_some()).count();
+                let n = st.spans.iter().filter(|s| s.style.has_link()).count();
                 assert!(n >= 2, "expected >=2 links, got {n}");
             }
             other => panic!("expected paragraph, got {other:?}"),
@@ -1576,7 +1637,7 @@ mod tests {
         let mut st = StyledText::default();
         let mut bold = SpanStyle::plain();
         bold.set_strong();
-        st.push_text("bold1", bold.clone());
+        st.push_text("bold1", bold);
         st.push_text("bold2", bold);
         assert_eq!(st.spans.len(), 1);
         assert!(st.spans[0].style.strong());
@@ -1646,7 +1707,11 @@ mod tests {
             assert_eq!(s.style.strong(), strong, "{label}: strong");
             assert_eq!(s.style.emphasis(), emph, "{label}: emph");
             assert_eq!(s.style.strikethrough(), strike, "{label}: strike");
-            assert_eq!(s.style.link.as_deref(), link, "{label}: link");
+            assert_eq!(
+                st.link_url(s.style.link_idx).map(Rc::as_ref),
+                link,
+                "{label}: link"
+            );
             validate_styled_text(&st);
         }
     }
@@ -1678,7 +1743,10 @@ mod tests {
         let st = parse_paragraph("[**bold** and *italic*](url)");
         validate_styled_text(&st);
         for span in &st.spans {
-            assert_eq!(span.style.link.as_deref(), Some("url"));
+            assert_eq!(
+                st.link_url(span.style.link_idx).map(Rc::as_ref),
+                Some("url")
+            );
         }
         assert!(st.spans.iter().any(|s| s.style.strong()));
         assert!(st.spans.iter().any(|s| s.style.emphasis()));
@@ -1689,7 +1757,7 @@ mod tests {
         let urls: Vec<_> = st
             .spans
             .iter()
-            .filter_map(|s| s.style.link.as_deref())
+            .filter_map(|s| st.link_url(s.style.link_idx).map(Rc::as_ref))
             .collect();
         assert!(urls.contains(&"url1") && urls.contains(&"url2"));
 
@@ -1699,13 +1767,13 @@ mod tests {
         assert!(
             st.spans
                 .iter()
-                .any(|s| s.style.code() && s.style.link.is_some())
+                .any(|s| s.style.code() && s.style.has_link())
         );
 
         // Adjacent different links don't merge
         let st = parse_paragraph("[a](u1)[b](u2)");
         validate_styled_text(&st);
-        assert!(st.spans.iter().filter(|s| s.style.link.is_some()).count() >= 2);
+        assert!(st.spans.iter().filter(|s| s.style.has_link()).count() >= 2);
 
         // Emphasis across softbreak
         let st = parse_paragraph("*italic\nacross lines*");
@@ -1776,7 +1844,7 @@ mod tests {
         }
         let st = parse_paragraph(&md);
         validate_styled_text(&st);
-        assert!(st.spans.iter().filter(|s| s.style.link.is_some()).count() >= 50);
+        assert!(st.spans.iter().filter(|s| s.style.has_link()).count() >= 50);
 
         // 100 code spans
         md.clear();
@@ -1869,7 +1937,7 @@ mod tests {
                 assert!(c.spans.iter().any(|s| s.style.strong()));
                 assert!(c.spans.iter().any(|s| s.style.emphasis()));
                 assert!(c.spans.iter().any(|s| s.style.code()));
-                assert!(c.spans.iter().any(|s| s.style.link.is_some()));
+                assert!(c.spans.iter().any(|s| s.style.has_link()));
                 assert!(c.spans.iter().any(|s| s.style.strikethrough()));
             }
             other => panic!("expected table, got {other:?}"),
@@ -2002,15 +2070,12 @@ mod tests {
         ] {
             match &parse_markdown(md)[0] {
                 Block::Paragraph(st) => {
-                    let url = st
+                    let span = st
                         .spans
                         .iter()
-                        .find(|s| s.style.link.is_some())
-                        .unwrap_or_else(|| panic!("link span for {md:?}"))
-                        .style
-                        .link
-                        .as_ref()
-                        .expect("url");
+                        .find(|s| s.style.has_link())
+                        .unwrap_or_else(|| panic!("link span for {md:?}"));
+                    let url = st.link_url(span.style.link_idx).expect("url");
                     assert!(
                         url.contains(frag),
                         "URL should contain {frag:?}, got {url:?}"

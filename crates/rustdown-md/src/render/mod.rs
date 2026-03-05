@@ -736,7 +736,7 @@ mod tests {
                 "code",
                 Block::Code {
                     language: Box::from("rust"),
-                    code: "fn main() {}\n".to_owned(),
+                    code: "fn main() {}\n".into(),
                 },
             ),
             (
@@ -1720,7 +1720,7 @@ mod tests {
         let h_small = estimate_block_height(
             &Block::Code {
                 language: Box::from(""),
-                code: "line1".to_owned(),
+                code: "line1".into(),
             },
             14.0,
             400.0,
@@ -1732,7 +1732,8 @@ mod tests {
                 code: (1..=10)
                     .map(|i| format!("line{i}"))
                     .collect::<Vec<_>>()
-                    .join("\n"),
+                    .join("\n")
+                    .into_boxed_str(),
             },
             14.0,
             400.0,
@@ -2045,7 +2046,13 @@ mod tests {
         let (blocks, _) = headless_render("Visit <https://example.com> for info.");
         match &blocks[0] {
             Block::Paragraph(text) => {
-                assert!(text.spans.iter().any(|s| matches!(&s.style.link, Some(url) if url.as_ref() == "https://example.com")), "should have autolink");
+                assert!(
+                    text.spans
+                        .iter()
+                        .any(|s| text.link_url(s.style.link_idx).map(std::rc::Rc::as_ref)
+                            == Some("https://example.com")),
+                    "should have autolink"
+                );
             }
             other => panic!("expected Paragraph, got {other:?}"),
         }
@@ -2630,21 +2637,21 @@ mod tests {
                 "empty",
                 Block::Code {
                     language: Box::from(""),
-                    code: String::new(),
+                    code: Box::from(""),
                 },
             ),
             (
                 "single_line",
                 Block::Code {
                     language: Box::from("rust"),
-                    code: "let x = 1;".to_owned(),
+                    code: "let x = 1;".into(),
                 },
             ),
             (
                 "long_single_line",
                 Block::Code {
                     language: Box::from(""),
-                    code: "x".repeat(10_000),
+                    code: "x".repeat(10_000).into_boxed_str(),
                 },
             ),
         ];
@@ -2661,7 +2668,7 @@ mod tests {
         let h_big = estimate_block_height(
             &Block::Code {
                 language: Box::from("text"),
-                code: big_code,
+                code: big_code.into_boxed_str(),
             },
             14.0,
             600.0,
@@ -2673,7 +2680,7 @@ mod tests {
         let h_3 = estimate_block_height(
             &Block::Code {
                 language: Box::from(""),
-                code: "a\nb\nc\n".to_owned(),
+                code: "a\nb\nc\n".into(),
             },
             14.0,
             600.0,
@@ -2685,7 +2692,8 @@ mod tests {
                 code: (0..100)
                     .map(|i| format!("line {i}"))
                     .collect::<Vec<_>>()
-                    .join("\n"),
+                    .join("\n")
+                    .into_boxed_str(),
             },
             14.0,
             600.0,
@@ -2696,11 +2704,11 @@ mod tests {
         // Trailing newlines not overcounted
         let with_trailing = Block::Code {
             language: Box::from(""),
-            code: "line1\nline2\n".to_owned(),
+            code: "line1\nline2\n".into(),
         };
         let without_trailing = Block::Code {
             language: Box::from(""),
-            code: "line1\nline2".to_owned(),
+            code: "line1\nline2".into(),
         };
         let h_wt = estimate_block_height(&with_trailing, 14.0, 600.0, &style);
         let h_wot = estimate_block_height(&without_trailing, 14.0, 600.0, &style);
@@ -2712,11 +2720,11 @@ mod tests {
         // Only newlines ≈ empty
         let only_nl = Block::Code {
             language: Box::from(""),
-            code: "\n\n\n".to_owned(),
+            code: "\n\n\n".into(),
         };
         let empty = Block::Code {
             language: Box::from(""),
-            code: String::new(),
+            code: Box::from(""),
         };
         let h_nl = estimate_block_height(&only_nl, 14.0, 600.0, &style);
         let h_empty = estimate_block_height(&empty, 14.0, 600.0, &style);
@@ -2728,11 +2736,11 @@ mod tests {
         // Language label adds height
         let with_lang = Block::Code {
             language: Box::from("python"),
-            code: "pass".to_owned(),
+            code: "pass".into(),
         };
         let no_lang = Block::Code {
             language: Box::from(""),
-            code: "pass".to_owned(),
+            code: "pass".into(),
         };
         let h_wl = estimate_block_height(&with_lang, 14.0, 600.0, &style);
         let h_nl2 = estimate_block_height(&no_lang, 14.0, 600.0, &style);
@@ -2754,7 +2762,7 @@ mod tests {
             Block::Paragraph(plain("text")),
             Block::Code {
                 language: Box::from("rs"),
-                code: "code".to_owned(),
+                code: "code".into(),
             },
             Block::Quote(vec![Block::Paragraph(plain("q"))]),
             Block::UnorderedList(vec![ListItem {
@@ -2813,7 +2821,7 @@ mod tests {
             Block::Paragraph(plain("Some body text here.")),
             Block::Code {
                 language: Box::from("py"),
-                code: "print('hi')\n".to_owned(),
+                code: "print('hi')\n".into(),
             },
             Block::Quote(vec![Block::Paragraph(plain("quoted"))]),
             Block::UnorderedList(vec![
@@ -4291,7 +4299,7 @@ mod tests {
             Block::Heading { level, text } => {
                 assert_eq!(*level, 2);
                 assert!(
-                    text.spans.iter().any(|s| s.style.link.is_some()),
+                    text.spans.iter().any(|s| s.style.has_link()),
                     "heading should have link span"
                 );
             }

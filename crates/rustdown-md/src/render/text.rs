@@ -32,7 +32,7 @@ pub(super) struct SpanFormat {
 
 impl SpanFormat {
     fn resolve(
-        span_style: &SpanStyle,
+        span_style: SpanStyle,
         md_style: &MarkdownStyle,
         base_color: egui::Color32,
         ui: &egui::Ui,
@@ -62,7 +62,7 @@ impl SpanFormat {
                 .code_bg
                 .unwrap_or_else(|| ui.visuals().faint_bg_color);
         }
-        if span_style.link.is_some() {
+        if span_style.has_link() {
             sf.color = md_style
                 .link_color
                 .unwrap_or_else(|| ui.visuals().hyperlink_color);
@@ -158,7 +158,7 @@ pub(super) fn render_text_with_links(
                 rt = rt.strikethrough();
             }
 
-            if let Some(ref url) = span.style.link {
+            if let Some(url) = st.link_url(span.style.link_idx) {
                 if span.style.strong() {
                     rt = rt.strong();
                 }
@@ -208,7 +208,7 @@ pub(super) fn build_layout_job(
         if start >= end {
             continue;
         }
-        let sf = SpanFormat::resolve(&span.style, style, base_color, ui);
+        let sf = SpanFormat::resolve(span.style, style, base_color, ui);
         let span_size = if span.style.code() { size * 0.9 } else { size };
         let mut format = egui::TextFormat {
             font_id: egui::FontId::new(span_size, sf.font_family),
