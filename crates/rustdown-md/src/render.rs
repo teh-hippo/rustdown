@@ -517,10 +517,9 @@ fn resolve_image_url<'a>(url: &'a str, base_uri: &str) -> std::borrow::Cow<'a, s
 
     // Relative path — ensure exactly one '/' separator.
     let base_slash = base_uri.ends_with('/');
-    let url_slash = url.starts_with('/');
     let mut s = String::with_capacity(base_uri.len() + url.len() + 1);
     s.push_str(base_uri);
-    if !base_slash && !url_slash {
+    if !base_slash {
         s.push('/');
     }
     s.push_str(url);

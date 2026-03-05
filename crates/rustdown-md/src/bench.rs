@@ -8,7 +8,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::parse::parse_markdown;
-    use crate::render::{MarkdownCache, simple_hash};
+    use crate::render::{MarkdownCache, MarkdownViewer, simple_hash};
     use crate::stress;
     use crate::style::MarkdownStyle;
 
@@ -1225,5 +1225,151 @@ mod tests {
             .filter(|b| matches!(b, crate::parse::Block::Code { .. }))
             .count();
         assert_eq!(code_count, 500);
+    }
+
+    // ── Integration / cross-module tests ─────────────────────────
+
+    #[test]
+    fn integration_parse_render_round_trip() {
+        // Parse then render various markdown documents and verify consistency.
+        let docs = [
+            "# Hello\n\nWorld\n",
+            "| A | B |\n|---|---|\n| 1 | 2 |\n",
+            "```rust\nfn main() {}\n```\n",
+            "> Quote\n>\n> More\n",
+            "- Item 1\n- Item 2\n  - Sub\n",
+            "1. First\n2. Second\n",
+            "![alt](url)\n",
+            "---\n",
+            "**bold** *italic* `code` ~~strike~~\n",
+            "[link](url)\n",
+        ];
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+
+        for (i, md) in docs.iter().enumerate() {
+            let mut cache = MarkdownCache::default();
+            let style = MarkdownStyle::colored(&egui::Visuals::dark());
+            let viewer = MarkdownViewer::new("integration");
+
+            // Parse + render should not panic for any valid markdown.
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, md, None);
+                });
+            });
+
+            assert!(
+                !cache.blocks.is_empty() || md.trim().is_empty(),
+                "doc {i} should produce blocks: {md:?}"
+            );
+            assert!(
+                cache.total_height >= 0.0,
+                "doc {i} should have non-negative height: {}",
+                cache.total_height
+            );
+        }
+    }
+
+    #[test]
+    fn integration_cache_stability() {
+        // Multiple renders of the same document should produce stable heights.
+        let md = "# Title\n\nParagraph.\n\n```\ncode\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n> Quote\n\n- List\n";
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("stability");
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+
+        // First render.
+        let _ = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        let h1 = cache.total_height;
+
+        // Second render (same content — should be stable or converge).
+        let _ = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        let h2 = cache.total_height;
+
+        // Third render.
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md, None);
+            });
+        });
+        let h3 = cache.total_height;
+
+        // Heights should converge — difference between h2 and h3 should be ≤ h1↔h2.
+        let delta_12 = (h1 - h2).abs();
+        let delta_23 = (h2 - h3).abs();
+        assert!(
+            delta_23 <= delta_12 + 1.0,
+            "heights should converge: h1={h1}, h2={h2}, h3={h3}, \
+             delta12={delta_12}, delta23={delta_23}"
+        );
+    }
+
+    #[test]
+    fn integration_document_switch_cache_invalidation() {
+        // Switching documents should invalidate the cache.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let viewer = MarkdownViewer::new("switch");
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+
+        // Render document A.
+        let md_a = "# Document A\n\nSome text.\n";
+        let _ = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md_a, None);
+            });
+        });
+        let blocks_a = cache.blocks.len();
+
+        // Render document B.
+        let md_b = "# Document B\n\nDifferent text.\n\nMore content.\n\n## Section 2\n";
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_scrollable(ui, &mut cache, &style, md_b, None);
+            });
+        });
+        let blocks_b = cache.blocks.len();
+
+        assert_ne!(
+            blocks_a, blocks_b,
+            "switching documents should change block count"
+        );
     }
 }
