@@ -245,7 +245,9 @@ fn estimate_block_height(
         }
         Block::Code { language, code, .. } => {
             let mono_size = body_size * 0.9;
-            let lines = (bytecount_newlines(code.as_bytes()) + 1).max(1) as f32;
+            // Match render_code_block: trailing newlines are stripped before display.
+            let trimmed = code.trim_end_matches('\n');
+            let lines = (bytecount_newlines(trimmed.as_bytes()) + 1).max(1) as f32;
             // 12.0 for Frame inner_margin (6px each side), 1.4 line spacing.
             // Add language label height when present.
             let lang_h = if language.is_empty() { 0.0 } else { body_size };
@@ -4164,6 +4166,48 @@ Normal paragraph.
         assert_sane_height(h, "10k-char single-line code");
         // Code blocks count newlines, so single line → height for 1 line.
         assert!(h.is_finite());
+    }
+
+    #[test]
+    fn code_block_trailing_newlines_not_overcounted() {
+        // pulldown-cmark always appends a trailing `\n` to code content.
+        // The renderer strips trailing newlines before display, so the
+        // height estimate must do the same to avoid systematic over-counting.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let with_trailing = Block::Code {
+            language: String::new(),
+            code: "line1\nline2\n".to_owned(),
+        };
+        let without_trailing = Block::Code {
+            language: String::new(),
+            code: "line1\nline2".to_owned(),
+        };
+        let h_with = estimate_block_height(&with_trailing, 14.0, 600.0, &style);
+        let h_without = estimate_block_height(&without_trailing, 14.0, 600.0, &style);
+        assert!(
+            (h_with - h_without).abs() < f32::EPSILON,
+            "trailing newline should not increase height: with={h_with}, without={h_without}"
+        );
+    }
+
+    #[test]
+    fn code_block_only_newlines_estimates_one_line() {
+        // A code block containing only newlines renders as a single NBSP line.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let only_newlines = Block::Code {
+            language: String::new(),
+            code: "\n\n\n".to_owned(),
+        };
+        let empty = Block::Code {
+            language: String::new(),
+            code: String::new(),
+        };
+        let h_nl = estimate_block_height(&only_newlines, 14.0, 600.0, &style);
+        let h_empty = estimate_block_height(&empty, 14.0, 600.0, &style);
+        assert!(
+            (h_nl - h_empty).abs() < f32::EPSILON,
+            "only-newlines block should match empty block height: nl={h_nl}, empty={h_empty}"
+        );
     }
 
     #[test]

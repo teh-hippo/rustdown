@@ -468,4 +468,22 @@ mod tests {
         assert_eq!(job.sections.len(), 1);
         assert_eq!(job.sections[0].byte_range, 0..source.len());
     }
+
+    #[test]
+    fn backtick_fence_with_backtick_in_info_not_highlighted_as_fence() {
+        // CommonMark: backtick fence info strings must not contain backticks.
+        // Such lines should be treated as normal text, not fence delimiters.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "```foo`bar\nsome text\n```\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        // The second line "some text" should be base-styled (not monospace
+        // code), because the first line is not a valid fence opener.
+        let text_sec = section_for_snippet(&job, "some text");
+        assert_eq!(
+            text_sec.format.color,
+            visuals.text_color(),
+            "content after invalid backtick fence should be base-styled, not code",
+        );
+    }
 }

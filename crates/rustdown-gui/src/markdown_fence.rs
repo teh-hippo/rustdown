@@ -20,6 +20,11 @@ pub fn consume_fence_delimiter(line: &str, state: &mut Option<FenceState>) -> bo
         }
         Some(_) => false,
         None => {
+            // Per CommonMark §4.5: backtick fences must not have backticks
+            // in the info string.  Tilde fences have no such restriction.
+            if marker == b'`' && rest.contains('`') {
+                return false;
+            }
             *state = Some(FenceState { marker, marker_len });
             true
         }
@@ -81,5 +86,21 @@ mod tests {
         assert!(!consume_fence_delimiter("~~", &mut state));
         assert!(!consume_fence_delimiter("plain text", &mut state));
         assert!(state.is_none());
+    }
+
+    #[test]
+    fn backtick_fence_with_backtick_in_info_string_rejected() {
+        // CommonMark §4.5: backtick fence info strings must not contain backticks.
+        let mut state = None;
+        assert!(!consume_fence_delimiter("```foo`bar", &mut state));
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn tilde_fence_with_backtick_in_info_string_allowed() {
+        // Tilde fences have no restriction on backticks in the info string.
+        let mut state = None;
+        assert!(consume_fence_delimiter("~~~foo`bar", &mut state));
+        assert!(state.is_some());
     }
 }
