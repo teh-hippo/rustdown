@@ -477,8 +477,18 @@ fn render_code_block(
             ui.set_min_width(available - 12.0);
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
+                // Only strip trailing newlines, not whitespace — intentional
+                // trailing spaces in code should be preserved.
+                let trimmed = code.trim_end_matches('\n');
+                // Show a non-breaking space for empty blocks so the frame
+                // maintains a visible minimum height.
+                let display = if trimmed.is_empty() {
+                    "\u{00A0}"
+                } else {
+                    trimmed
+                };
                 ui.label(
-                    egui::RichText::new(code.trim_end())
+                    egui::RichText::new(display)
                         .font(mono)
                         .color(ui.visuals().text_color()),
                 );
@@ -531,7 +541,7 @@ fn render_blockquote(
 }
 
 fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
-    ui.add_space(body_size * 0.3);
+    ui.add_space(body_size * 0.4);
     let rect = ui.available_rect_before_wrap();
     let y = rect.min.y;
     let color = style
@@ -541,7 +551,7 @@ fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
         [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
         egui::Stroke::new(1.0, color),
     );
-    ui.add_space(body_size * 0.5);
+    ui.add_space(body_size * 0.4);
 }
 
 // ── Inline text rendering ──────────────────────────────────────────
