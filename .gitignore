@@ -4,3 +4,8 @@
 .DS_Store
 .pii-blocklist
 rust_out
+# Merge sidecar files created by the app or tests
+**/*.rustdown-merge*
+# Temp files from atomic writes
+**/.rustdown-tmp-*
+**/.rustdown-backup-*
