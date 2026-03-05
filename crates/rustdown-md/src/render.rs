@@ -100,12 +100,18 @@ impl MarkdownCache {
         self.total_height = acc;
     }
 
-    /// Return the Y offset for the `ordinal`th heading block (0-based).
+    /// Return the Y offset for the `ordinal`th **non-empty** heading block
+    /// (0-based).  Empty headings (no visible text) are skipped so the
+    /// ordinal aligns with `nav_outline::extract_headings` which also
+    /// excludes them.
     #[must_use]
     pub fn heading_y(&self, ordinal: usize) -> Option<f32> {
         let mut seen = 0usize;
         for (idx, block) in self.blocks.iter().enumerate() {
-            if matches!(block, Block::Heading { .. }) {
+            if let Block::Heading { text, .. } = block {
+                if text.text.is_empty() {
+                    continue;
+                }
                 if seen == ordinal {
                     return self.cum_y.get(idx).copied();
                 }
@@ -1248,6 +1254,51 @@ mod tests {
         cache.ensure_parsed("# A\n\n## B\n");
         cache.ensure_heights(14.0, 400.0, &style);
         assert!(cache.heading_y(2).is_none());
+    }
+
+    #[test]
+    fn heading_y_skips_empty_headings() {
+        // "# \n" is an empty heading (no text content), "## Real\n" has text.
+        // heading_y must skip empty headings so ordinals align with
+        // nav_outline::extract_headings which also excludes them.
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# \n\n## Real\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+
+        // Ordinal 0 should be "## Real", not the empty "# ".
+        let y = cache.heading_y(0);
+        assert!(
+            y.is_some(),
+            "heading_y(0) should find the non-empty heading"
+        );
+        assert!(
+            y.unwrap_or(0.0) > 0.0,
+            "heading_y(0) should skip empty heading at Y=0 and return Y of '## Real'"
+        );
+        // Only one non-empty heading, so ordinal 1 should be None.
+        assert!(
+            cache.heading_y(1).is_none(),
+            "heading_y(1) should be None (only one non-empty heading)"
+        );
+    }
+
+    #[test]
+    fn heading_y_empty_heading_between_real_ones() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# First\n\n## \n\n### Third\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+
+        let y0 = cache.heading_y(0);
+        let y1 = cache.heading_y(1);
+        assert!(y0.is_some());
+        assert!(y1.is_some());
+        assert!(
+            y0.unwrap_or(0.0) < y1.unwrap_or(0.0),
+            "ordinals should map to First then Third, skipping empty ## "
+        );
+        assert!(cache.heading_y(2).is_none(), "only two non-empty headings");
     }
 
     #[test]

@@ -162,7 +162,10 @@ pub fn markdown_layout_job(
         }
 
         let trimmed = line.trim_start();
-        if trimmed.as_bytes().first() == Some(&b'#') {
+        // CommonMark: ATX headings allow 0-3 spaces of indentation only.
+        let indent = line.len() - trimmed.len();
+        let indent_ok = indent <= 3 && line.as_bytes()[..indent].iter().all(|&b| b == b' ');
+        if indent_ok && trimmed.as_bytes().first() == Some(&b'#') {
             let level = trimmed.bytes().take_while(|b| *b == b'#').count();
             if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
                 let kind = FmtIdx::Heading(level);
@@ -484,6 +487,54 @@ mod tests {
             text_sec.format.color,
             visuals.text_color(),
             "content after invalid backtick fence should be base-styled, not code",
+        );
+    }
+
+    // ── Indentation-limit tests ─────────────────────────────────────
+
+    #[test]
+    fn four_space_indented_heading_not_styled_as_heading() {
+        // CommonMark: 4+ spaces makes it an indented code block, not a heading.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "    # Not a heading\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(
+            job.sections[0].format.color,
+            visuals.text_color(),
+            "4-space indented heading should be base text, not heading"
+        );
+    }
+
+    #[test]
+    fn three_space_indented_heading_styled_as_heading() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "   # Heading\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let heading_sec = section_for_snippet(&job, "Heading");
+        // Heading format uses a different color than body text.
+        assert_ne!(
+            heading_sec.format.color,
+            visuals.text_color(),
+            "3-space indented heading should be styled as heading"
+        );
+    }
+
+    #[test]
+    fn four_space_indented_fence_not_highlighted_as_fence() {
+        // 4-space indented fences are indented code blocks per CommonMark.
+        // The content line "    code" (no backticks) must NOT get the fenced
+        // code block styling (monospace + faint background).
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "    ```rust\n    code\n    ```\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let code_sec = section_for_snippet(&job, "code");
+        assert_ne!(
+            code_sec.format.background, visuals.faint_bg_color,
+            "4-space indented content should not be fenced-code-styled"
         );
     }
 }

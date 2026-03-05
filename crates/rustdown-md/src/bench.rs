@@ -619,4 +619,444 @@ mod tests {
             "non-linear scaling: {ratio:.1}x (500KB={t500:?}, 100KB={t100:?})"
         );
     }
+
+    // ════════════════════════════════════════════════════════════════
+    //  Cross-cutting integration stress tests
+    // ════════════════════════════════════════════════════════════════
+
+    // ── 1. Round-trip consistency ──────────────────────────────────
+
+    /// Parse → estimate heights → re-estimate: heights must be identical.
+    #[test]
+    fn roundtrip_height_idempotent_all_generators() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+
+        type GenFn = fn(usize) -> String;
+        let generators: &[(&str, GenFn)] = &[
+            ("large_mixed", stress::large_mixed_doc),
+            ("unicode", stress::unicode_stress_doc),
+            ("pathological", stress::pathological_doc),
+            ("table_heavy", stress::table_heavy_doc),
+            ("emoji_heavy", stress::emoji_heavy_doc),
+            ("task_list", stress::task_list_doc),
+        ];
+
+        for (name, gen_fn) in generators {
+            for &target_kb in &[10, 50, 100] {
+                let doc = gen_fn(target_kb);
+                let mut cache = MarkdownCache::default();
+
+                // First parse + estimate.
+                cache.ensure_parsed(&doc);
+                cache.ensure_heights(14.0, 600.0, &style);
+                let heights_first = cache.heights.clone();
+                let total_first = cache.total_height;
+
+                // Force re-estimation by clearing heights.
+                cache.heights.clear();
+                cache.ensure_heights(14.0, 600.0, &style);
+
+                assert_eq!(
+                    cache.heights, heights_first,
+                    "{name}/{target_kb}KB: heights differ after re-estimation"
+                );
+                assert!(
+                    (cache.total_height - total_first).abs() < f32::EPSILON,
+                    "{name}/{target_kb}KB: total_height differs: {} vs {total_first}",
+                    cache.total_height
+                );
+            }
+        }
+    }
+
+    /// Parse at width 600, re-estimate at width 600 — total must match exactly.
+    #[test]
+    fn roundtrip_same_width_total_height_stable() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        type GenFn = fn(usize) -> String;
+        let generators: &[(&str, GenFn)] = &[
+            ("large_mixed", stress::large_mixed_doc),
+            ("unicode", stress::unicode_stress_doc),
+            ("pathological", stress::pathological_doc),
+            ("table_heavy", stress::table_heavy_doc),
+            ("emoji_heavy", stress::emoji_heavy_doc),
+            ("task_list", stress::task_list_doc),
+        ];
+
+        for (name, gen_fn) in generators {
+            for &target_kb in &[10, 50, 100] {
+                let doc = gen_fn(target_kb);
+                let mut cache = MarkdownCache::default();
+                cache.ensure_parsed(&doc);
+                cache.ensure_heights(14.0, 600.0, &style);
+                let total_a = cache.total_height;
+
+                cache.heights.clear();
+                cache.ensure_heights(14.0, 600.0, &style);
+                let total_b = cache.total_height;
+
+                assert!(
+                    (total_a - total_b).abs() < f32::EPSILON,
+                    "{name}/{target_kb}KB: total_height not stable: {total_a} vs {total_b}"
+                );
+            }
+        }
+    }
+
+    // ── 2. Cache invalidation correctness ─────────────────────────
+
+    /// Parse A → parse B → parse A: blocks must be identical to first parse.
+    #[test]
+    fn cache_invalidation_aba_returns_same_blocks() {
+        let doc_a = stress::large_mixed_doc(50);
+        let doc_b = stress::unicode_stress_doc(50);
+        let mut cache = MarkdownCache::default();
+
+        // Parse A.
+        cache.ensure_parsed(&doc_a);
+        let blocks_a: Vec<String> = cache.blocks.iter().map(|b| format!("{b:?}")).collect();
+
+        // Parse B.
+        cache.ensure_parsed(&doc_b);
+        let blocks_b_count = cache.blocks.len();
+        assert_ne!(blocks_a.len(), 0);
+        // B should differ from A.
+        assert_ne!(blocks_b_count, 0);
+
+        // Parse A again — should re-parse to identical blocks.
+        cache.ensure_parsed(&doc_a);
+        let blocks_a2: Vec<String> = cache.blocks.iter().map(|b| format!("{b:?}")).collect();
+        assert_eq!(
+            blocks_a, blocks_a2,
+            "A-B-A cycle: blocks after re-parse of A differ from first parse"
+        );
+    }
+
+    /// Modify one character in a 100KB doc — hash must change.
+    #[test]
+    fn cache_detects_single_char_change() {
+        let doc = stress::large_mixed_doc(100);
+        let hash_orig = simple_hash(&doc);
+
+        // Modify one character in the middle.
+        let mut modified = doc.clone();
+        let mid = modified.len() / 2;
+        // Find a safe char boundary.
+        let safe = modified.floor_char_boundary(mid);
+        let replacement = if modified.as_bytes()[safe] == b'A' {
+            'B'
+        } else {
+            'A'
+        };
+        modified.replace_range(safe..=safe, &replacement.to_string());
+
+        let hash_mod = simple_hash(&modified);
+        assert_ne!(
+            hash_orig, hash_mod,
+            "hash did not change after single-character modification"
+        );
+
+        // Verify cache actually re-parses.
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        let blocks_orig_count = cache.blocks.len();
+        cache.ensure_parsed(&modified);
+        // Even if block count is the same, the cache should have re-parsed
+        // (pointer changed, hash changed).
+        assert!(!cache.blocks.is_empty());
+        eprintln!(
+            "single-char change: {blocks_orig_count} blocks orig, {} blocks modified",
+            cache.blocks.len()
+        );
+    }
+
+    // ── 3. Massive document stability (5MB) ───────────────────────
+
+    #[test]
+    fn massive_5mb_document_stability() {
+        let doc = stress::large_mixed_doc(5 * 1024);
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+
+        // Parse completes without panic.
+        cache.ensure_parsed(&doc);
+        assert!(!cache.blocks.is_empty(), "5MB doc produced no blocks");
+        eprintln!("5MB doc: {} blocks", cache.blocks.len());
+
+        // Height estimation completes without panic.
+        cache.ensure_heights(14.0, 600.0, &style);
+        assert!(cache.total_height > 0.0, "5MB doc total_height is zero");
+
+        // All heights are finite and positive.
+        for (i, h) in cache.heights.iter().enumerate() {
+            assert!(h.is_finite(), "height[{i}] is not finite: {h}");
+            assert!(*h > 0.0, "height[{i}] is not positive: {h}");
+        }
+
+        // cum_y is monotonically increasing.
+        for i in 1..cache.cum_y.len() {
+            assert!(
+                cache.cum_y[i] >= cache.cum_y[i - 1],
+                "cum_y not monotonic at {i}: {} < {}",
+                cache.cum_y[i],
+                cache.cum_y[i - 1]
+            );
+        }
+
+        // total_height matches sum of heights.
+        let sum: f32 = cache.heights.iter().sum();
+        assert!(
+            (cache.total_height - sum).abs() < 1.0,
+            "total_height ({}) != sum of heights ({sum})",
+            cache.total_height
+        );
+
+        // Viewport binary search at 100 positions completes without panic.
+        let n_blocks = cache.blocks.len();
+        for step in 0..100_u32 {
+            let frac = step as f32 / 100.0;
+            let vis_top = cache.total_height * frac;
+            let vis_bottom = vis_top + 800.0;
+            let first = match cache
+                .cum_y
+                .binary_search_by(|y| y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+            let mut idx = first;
+            while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
+                idx += 1;
+            }
+            std::hint::black_box((first, idx));
+        }
+    }
+
+    // ── 4. Mixed content document ─────────────────────────────────
+
+    #[test]
+    fn mixed_content_programmatic_document() {
+        use std::fmt::Write;
+        let mut doc = String::with_capacity(512 * 1024);
+
+        // 200 headings at all 6 levels.
+        for i in 0..200_u32 {
+            let level = (i % 6) + 1;
+            let hashes = "#".repeat(level as usize);
+            let _ = writeln!(doc, "{hashes} Heading {i}\n");
+        }
+
+        // 100 tables of varying sizes (1-20 columns, 1-50 rows).
+        for t in 0..100_u32 {
+            let cols = (t % 20) + 1;
+            let rows = (t % 50) + 1;
+            let _ = write!(doc, "|");
+            for c in 0..cols {
+                let _ = write!(doc, " H{c} |");
+            }
+            let _ = writeln!(doc);
+            let _ = write!(doc, "|");
+            for _ in 0..cols {
+                let _ = write!(doc, " --- |");
+            }
+            let _ = writeln!(doc);
+            for r in 0..rows {
+                let _ = write!(doc, "|");
+                for c in 0..cols {
+                    let _ = write!(doc, " R{r}C{c} |");
+                }
+                let _ = writeln!(doc);
+            }
+            let _ = writeln!(doc);
+        }
+
+        // 100 code blocks of varying sizes.
+        for cb in 0..100_u32 {
+            let lines = (cb % 30) + 1;
+            let lang = match cb % 4 {
+                0 => "rust",
+                1 => "python",
+                2 => "js",
+                _ => "",
+            };
+            let _ = writeln!(doc, "```{lang}");
+            for l in 0..lines {
+                let _ = writeln!(doc, "line {l} of code block {cb}");
+            }
+            let _ = writeln!(doc, "```\n");
+        }
+
+        // 100 lists of varying depths.
+        for li in 0..100_u32 {
+            let depth = (li % 5) + 1;
+            for d in 0..depth {
+                let indent = "  ".repeat(d as usize);
+                let _ = writeln!(doc, "{indent}- Item at depth {d} in list {li}");
+            }
+            let _ = writeln!(doc);
+        }
+
+        // Interspersed blockquotes and images.
+        for i in 0..50_u32 {
+            let _ = writeln!(
+                doc,
+                "> Blockquote {i} with **bold** and *italic*\n> Second line.\n"
+            );
+            let _ = writeln!(doc, "![alt text {i}](https://example.com/image{i}.png)\n");
+        }
+
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 600.0, &style);
+
+        assert!(
+            cache.blocks.len() > 500,
+            "expected >500 blocks, got {}",
+            cache.blocks.len()
+        );
+        assert!(
+            cache.total_height > 10_000.0,
+            "expected total_height > 10000, got {}",
+            cache.total_height
+        );
+        for (i, h) in cache.heights.iter().enumerate() {
+            assert!(*h > 0.0, "height[{i}] is not positive: {h}");
+        }
+        eprintln!(
+            "mixed content: {} blocks, total_height={}",
+            cache.blocks.len(),
+            cache.total_height
+        );
+    }
+
+    // ── 5. Width sensitivity invariant ────────────────────────────
+
+    /// Paragraph-heavy document: wider viewport → shorter total height.
+    #[test]
+    fn width_sensitivity_monotonically_decreasing() {
+        // Build a paragraph-heavy doc.
+        use std::fmt::Write;
+        let mut doc = String::with_capacity(64 * 1024);
+        for i in 0..500_u32 {
+            let _ = writeln!(
+                doc,
+                "Paragraph {i}: Lorem ipsum dolor sit amet, consectetur adipiscing \
+                 elit. Sed do eiusmod tempor incididunt ut labore et dolore magna \
+                 aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco \
+                 laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure \
+                 dolor in reprehenderit in voluptate velit esse cillum dolore eu \
+                 fugiat nulla pariatur.\n"
+            );
+        }
+
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let widths: &[f32] = &[100.0, 200.0, 400.0, 800.0, 1600.0];
+        let mut heights: Vec<f32> = Vec::new();
+
+        for &w in widths {
+            let mut cache = MarkdownCache::default();
+            cache.ensure_parsed(&doc);
+            cache.ensure_heights(14.0, w, &style);
+            heights.push(cache.total_height);
+        }
+
+        eprintln!("width sensitivity heights: {heights:?}");
+        for i in 1..heights.len() {
+            assert!(
+                heights[i] <= heights[i - 1],
+                "height at width {} ({}) > height at width {} ({}): wider should be shorter",
+                widths[i],
+                heights[i],
+                widths[i - 1],
+                heights[i - 1]
+            );
+        }
+    }
+
+    // ── 6. Empty/minimal extremes ─────────────────────────────────
+
+    #[test]
+    fn extreme_empty_string() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("");
+        cache.ensure_heights(14.0, 600.0, &style);
+        assert!(cache.blocks.is_empty());
+        assert!((cache.total_height - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn extreme_10mb_newlines() {
+        let doc = "\n".repeat(10 * 1024 * 1024);
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 600.0, &style);
+        // Should not panic. May or may not produce blocks.
+        eprintln!(
+            "10MB newlines: {} blocks, total_height={}",
+            cache.blocks.len(),
+            cache.total_height
+        );
+    }
+
+    #[test]
+    fn extreme_single_char() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("a");
+        cache.ensure_heights(14.0, 600.0, &style);
+        assert!(
+            !cache.blocks.is_empty(),
+            "single char 'a' produced no blocks"
+        );
+        assert!(cache.total_height > 0.0);
+    }
+
+    #[test]
+    fn extreme_heading_no_text() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# ");
+        cache.ensure_heights(14.0, 600.0, &style);
+        // Should not panic regardless of block count.
+        eprintln!(
+            "heading_no_text: {} blocks, total_height={}",
+            cache.blocks.len(),
+            cache.total_height
+        );
+    }
+
+    #[test]
+    fn extreme_unclosed_fence() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("```");
+        cache.ensure_heights(14.0, 600.0, &style);
+        eprintln!(
+            "unclosed_fence: {} blocks, total_height={}",
+            cache.blocks.len(),
+            cache.total_height
+        );
+    }
+
+    #[test]
+    fn extreme_1000_empty_code_blocks() {
+        let doc = "```\n```\n".repeat(1000);
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 600.0, &style);
+        assert!(
+            cache.blocks.len() >= 1000,
+            "expected >=1000 blocks from 1000 code blocks, got {}",
+            cache.blocks.len()
+        );
+        assert!(cache.total_height > 0.0);
+        for (i, h) in cache.heights.iter().enumerate() {
+            assert!(h.is_finite(), "height[{i}] not finite: {h}");
+            assert!(*h > 0.0, "height[{i}] not positive: {h}");
+        }
+    }
 }

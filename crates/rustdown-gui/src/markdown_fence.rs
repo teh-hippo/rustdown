@@ -32,7 +32,12 @@ pub fn consume_fence_delimiter(line: &str, state: &mut Option<FenceState>) -> bo
 }
 
 fn parse_fence_marker(line: &str) -> Option<(u8, usize, &str)> {
+    // CommonMark §4.5: code fences may be indented 0-3 spaces only.
     let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    if indent > 3 || line.as_bytes()[..indent].iter().any(|&b| b != b' ') {
+        return None;
+    }
     let first = *trimmed.as_bytes().first()?;
     if first != b'`' && first != b'~' {
         return None;
@@ -102,5 +107,44 @@ mod tests {
         let mut state = None;
         assert!(consume_fence_delimiter("~~~foo`bar", &mut state));
         assert!(state.is_some());
+    }
+
+    // ── Indentation-limit tests (CommonMark §4.5) ───────────────────
+
+    #[test]
+    fn fence_three_space_indent_accepted() {
+        let mut state = None;
+        assert!(consume_fence_delimiter("   ```rust", &mut state));
+        assert!(state.is_some());
+        assert!(consume_fence_delimiter("   ```", &mut state));
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn fence_four_space_indent_rejected() {
+        // 4+ spaces makes it an indented code block, not a fence.
+        let mut state = None;
+        assert!(!consume_fence_delimiter("    ```rust", &mut state));
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn fence_tab_indent_rejected() {
+        let mut state = None;
+        assert!(!consume_fence_delimiter("\t```rust", &mut state));
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn close_fence_four_space_indent_rejected() {
+        let mut state = None;
+        assert!(consume_fence_delimiter("```rust", &mut state));
+        assert!(state.is_some());
+        // Closing fence with 4-space indent is not valid.
+        assert!(!consume_fence_delimiter("    ```", &mut state));
+        assert!(state.is_some());
+        // Normal close works.
+        assert!(consume_fence_delimiter("```", &mut state));
+        assert!(state.is_none());
     }
 }

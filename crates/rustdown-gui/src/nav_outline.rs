@@ -344,4 +344,43 @@ mod tests {
             last_idx = idx;
         }
     }
+
+    // ── Cross-module: nav_outline ↔ render heading_y ordinal alignment ──
+
+    #[test]
+    fn heading_count_matches_render_heading_y_ordinals() {
+        // nav_outline::extract_headings skips empty headings.
+        // MarkdownCache::heading_y also skips empty headings (by design).
+        // Verify the two agree on heading count so ordinal-based nav-scroll
+        // lookups stay aligned.
+        use rustdown_md::{MarkdownCache, MarkdownStyle};
+
+        let style = MarkdownStyle::from_visuals(&eframe::egui::Visuals::dark());
+
+        for md in [
+            "# \n\n## Real\n",
+            "# First\n\n## \n\n### Third\n",
+            "# \n## \n### \n",
+            "# A\n## B\n### C\n",
+            "# \n\n## Real\n\n# \n\n## Also Real\n",
+        ] {
+            let outline = extract_headings(md);
+            let mut cache = MarkdownCache::default();
+            cache.ensure_parsed(md);
+            cache.ensure_heights(14.0, 400.0, &style);
+
+            // Count how many ordinals heading_y accepts (bounded to
+            // a safe maximum since we're testing small inputs).
+            let render_count = (0..100)
+                .take_while(|&ord| cache.heading_y(ord).is_some())
+                .count();
+            assert_eq!(
+                outline.len(),
+                render_count,
+                "heading ordinal count mismatch for: {md:?}\n  nav_outline={}, heading_y accepts={}",
+                outline.len(),
+                render_count
+            );
+        }
+    }
 }

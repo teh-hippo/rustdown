@@ -529,4 +529,20 @@ mod tests {
         };
         assert_eq!(format_markdown("\r", opts), "\n");
     }
+
+    // ── Fence indentation interaction (format.rs ↔ markdown_fence.rs) ──
+
+    #[test]
+    fn format_trims_whitespace_in_deeply_indented_pseudo_fence() {
+        // A line with 4+ leading spaces followed by ``` is NOT a code fence
+        // per CommonMark — it's an indented code block. format.rs must not
+        // treat it as a fence boundary, so trailing whitespace on lines
+        // "inside" should still be trimmed.
+        let source = "    ```\ntrailing tab\t\n    ```\n";
+        let result = format_markdown(source, DEFAULT_OPTIONS);
+        assert_eq!(
+            result, "    ```\ntrailing tab\n    ```\n",
+            "text between 4-space-indented pseudo-fences should be trimmed"
+        );
+    }
 }
