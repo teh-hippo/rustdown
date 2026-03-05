@@ -1060,9 +1060,7 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
     let mut h: u64 = BASIS;
 
     for chunk in chunks {
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(chunk);
-        let word = u64::from_le_bytes(buf);
+        let word = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
         h ^= word;
         h = h.wrapping_mul(PRIME);
     }
