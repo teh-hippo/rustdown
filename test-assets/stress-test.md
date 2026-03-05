@@ -615,6 +615,109 @@ Text between images.
 
 ---
 
+## Autolinks and Smart Punctuation
+
+### Bare URL Auto-linking
+
+This bare URL should become a link: https://example.com/test
+
+Another URL in a sentence: Visit https://github.com for code.
+
+### Smart Punctuation
+
+"Double smart quotes" and 'single smart quotes' should render correctly.
+
+Em dash---like this---and en dash--like this.
+
+Ellipsis... should be a single character.
+
+---
+
+## Setext Headings
+
+This Is A Setext H1
+====================
+
+This Is A Setext H2
+--------------------
+
+Text after setext headings should render normally.
+
+---
+
+## Indented Code Block
+
+    This is an indented code block.
+    It uses 4 spaces instead of fences.
+    Each line should be monospace.
+
+Text after indented code block.
+
+---
+
+## Escaped Characters
+
+\# Not a heading
+
+\* Not a bullet
+
+\> Not a blockquote
+
+\`Not code\`
+
+\[Not a link\](url)
+
+---
+
+## Adjacent Blockquotes
+
+> First blockquote.
+
+> Second blockquote immediately after.
+
+> Third blockquote with **bold** and `code`.
+
+---
+
+## Very Deeply Nested Lists
+
+- Level 1
+  - Level 2
+    - Level 3
+      - Level 4
+        - Level 5
+          - Level 6
+            - Level 7
+              - Level 8
+
+---
+
+## Multiple Blank Lines Test
+
+
+
+Above had 3 blank lines (only 1 paragraph break should render).
+
+
+
+This section also has extra blank lines above.
+
+---
+
+## Table Immediately After Heading (No Gap)
+| Tight | Table |
+|-------|-------|
+| no    | gap   |
+
+### Empty-Looking Table
+
+| A | B | C |
+|---|---|---|
+|   |   |   |
+|   |   |   |
+
+---
+
 ## Final Section
 
 If you've scrolled this far, the document rendering is working well!

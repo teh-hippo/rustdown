@@ -266,8 +266,7 @@ fn estimate_block_height(
             let item_h: f32 = items
                 .iter()
                 .map(|item| {
-                    let text_h =
-                        estimate_text_height(&item.content.text, body_size, content_w);
+                    let text_h = estimate_text_height(&item.content.text, body_size, content_w);
                     let child_h: f32 = item
                         .children
                         .iter()
@@ -679,8 +678,7 @@ fn render_text_with_links(
                 egui::FontFamily::Proportional
             };
             let span_size = if span.style.code() { size * 0.9 } else { size };
-            let mut rt =
-                egui::RichText::new(text).font(egui::FontId::new(span_size, font_family));
+            let mut rt = egui::RichText::new(text).font(egui::FontId::new(span_size, font_family));
 
             if span.style.emphasis() {
                 rt = rt.italics();
@@ -2959,7 +2957,8 @@ Normal paragraph.
 
     #[test]
     fn render_inline_formatting_stress() {
-        let md = "**bold** *italic* ***bold-italic*** `code` ~~strike~~ [link](url) **`bold code`**";
+        let md =
+            "**bold** *italic* ***bold-italic*** `code` ~~strike~~ [link](url) **`bold code`**";
         let (blocks, _) = headless_render(md);
         match &blocks[0] {
             Block::Paragraph(text) => {

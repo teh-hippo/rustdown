@@ -1358,4 +1358,140 @@ mod tests {
             other => panic!("expected heading, got {other:?}"),
         }
     }
+
+    // ── Round 9: Edge case parsing tests ──────────────────────────────
+
+    #[test]
+    fn parse_whitespace_only_input() {
+        let blocks = parse_markdown("   \n\n   \n");
+        assert!(
+            blocks.is_empty(),
+            "whitespace-only should produce no blocks"
+        );
+    }
+
+    #[test]
+    fn parse_triple_emphasis() {
+        let blocks = parse_markdown("***bold and italic***");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert_eq!(text.text, "bold and italic");
+                assert!(
+                    text.spans
+                        .iter()
+                        .any(|s| s.style.strong() && s.style.emphasis()),
+                    "should have span with both strong and emphasis"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_strikethrough_with_code() {
+        let blocks = parse_markdown("~~deleted `code` deleted~~");
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(text.text.contains("code"), "should contain code text");
+                assert!(
+                    text.spans.iter().any(|s| s.style.strikethrough()),
+                    "should have strikethrough span"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_code_block_inside_blockquote() {
+        let md = "> ```rust\n> fn main() {}\n> ```\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::Quote(inner) => {
+                assert!(
+                    inner.iter().any(|b| matches!(b, Block::Code { .. })),
+                    "blockquote should contain a code block"
+                );
+            }
+            other => panic!("expected Quote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_blank_lines() {
+        let md = "para1\n\n\n\n\npara2";
+        let blocks = parse_markdown(md);
+        let para_count = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Paragraph(_)))
+            .count();
+        assert_eq!(
+            para_count, 2,
+            "should have exactly 2 paragraphs regardless of blank lines"
+        );
+    }
+
+    #[test]
+    fn parse_escaped_characters() {
+        let md = "\\# Not a heading\n\n\\* Not a bullet\n";
+        let blocks = parse_markdown(md);
+        assert!(
+            blocks.iter().all(|b| matches!(b, Block::Paragraph(_))),
+            "escaped markdown should parse as plain paragraphs"
+        );
+    }
+
+    #[test]
+    fn parse_indented_code_two_lines() {
+        let md = "    indented code\n    second line\n";
+        let blocks = parse_markdown(md);
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Code { .. })),
+            "4-space indented text should parse as code block"
+        );
+    }
+
+    #[test]
+    fn parse_angle_bracket_autolink() {
+        let md = "Visit <https://example.com> for more.";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::Paragraph(text) => {
+                assert!(
+                    text.spans.iter().any(|s| s.style.link.is_some()),
+                    "angle-bracket URL should be auto-linked: spans={:?}",
+                    text.spans
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_setext_headings() {
+        let md = "H1 Heading\n==========\n\nH2 Heading\n----------\n";
+        let blocks = parse_markdown(md);
+        let headings: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Heading { level, text } => Some((*level, text.text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headings.len(), 2, "should parse 2 setext headings");
+        assert_eq!(headings[0].0, 1, "first should be H1");
+        assert_eq!(headings[1].0, 2, "second should be H2");
+    }
+
+    #[test]
+    fn parse_image_alt_text_from_inline_events() {
+        let md = "![alt text](img.png)";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::Image { alt, .. } => {
+                assert_eq!(alt, "alt text", "alt text should come from brackets");
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
 }
