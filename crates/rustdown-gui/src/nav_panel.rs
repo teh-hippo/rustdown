@@ -64,7 +64,7 @@ impl Default for NavState {
             outline_source: Arc::new(String::new()),
             outline_seq: u64::MAX,
             max_depth: 4,
-            heading_color_mode: false,
+            heading_color_mode: true,
             expanded: Vec::new(),
             active_index: None,
             pending_scroll: None,
@@ -281,7 +281,7 @@ impl NavState {
             .fill(ctx.style().visuals.panel_fill)
             .inner_margin(6);
 
-        egui::SidePanel::right("navigation")
+        egui::SidePanel::left("navigation")
             .resizable(true)
             .min_width(NAV_PANEL_MIN_WIDTH)
             .default_width(NAV_PANEL_DEFAULT_WIDTH)

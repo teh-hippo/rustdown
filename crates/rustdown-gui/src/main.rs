@@ -767,6 +767,7 @@ impl RustdownApp {
     fn from_launch_options(options: LaunchOptions) -> Self {
         let mut app = Self {
             mode: options.mode,
+            heading_color_mode: true,
             ..Self::default()
         };
         if let Some(path) = options.path {
