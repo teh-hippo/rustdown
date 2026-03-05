@@ -34,21 +34,24 @@ pub fn format_markdown(source: &str, options: FormatOptions) -> String {
     };
     let normalized = if memchr::memchr(b'\r', source.as_bytes()).is_some() {
         // Single-pass normalization: \r\n → \n, lone \r → \n.
+        // Copy contiguous byte ranges to preserve multi-byte UTF-8 sequences
+        // (a per-byte `as char` cast would corrupt non-ASCII characters).
         let mut result = String::with_capacity(source.len());
         let bytes = source.as_bytes();
         let mut i = 0;
+        let mut start = 0;
         while i < bytes.len() {
             if bytes[i] == b'\r' {
+                result.push_str(&source[start..i]);
                 result.push('\n');
-                // Skip \n after \r (CRLF case).
                 if bytes.get(i + 1) == Some(&b'\n') {
                     i += 1;
                 }
-            } else {
-                result.push(bytes[i] as char);
+                start = i + 1;
             }
             i += 1;
         }
+        result.push_str(&source[start..]);
         Cow::Owned(result)
     } else {
         Cow::Borrowed(source)
@@ -424,5 +427,106 @@ mod tests {
         // Non-matching section should not apply.
         let ov2 = editorconfig_overrides(cfg, "notes.txt");
         assert_eq!(ov2.trim, None);
+    }
+
+    // ── CRLF normalization edge cases ───────────────────────────────
+
+    #[test]
+    fn format_crlf_only_input() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("\r\n\r\n\r\n", opts), "\n\n\n");
+    }
+
+    #[test]
+    fn format_cr_only_input() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        // Lone \r should each become \n.
+        assert_eq!(format_markdown("a\rb\rc", opts), "a\nb\nc");
+    }
+
+    #[test]
+    fn format_mixed_cr_crlf_lf() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("a\r\nb\rc\nd", opts), "a\nb\nc\nd");
+    }
+
+    #[test]
+    fn format_empty_input() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("", opts), "");
+    }
+
+    #[test]
+    fn format_empty_input_with_final_newline() {
+        // Empty doc with insert_final_newline should get a newline.
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("", opts), "\n");
+    }
+
+    #[test]
+    fn format_unicode_with_crlf() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        // Multi-byte UTF-8 chars must survive CRLF normalization.
+        assert_eq!(format_markdown("café\r\nwörld\r\n", opts), "café\nwörld\n");
+        assert_eq!(
+            format_markdown("日本語\r\n中文\r\n", opts),
+            "日本語\n中文\n"
+        );
+        // 4-byte emoji
+        assert_eq!(format_markdown("🦀\r\n🎉\r\n", opts), "🦀\n🎉\n");
+    }
+
+    #[test]
+    fn format_unicode_with_lone_cr() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("über\rcool", opts), "über\ncool");
+    }
+
+    #[test]
+    fn format_trailing_cr_at_eof() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("hello\r", opts), "hello\n");
+    }
+
+    #[test]
+    fn format_single_cr() {
+        let opts = FormatOptions {
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        assert_eq!(format_markdown("\r", opts), "\n");
     }
 }

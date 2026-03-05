@@ -237,4 +237,111 @@ mod tests {
             std::mem::size_of::<HeadingEntry>()
         );
     }
+
+    // ── Edge-case stress tests ──────────────────────────────────────
+
+    #[test]
+    fn extract_empty_document() {
+        let headings = extract_headings("");
+        assert!(headings.is_empty());
+    }
+
+    #[test]
+    fn extract_only_headings_no_body() {
+        let md = "# A\n## B\n### C\n#### D\n##### E\n###### F\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 6);
+        for (i, h) in headings.iter().enumerate() {
+            assert_eq!(usize::from(h.level), i + 1);
+            assert!(!h.label(md).is_empty());
+        }
+    }
+
+    #[test]
+    fn extract_unicode_headings() {
+        let md = "# café\n## über\n### 日本語テスト\n#### 🦀 Rust\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 4);
+        assert_eq!(headings[0].label(md), "café");
+        assert_eq!(headings[1].label(md), "über");
+        assert_eq!(headings[2].label(md), "日本語テスト");
+        assert_eq!(headings[3].label(md), "🦀 Rust");
+    }
+
+    #[test]
+    fn extract_heading_with_only_whitespace() {
+        // Heading with only spaces should be skipped (trimmed to empty).
+        let md = "#    \n## Real\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].label(md), "Real");
+    }
+
+    #[test]
+    fn active_heading_empty_entries() {
+        assert_eq!(active_heading_index(&[], 4, 0), None);
+        assert_eq!(active_heading_index(&[], 4, 1000), None);
+    }
+
+    #[test]
+    fn active_heading_single_entry() {
+        let md = "# Only\n";
+        let headings = extract_headings(md);
+        assert_eq!(active_heading_index(&headings, 4, 0), Some(0));
+        assert_eq!(active_heading_index(&headings, 4, 100), Some(0));
+    }
+
+    #[test]
+    fn active_heading_exact_match_on_last() {
+        let md = "# A\n\n## B\n";
+        let headings = extract_headings(md);
+        let last_offset = headings.last().map_or(0, |h| h.byte_offset);
+        assert_eq!(
+            active_heading_index(&headings, 4, last_offset),
+            Some(headings.len() - 1)
+        );
+    }
+
+    #[test]
+    fn active_heading_max_depth_zero_returns_none() {
+        let md = "# A\n## B\n";
+        let headings = extract_headings(md);
+        // max_depth=0 should match nothing since all levels are >= 1.
+        assert_eq!(active_heading_index(&headings, 0, 0), None);
+    }
+
+    #[test]
+    fn extract_many_headings_offsets_strictly_increase() {
+        let mut md = String::new();
+        for i in 0..200 {
+            md.push_str("## Heading ");
+            md.push_str(&i.to_string());
+            md.push_str("\n\nSome body text.\n\n");
+        }
+        let headings = extract_headings(&md);
+        assert_eq!(headings.len(), 200);
+        for w in headings.windows(2) {
+            assert!(w[0].byte_offset < w[1].byte_offset);
+        }
+    }
+
+    #[test]
+    fn active_heading_binary_search_all_positions() {
+        let md = "# A\n\ntext\n\n## B\n\ntext\n\n### C\n\ntext\n";
+        let headings = extract_headings(md);
+        // Walk through every byte position and verify active_heading_index
+        // returns a valid index or None consistently.
+        let mut last_idx: Option<usize> = None;
+        for pos in 0..md.len() {
+            let idx = active_heading_index(&headings, 6, pos);
+            if let Some(i) = idx {
+                assert!(i < headings.len());
+                // Active index should only advance forward.
+                if let Some(prev) = last_idx {
+                    assert!(i >= prev);
+                }
+            }
+            last_idx = idx;
+        }
+    }
 }

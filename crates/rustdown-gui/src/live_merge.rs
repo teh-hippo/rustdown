@@ -483,4 +483,77 @@ mod tests {
         // Edit lines 1 and 2 from different sides.
         assert_clean("a\nb\nc\n", "A\nb\nc\n", "a\nB\nc\n", "A\nB\nc\n");
     }
+
+    // ── Edge-case stress tests ──────────────────────────────────────
+
+    #[test]
+    fn merge_all_three_empty() {
+        assert_clean("", "", "", "");
+    }
+
+    #[test]
+    fn merge_base_empty_both_same_insert() {
+        // Both sides insert the same text from an empty base → clean.
+        assert_clean("", "new\n", "new\n", "new\n");
+    }
+
+    #[test]
+    fn merge_ours_and_theirs_empty_base_nonempty() {
+        // Both sides delete everything → clean empty result.
+        assert_clean("old\n", "", "", "");
+    }
+
+    #[test]
+    fn merge_completely_different_content() {
+        // All three texts share no lines → conflict between ours and theirs.
+        let (conflict, ours_wins) = assert_conflict("base\n", "alpha\n", "beta\n");
+        assert!(conflict.contains("<<<<<<< ours"));
+        assert!(conflict.contains("alpha\n"));
+        assert!(conflict.contains("beta\n"));
+        assert_eq!(ours_wins, "alpha\n");
+    }
+
+    #[test]
+    fn merge_single_line_documents() {
+        assert_clean("x\n", "y\n", "x\n", "y\n");
+        assert_clean("x\n", "x\n", "z\n", "z\n");
+    }
+
+    #[test]
+    fn merge_no_trailing_newline() {
+        // Documents that don't end with newline.
+        assert_clean("a", "b", "a", "b");
+        assert_clean("a", "a", "c", "c");
+    }
+
+    #[test]
+    fn merge_only_newlines() {
+        assert_clean("\n\n\n", "\n\n\n", "\n\n\n", "\n\n\n");
+        assert_clean("\n\n", "\n\n\n", "\n\n", "\n\n\n");
+    }
+
+    #[test]
+    fn merge_large_identical_change() {
+        // Both sides make the same large change → clean.
+        use std::fmt::Write;
+        let mut base = String::new();
+        let mut modified = String::new();
+        for i in 0..100 {
+            let _ = writeln!(base, "line {i}");
+            let _ = writeln!(modified, "CHANGED {i}");
+        }
+        assert_clean(&base, &modified, &modified, &modified);
+    }
+
+    #[test]
+    fn merge_ours_deletes_theirs_modifies_different_region() {
+        // Ours deletes first line, theirs modifies last line → clean.
+        assert_clean("a\nb\nc\nd\n", "b\nc\nd\n", "a\nb\nc\nD\n", "b\nc\nD\n");
+    }
+
+    #[test]
+    fn merge_both_insert_at_different_positions() {
+        // Ours inserts at start, theirs inserts at end → clean.
+        assert_clean("mid\n", "top\nmid\n", "mid\nbot\n", "top\nmid\nbot\n");
+    }
 }

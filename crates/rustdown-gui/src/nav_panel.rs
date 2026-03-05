@@ -166,12 +166,11 @@ impl NavState {
     }
 
     /// Cheap hash of the expanded set for cache invalidation.
+    /// Uses XOR so the result is independent of `HashSet` iteration order.
     fn expanded_hash(&self) -> u64 {
         let mut h: u64 = self.expanded.len() as u64;
         for &idx in &self.expanded {
-            h = h
-                .wrapping_add(idx as u64)
-                .wrapping_mul(0x517c_c1b7_2722_0a95);
+            h ^= (idx as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
         }
         h
     }
@@ -884,5 +883,100 @@ mod tests {
                 h.byte_offset
             );
         }
+    }
+
+    // ── Edge-case stress tests ──────────────────────────────────────
+
+    #[test]
+    fn compute_visible_single_heading() {
+        let md = "# Only\n";
+        let outline = nav_outline::extract_headings(md);
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 4, 1);
+        assert_eq!(visible.len(), 1);
+        assert!(!visible[0].1); // no children
+    }
+
+    #[test]
+    fn compute_visible_max_depth_1_hides_all_subheadings() {
+        let md = "# A\n## B\n### C\n# D\n## E\n";
+        let outline = nav_outline::extract_headings(md);
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 1, 1);
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
+        assert_eq!(levels, vec![1, 1]);
+        // At depth 1, H1s should not report having children.
+        assert!(!visible[0].1);
+        assert!(!visible[1].1);
+    }
+
+    #[test]
+    fn expanded_hash_is_order_independent() {
+        // Verify the hash produces the same result regardless of insertion order.
+        let state1 = NavState {
+            expanded: HashSet::from([1, 5, 10, 42]),
+            ..NavState::default()
+        };
+        let h1 = state1.expanded_hash();
+
+        let state2 = NavState {
+            expanded: HashSet::from([42, 10, 5, 1]),
+            ..NavState::default()
+        };
+        let h2 = state2.expanded_hash();
+
+        assert_eq!(h1, h2, "expanded_hash should be order-independent");
+    }
+
+    #[test]
+    fn expanded_hash_differs_for_different_sets() {
+        let state1 = NavState {
+            expanded: HashSet::from([1, 2, 3]),
+            ..NavState::default()
+        };
+        let h1 = state1.expanded_hash();
+
+        let state2 = NavState {
+            expanded: HashSet::from([4, 5, 6]),
+            ..NavState::default()
+        };
+        let h2 = state2.expanded_hash();
+
+        assert_ne!(
+            h1, h2,
+            "different sets should (very likely) have different hashes"
+        );
+    }
+
+    #[test]
+    fn preview_scroll_zero_total_height() {
+        let md = "# A\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        assert_eq!(preview_byte_to_scroll_y(&outline, 10, 0.0), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&outline, 10.0, 0.0), 0);
+    }
+
+    #[test]
+    fn preview_scroll_negative_total_height() {
+        let md = "# A\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        assert_eq!(preview_byte_to_scroll_y(&outline, 10, -100.0), 0.0);
+        assert_eq!(preview_scroll_y_to_byte(&outline, 10.0, -100.0), 0);
+    }
+
+    #[test]
+    fn compute_visible_all_headings_beyond_max_depth() {
+        let md = "##### H5\n###### H6\n";
+        let outline = nav_outline::extract_headings(md);
+        // max_depth=4 excludes H5 and H6.
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 4, 1);
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn update_active_beyond_all_headings() {
+        let mut state = make_state("# A\n## B\n");
+        // Position far beyond the document.
+        state.update_active_from_position(999_999);
+        // Should select the last heading within depth.
+        assert!(state.active_index.is_some());
     }
 }
