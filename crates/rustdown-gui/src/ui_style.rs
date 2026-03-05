@@ -214,4 +214,87 @@ mod tests {
         assert_eq!(loaded, 0);
         assert!(proportional.is_empty());
     }
+
+    #[test]
+    fn append_font_fallbacks_empty_list() {
+        let mut fonts = egui::FontDefinitions::default();
+        let mut proportional = Vec::new();
+        let mut monospace = Vec::new();
+        let loaded = append_font_fallbacks(&mut fonts, &mut proportional, &mut monospace, &[]);
+        assert_eq!(loaded, 0);
+        assert!(proportional.is_empty());
+        assert!(monospace.is_empty());
+    }
+
+    #[test]
+    fn append_font_fallbacks_loads_real_file() {
+        // Write a minimal file so we can test the load path, even though it
+        // is not a valid font—egui only validates it lazily at render time.
+        let dir = std::env::temp_dir().join("rustdown_font_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("fake.ttf");
+        std::fs::write(&path, b"not-a-real-font-but-loads-ok").unwrap_or_else(|_| unreachable!());
+
+        let path_str = path.to_str().unwrap_or_else(|| unreachable!());
+        let mut fonts = egui::FontDefinitions::default();
+        let mut proportional = Vec::new();
+        let mut monospace = Vec::new();
+        let loaded = append_font_fallbacks(
+            &mut fonts,
+            &mut proportional,
+            &mut monospace,
+            &["/nonexistent/font.ttf", path_str],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded, 1);
+        assert_eq!(proportional.len(), 1);
+        assert_eq!(monospace.len(), 1);
+        assert!(fonts.font_data.contains_key(&proportional[0]));
+    }
+
+    #[test]
+    fn configure_style_sets_table_separator_stroke_width() {
+        let ctx = egui::Context::default();
+        configure_style(&ctx);
+        let style = ctx.style();
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(
+                style.visuals.widgets.noninteractive.bg_stroke.width, 1.0,
+                "table column separator stroke should be 1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn default_font_size_constants_are_positive() {
+        // Validate at runtime to catch accidental zero/negative constants.
+        let sizes = [
+            DEFAULT_BODY_BUTTON_FONT_SIZE,
+            DEFAULT_MONOSPACE_FONT_SIZE,
+            DEFAULT_SMALL_FONT_SIZE,
+        ];
+        for size in sizes {
+            assert!(size > 0.0, "font size {size} must be positive");
+        }
+    }
+
+    #[test]
+    fn heading_size_is_larger_than_body() {
+        let ctx = egui::Context::default();
+        configure_style(&ctx);
+        let style = ctx.style();
+        let body_size = style
+            .text_styles
+            .get(&egui::TextStyle::Body)
+            .map_or(0.0, |f| f.size);
+        let heading_size = style
+            .text_styles
+            .get(&egui::TextStyle::Heading)
+            .map_or(0.0, |f| f.size);
+        assert!(
+            heading_size > body_size,
+            "heading ({heading_size}) should be larger than body ({body_size})"
+        );
+    }
 }

@@ -70,7 +70,7 @@ pub struct DiskSyncState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io, sync::mpsc, time::SystemTime};
+    use std::{io, path::Path, sync::mpsc, time::SystemTime};
 
     fn dummy_rev() -> DiskRevision {
         DiskRevision {
@@ -243,5 +243,171 @@ mod tests {
         }
         // Original timestamp preserved.
         assert_eq!(s.pending_reload_at, Some(t1));
+    }
+
+    // ── ReloadKind ──────────────────────────────────────────────────
+
+    #[test]
+    fn reload_kind_debug_representations() {
+        let clean = format!("{:?}", ReloadKind::Clean);
+        let merged = format!("{:?}", ReloadKind::Merged);
+        let resolved = format!("{:?}", ReloadKind::ConflictResolved);
+        assert!(clean.contains("Clean"));
+        assert!(merged.contains("Merged"));
+        assert!(resolved.contains("ConflictResolved"));
+    }
+
+    #[test]
+    fn reload_kind_copy_semantics() {
+        let a = ReloadKind::Clean;
+        let b = a; // Copy
+        assert!(matches!(a, ReloadKind::Clean));
+        assert!(matches!(b, ReloadKind::Clean));
+    }
+
+    // ── DiskReloadOutcome ───────────────────────────────────────────
+
+    #[test]
+    fn disk_reload_outcome_replace_fields() {
+        let rev = dummy_rev();
+        let outcome = DiskReloadOutcome::Replace {
+            disk_text: "hello".into(),
+            disk_rev: rev,
+        };
+        if let DiskReloadOutcome::Replace {
+            disk_text,
+            disk_rev,
+        } = outcome
+        {
+            assert_eq!(disk_text, "hello");
+            assert_eq!(disk_rev.len, 42);
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[test]
+    fn disk_reload_outcome_merge_clean_fields() {
+        let outcome = DiskReloadOutcome::MergeClean {
+            merged_text: "merged".into(),
+            disk_text: "disk".into(),
+            disk_rev: dummy_rev(),
+        };
+        if let DiskReloadOutcome::MergeClean {
+            merged_text,
+            disk_text,
+            ..
+        } = outcome
+        {
+            assert_eq!(merged_text, "merged");
+            assert_eq!(disk_text, "disk");
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[test]
+    fn disk_reload_outcome_merge_conflict_fields() {
+        let outcome = DiskReloadOutcome::MergeConflict {
+            disk_text: "theirs".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "<<<".into(),
+            ours_wins: "ours".into(),
+        };
+        if let DiskReloadOutcome::MergeConflict {
+            conflict_marked,
+            ours_wins,
+            ..
+        } = outcome
+        {
+            assert_eq!(conflict_marked, "<<<");
+            assert_eq!(ours_wins, "ours");
+        } else {
+            unreachable!();
+        }
+    }
+
+    // ── DiskConflict ────────────────────────────────────────────────
+
+    #[test]
+    fn disk_conflict_clone() {
+        let c = DiskConflict {
+            disk_text: "d".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "cm".into(),
+            ours_wins: "ow".into(),
+        };
+        let c2 = c.clone();
+        assert_eq!(c2.disk_text, "d");
+        assert_eq!(c2.conflict_marked, "cm");
+        assert_eq!(c2.ours_wins, "ow");
+        assert_eq!(c2.disk_rev.len, c.disk_rev.len);
+    }
+
+    #[test]
+    fn disk_conflict_debug_output() {
+        let c = DiskConflict {
+            disk_text: "d".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "cm".into(),
+            ours_wins: "ow".into(),
+        };
+        let dbg = format!("{c:?}");
+        assert!(dbg.contains("DiskConflict"));
+    }
+
+    // ── DiskSyncState extended ──────────────────────────────────────
+
+    #[test]
+    fn sync_state_watch_target_name() {
+        let mut s = DiskSyncState::default();
+        assert!(s.watch_target_name.is_none());
+        s.watch_target_name = Some(OsString::from("README.md"));
+        assert_eq!(
+            s.watch_target_name.as_deref(),
+            Some(std::ffi::OsStr::new("README.md"))
+        );
+    }
+
+    #[test]
+    fn sync_state_watch_root() {
+        let mut s = DiskSyncState::default();
+        assert!(s.watch_root.is_none());
+        s.watch_root = Some(PathBuf::from("/tmp"));
+        assert_eq!(s.watch_root.as_deref(), Some(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn sync_state_merge_sidecar_path() {
+        let mut s = DiskSyncState::default();
+        assert!(s.merge_sidecar_path.is_none());
+        s.merge_sidecar_path = Some(PathBuf::from("/tmp/.rustdown-merge0.md"));
+        assert!(s.merge_sidecar_path.is_some());
+    }
+
+    #[test]
+    fn sync_state_channel_pair() {
+        let mut s = DiskSyncState::default();
+        let (tx, rx) = mpsc::channel::<DiskReadMessage>();
+        s.read_tx = Some(tx);
+        s.read_rx = Some(rx);
+        assert!(s.read_tx.is_some());
+        assert!(s.read_rx.is_some());
+    }
+
+    #[test]
+    fn disk_read_message_debug() {
+        let msg = DiskReadMessage {
+            path: PathBuf::from("test.md"),
+            nonce: 1,
+            edit_seq: 0,
+            outcome: Ok(DiskReloadOutcome::Replace {
+                disk_text: "x".into(),
+                disk_rev: dummy_rev(),
+            }),
+        };
+        let dbg = format!("{msg:?}");
+        assert!(dbg.contains("DiskReadMessage"));
+        assert!(dbg.contains("test.md"));
     }
 }

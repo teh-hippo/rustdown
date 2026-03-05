@@ -205,4 +205,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(result.is_ok(), "diagnostics should pass: {result:?}");
     }
+
+    // ── assert_result ───────────────────────────────────────────────
+
+    #[test]
+    fn assert_result_ok_on_true() {
+        let result = assert_result(true, "should pass");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn assert_result_err_on_false() {
+        let result = assert_result(false, "expected failure");
+        assert!(result.is_err());
+        let err = result.err().unwrap_or_else(|| unreachable!());
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        let msg = err.to_string();
+        assert!(msg.contains("expected failure"));
+    }
+
+    #[test]
+    fn assert_result_err_contains_label() {
+        let result = assert_result(false, "my-label-xyz");
+        let msg = result.err().unwrap_or_else(|| unreachable!()).to_string();
+        assert!(msg.contains("my-label-xyz"));
+    }
 }

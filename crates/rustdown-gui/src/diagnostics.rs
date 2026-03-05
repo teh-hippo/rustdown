@@ -354,3 +354,144 @@ pub fn run_open_pipeline_diagnostics(
     std::hint::black_box(app);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // ── avg_duration_us ─────────────────────────────────────────────
+
+    #[test]
+    fn avg_duration_us_basic() {
+        let total = Duration::from_micros(500);
+        let avg = avg_duration_us(total, 10);
+        assert!((avg - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn avg_duration_us_single_iteration() {
+        let total = Duration::from_micros(123);
+        let avg = avg_duration_us(total, 1);
+        assert!((avg - 123.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn avg_duration_us_zero_iterations_clamps_to_one() {
+        let total = Duration::from_micros(200);
+        // iterations=0 should be clamped to 1 via .max(1)
+        let avg = avg_duration_us(total, 0);
+        assert!((avg - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn avg_duration_us_zero_duration() {
+        let avg = avg_duration_us(Duration::ZERO, 100);
+        assert!((avg - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn avg_duration_us_large_iteration_count() {
+        let total = Duration::from_secs(1);
+        let avg = avg_duration_us(total, 1_000_000);
+        assert!((avg - 1.0).abs() < 0.001);
+    }
+
+    // ── measure_iterations ──────────────────────────────────────────
+
+    #[test]
+    fn measure_iterations_zero_runs_fast() {
+        let elapsed = measure_iterations(0, || {
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        // Should return almost immediately since 0 iterations are executed.
+        assert!(elapsed < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn measure_iterations_runs_correct_count() {
+        let mut counter = 0u32;
+        let _ = measure_iterations(5, || {
+            counter += 1;
+        });
+        assert_eq!(counter, 5);
+    }
+
+    #[test]
+    fn measure_iterations_returns_duration_for_work() {
+        let elapsed = measure_iterations(100, || {
+            std::hint::black_box(42);
+        });
+        // Trivial work completes without panicking; duration is valid.
+        let _ = elapsed.as_nanos();
+    }
+
+    // ── diagnostics_raw_input ───────────────────────────────────────
+
+    #[test]
+    fn diagnostics_raw_input_has_screen_rect() {
+        let raw = diagnostics_raw_input();
+        let rect = raw
+            .screen_rect
+            .unwrap_or_else(|| unreachable!("screen_rect should be set"));
+        assert!((rect.width() - 1024.0).abs() < f32::EPSILON);
+        assert!((rect.height() - 768.0).abs() < f32::EPSILON);
+        assert!((rect.min.x - 0.0).abs() < f32::EPSILON);
+        assert!((rect.min.y - 0.0).abs() < f32::EPSILON);
+    }
+
+    // ── estimate_text_heap_bytes ────────────────────────────────────
+
+    #[test]
+    fn estimate_text_heap_shared_arcs() {
+        let text = Arc::new(String::from("hello world"));
+        let base_text = text.clone();
+        // When text and base_text are the same Arc, capacity is counted once.
+        let bytes = estimate_text_heap_bytes(&text, &base_text);
+        assert_eq!(bytes, text.capacity());
+    }
+
+    #[test]
+    fn estimate_text_heap_distinct_arcs() {
+        let text = Arc::new(String::from("hello"));
+        let base_text = Arc::new(String::from("goodbye world"));
+        // When distinct, both capacities are summed.
+        let bytes = estimate_text_heap_bytes(&text, &base_text);
+        assert_eq!(bytes, text.capacity() + base_text.capacity());
+    }
+
+    #[test]
+    fn estimate_text_heap_empty_strings() {
+        let text = Arc::new(String::new());
+        let base_text = Arc::new(String::new());
+        let bytes = estimate_text_heap_bytes(&text, &base_text);
+        assert_eq!(bytes, text.capacity() + base_text.capacity());
+    }
+
+    #[test]
+    fn estimate_text_heap_shared_empty() {
+        let text = Arc::new(String::new());
+        let base_text = text.clone();
+        let bytes = estimate_text_heap_bytes(&text, &base_text);
+        assert_eq!(bytes, text.capacity());
+    }
+
+    // ── run_open_pipeline_diagnostics ───────────────────────────────
+
+    #[test]
+    fn run_diagnostics_rejects_none_path() {
+        let result = run_open_pipeline_diagnostics(None, 1);
+        assert!(result.is_err());
+        let err = result.err().unwrap_or_else(|| unreachable!());
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn run_diagnostics_rejects_nonexistent_file() {
+        let result = run_open_pipeline_diagnostics(
+            Some(Path::new("/tmp/rustdown_diag_nonexistent_987654.md")),
+            1,
+        );
+        assert!(result.is_err());
+    }
+}
