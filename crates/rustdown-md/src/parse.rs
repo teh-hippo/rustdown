@@ -166,7 +166,9 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
     let opts = Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_HEADING_ATTRIBUTES
-        | Options::ENABLE_TASKLISTS;
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_GFM;
     let parser = Parser::new_ext(source, opts);
     // Collect into Vec — required for our indexed recursive descent.
     // Pre-allocate based on source size heuristic.

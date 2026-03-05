@@ -673,27 +673,28 @@ fn render_text_with_links(
     ui.horizontal_wrapped(|ui| {
         for span in &st.spans {
             let text = &st.text[span.start as usize..span.end as usize];
+            let font_family = if span.style.code() {
+                egui::FontFamily::Monospace
+            } else {
+                egui::FontFamily::Proportional
+            };
+            let span_size = if span.style.code() { size * 0.9 } else { size };
+            let mut rt =
+                egui::RichText::new(text).font(egui::FontId::new(span_size, font_family));
+
+            if span.style.emphasis() {
+                rt = rt.italics();
+            }
+            if span.style.strikethrough() {
+                rt = rt.strikethrough();
+            }
+
             if let Some(ref url) = span.style.link {
-                // Render as clickable hyperlink.
-                let font = egui::FontId::new(size, egui::FontFamily::Proportional);
-                let rt = egui::RichText::new(text).font(font);
-                let rt = if span.style.emphasis() {
-                    rt.italics()
-                } else {
-                    rt
-                };
+                if span.style.strong() {
+                    rt = rt.strong();
+                }
                 ui.hyperlink_to(rt, url.as_ref());
             } else {
-                // Render as label with formatting.
-                let font_family = if span.style.code() {
-                    egui::FontFamily::Monospace
-                } else {
-                    egui::FontFamily::Proportional
-                };
-                let span_size = if span.style.code() { size * 0.9 } else { size };
-                let mut rt =
-                    egui::RichText::new(text).font(egui::FontId::new(span_size, font_family));
-
                 let color = if span.style.strong() {
                     strengthen_color(base_color)
                 } else {
@@ -701,12 +702,6 @@ fn render_text_with_links(
                 };
                 rt = rt.color(color);
 
-                if span.style.emphasis() {
-                    rt = rt.italics();
-                }
-                if span.style.strikethrough() {
-                    rt = rt.strikethrough();
-                }
                 if span.style.code() {
                     rt = rt.background_color(
                         style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
