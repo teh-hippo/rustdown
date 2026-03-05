@@ -432,11 +432,27 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 }
 
 impl eframe::App for RustdownApp {
-    #[allow(clippy::too_many_lines)] // main update loop — inherently long
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_disk_sync(ctx);
         self.refresh_stats_if_due(ctx);
+        self.handle_keyboard_shortcuts(ctx);
+        self.show_status_bar(ctx);
+        if self.search.visible {
+            self.show_search_bar(ctx);
+        }
+        self.show_toolbar(ctx);
+        self.show_content_panels(ctx);
+        self.show_dialogs(ctx);
+        self.show_disk_conflict_dialog(ctx);
+        self.update_viewport_title(ctx);
+    }
+}
 
+impl RustdownApp {
+    /// Read keyboard/mouse input and dispatch the matching actions (open, save,
+    /// zoom, search, format, mode-cycle, etc.).  Skipped when a dialog is open
+    /// so that shortcuts do not fire behind modal windows.
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let dialog_open = self.pending_action.is_some() || self.disk.conflict.is_some();
         let (
             dropped_path,
@@ -517,12 +533,12 @@ impl eframe::App for RustdownApp {
                 self.nav.visible = !self.nav.visible;
             }
         }
+    }
 
-        let mut run_replace_all = false;
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            let mut clear_error = false;
-
-            // Use a smaller font for the toolbar.
+    /// Render the toolbar panel with mode buttons, heading-colour toggle,
+    /// format button, and navigation toggle.
+    fn show_toolbar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("toolbar").show(ctx, |ui| {
             let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
             let toolbar_font = egui::FontId::proportional(toolbar_size);
             let tb = |text: &str| egui::RichText::new(text).font(toolbar_font.clone());
@@ -562,9 +578,84 @@ impl eframe::App for RustdownApp {
                 }
                 ui.toggle_value(&mut self.nav.visible, tb("Nav"))
                     .on_hover_text("Navigation");
+            });
+        });
+    }
 
-                ui.separator();
+    /// Render the search/replace bar and execute a pending replace-all after
+    /// the panel closure finishes (so the `&mut self` borrow is released).
+    fn show_search_bar(&mut self, ctx: &egui::Context) {
+        let mut run_replace_all = false;
+        egui::TopBottomPanel::bottom("search").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Find:");
+                let query_response = ui.add(
+                    egui::TextEdit::singleline(&mut self.search.query)
+                        .hint_text("Search")
+                        .desired_width(180.0)
+                        .id(egui::Id::new("search-query")),
+                );
+                if self.focus_search {
+                    query_response.request_focus();
+                    self.focus_search = false;
+                }
+                if query_response.changed() {
+                    self.search.last_replace_count = None;
+                }
 
+                let matches = self
+                    .search
+                    .match_count(self.doc.text.as_str(), self.doc.edit_seq);
+                let label = if matches == 1 { "match" } else { "matches" };
+                ui.label(format!("{matches} {label}"));
+
+                if self.search.replace_mode {
+                    ui.separator();
+                    ui.label("Replace:");
+                    let replace_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.search.replacement)
+                            .hint_text("Replace with")
+                            .desired_width(180.0),
+                    );
+                    if replace_response.changed() {
+                        self.search.last_replace_count = None;
+                    }
+
+                    let replace_button = ui.add_enabled(
+                        !self.search.query.is_empty(),
+                        egui::Button::new("Replace all"),
+                    );
+                    if replace_button.clicked() {
+                        run_replace_all = true;
+                    }
+
+                    if let Some(count) = self.search.last_replace_count {
+                        ui.label(format!("replaced {count}"));
+                    }
+                }
+
+                if ui.button("Close").clicked() {
+                    self.close_search();
+                }
+            });
+        });
+        if run_replace_all {
+            let replaced = self.replace_all_matches();
+            self.search.last_replace_count = Some(replaced);
+        }
+    }
+
+    /// Render the status bar: file path, line count, dirty marker, error
+    /// messages, and merge-sidecar controls.
+    fn show_status_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            let mut clear_error = false;
+
+            let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
+            let toolbar_font = egui::FontId::proportional(toolbar_size);
+            let tb = |text: &str| egui::RichText::new(text).font(toolbar_font.clone());
+
+            ui.horizontal(|ui| {
                 ui.label(tb(&self.doc.path_label()));
                 let stats = self.doc.stats();
 
@@ -612,76 +703,9 @@ impl eframe::App for RustdownApp {
             if clear_error {
                 self.error = None;
             }
-
-            if self.search.visible {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Find:");
-                    let query_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.search.query)
-                            .hint_text("Search")
-                            .desired_width(180.0)
-                            .id(egui::Id::new("search-query")),
-                    );
-                    if self.focus_search {
-                        query_response.request_focus();
-                        self.focus_search = false;
-                    }
-                    if query_response.changed() {
-                        self.search.last_replace_count = None;
-                    }
-
-                    let matches = self
-                        .search
-                        .match_count(self.doc.text.as_str(), self.doc.edit_seq);
-                    let label = if matches == 1 { "match" } else { "matches" };
-                    ui.label(format!("{matches} {label}"));
-
-                    if self.search.replace_mode {
-                        ui.separator();
-                        ui.label("Replace:");
-                        let replace_response = ui.add(
-                            egui::TextEdit::singleline(&mut self.search.replacement)
-                                .hint_text("Replace with")
-                                .desired_width(180.0),
-                        );
-                        if replace_response.changed() {
-                            self.search.last_replace_count = None;
-                        }
-
-                        let replace_button = ui.add_enabled(
-                            !self.search.query.is_empty(),
-                            egui::Button::new("Replace all"),
-                        );
-                        if replace_button.clicked() {
-                            run_replace_all = true;
-                        }
-
-                        if let Some(count) = self.search.last_replace_count {
-                            ui.label(format!("replaced {count}"));
-                        }
-                    }
-
-                    if ui.button("Close").clicked() {
-                        self.close_search();
-                    }
-                });
-            }
         });
-        if run_replace_all {
-            let replaced = self.replace_all_matches();
-            self.search.last_replace_count = Some(replaced);
-        }
-
-        self.show_content_panels(ctx);
-
-        self.show_dialogs(ctx);
-        self.show_disk_conflict_dialog(ctx);
-        self.update_viewport_title(ctx);
     }
-}
 
-impl RustdownApp {
     /// Render the nav panel, side-by-side preview panel, central panel, and
     /// process any pending nav-scroll actions.  Extracted so the debug harness
     /// can reuse the same layout sequence.

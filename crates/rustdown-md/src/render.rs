@@ -17,11 +17,11 @@ pub struct MarkdownCache {
     text_hash: u64,
     text_len: usize,
     text_ptr: usize,
-    pub blocks: Vec<Block>,
+    pub(crate) blocks: Vec<Block>,
     /// Estimated pixel height for each top-level block (same len as `blocks`).
-    pub heights: Vec<f32>,
+    pub(crate) heights: Vec<f32>,
     /// Cumulative Y offsets: `cum_y[i]` = sum of heights[0..i].
-    pub cum_y: Vec<f32>,
+    pub(crate) cum_y: Vec<f32>,
     /// Total estimated height of all blocks.
     pub total_height: f32,
     /// The body font size used when heights were estimated.
@@ -1245,7 +1245,7 @@ mod tests {
             egui::Color32::WHITE,
             egui::Color32::GRAY,
         ];
-        let _ = style.with_heading_colors(colors);
+        style.set_heading_colors(colors);
         assert_eq!(style.headings[0].color, egui::Color32::RED);
         assert_eq!(style.headings[5].color, egui::Color32::GRAY);
     }
@@ -1505,7 +1505,7 @@ mod tests {
     fn style_with_heading_scales() {
         let mut style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let scales = [3.0, 2.5, 2.0, 1.5, 1.2, 1.0];
-        let _ = style.with_heading_scales(scales);
+        style.set_heading_scales(scales);
         for (i, &expected) in scales.iter().enumerate() {
             assert!(
                 (style.headings[i].font_scale - expected).abs() < f32::EPSILON,

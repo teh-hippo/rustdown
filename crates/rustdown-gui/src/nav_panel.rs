@@ -113,9 +113,7 @@ pub fn preview_byte_to_scroll_y(
         if first.byte_offset == 0 {
             return 0.0;
         }
-        let frac = byte_offset as f32 / first.byte_offset as f32;
-        let first_y = total_height * (0.0 / n as f32);
-        return frac * first_y;
+        return 0.0;
     }
 
     if after_idx >= n {

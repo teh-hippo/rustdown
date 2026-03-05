@@ -166,11 +166,14 @@ fn editorconfig_overrides(contents: &str, file: &str) -> Overrides {
     overrides
 }
 
-fn parse_bool(value: &str) -> Option<bool> {
-    value
-        .eq_ignore_ascii_case("true")
-        .then_some(true)
-        .or_else(|| value.eq_ignore_ascii_case("false").then_some(false))
+const fn parse_bool(value: &str) -> Option<bool> {
+    if value.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn parse_eol(value: &str) -> Option<EndOfLine> {

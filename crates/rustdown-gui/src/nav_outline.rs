@@ -1,4 +1,5 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use rustdown_md::heading_level_to_u8;
 
 /// A single heading extracted from a Markdown document.
 ///
@@ -108,17 +109,6 @@ pub fn active_heading_index(
     };
     // Walk backwards from `upper` to find the first entry matching depth.
     (0..=upper).rev().find(|&i| entries[i].level <= max_depth)
-}
-
-const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
-    match level {
-        HeadingLevel::H1 => 1,
-        HeadingLevel::H2 => 2,
-        HeadingLevel::H3 => 3,
-        HeadingLevel::H4 => 4,
-        HeadingLevel::H5 => 5,
-        HeadingLevel::H6 => 6,
-    }
 }
 
 #[cfg(test)]

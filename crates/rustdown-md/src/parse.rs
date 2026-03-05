@@ -82,6 +82,7 @@ const FLAG_STRIKETHROUGH: u8 = 4;
 const FLAG_CODE: u8 = 8;
 
 impl SpanStyle {
+    #[cfg(test)]
     #[must_use]
     pub const fn plain() -> Self {
         Self {
@@ -95,6 +96,7 @@ impl SpanStyle {
         self.flags & FLAG_STRONG != 0
     }
 
+    #[cfg(test)]
     pub const fn set_strong(&mut self) {
         self.flags |= FLAG_STRONG;
     }
@@ -104,6 +106,7 @@ impl SpanStyle {
         self.flags & FLAG_EMPHASIS != 0
     }
 
+    #[cfg(test)]
     pub const fn set_emphasis(&mut self) {
         self.flags |= FLAG_EMPHASIS;
     }
@@ -113,6 +116,8 @@ impl SpanStyle {
         self.flags & FLAG_STRIKETHROUGH != 0
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)] // API symmetry with set_strong / set_emphasis / set_code
     pub const fn set_strikethrough(&mut self) {
         self.flags |= FLAG_STRIKETHROUGH;
     }
@@ -122,6 +127,7 @@ impl SpanStyle {
         self.flags & FLAG_CODE != 0
     }
 
+    #[cfg(test)]
     pub const fn set_code(&mut self) {
         self.flags |= FLAG_CODE;
     }
@@ -748,7 +754,8 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
     }
 }
 
-const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
+#[must_use]
+pub const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
         HeadingLevel::H2 => 2,
