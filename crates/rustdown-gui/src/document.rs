@@ -75,6 +75,40 @@ impl Document {
     pub const fn stats(&self) -> DocumentStats {
         self.stats
     }
+
+    /// Mark the document as having been edited — sets dirty flags and
+    /// records the edit timestamp.
+    pub fn mark_text_changed(&mut self) {
+        self.dirty = true;
+        self.stats_dirty = true;
+        self.preview_dirty = true;
+        self.last_edit_at = Some(Instant::now());
+    }
+
+    /// Increment `edit_seq` monotonically (wraps at `u64::MAX`).
+    pub const fn bump_edit_seq(&mut self) {
+        self.edit_seq = self.edit_seq.wrapping_add(1);
+    }
+
+    /// Recompute stats from the current text if `stats_dirty` is set.
+    pub fn refresh_stats_if_dirty(&mut self) {
+        if self.stats_dirty {
+            self.stats = DocumentStats::from_text(self.text.as_str());
+            self.stats_dirty = false;
+        }
+    }
+
+    /// If `preview_dirty` is set, clear the preview cache and the flag.
+    /// Returns `true` if the cache was cleared.
+    pub fn consume_preview_dirty(&mut self) -> bool {
+        if self.preview_dirty {
+            self.preview_cache.clear();
+            self.preview_dirty = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

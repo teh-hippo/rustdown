@@ -1286,12 +1286,13 @@ impl RustdownApp {
     }
 
     const fn bump_edit_seq(&mut self) {
-        self.doc.edit_seq = self.doc.edit_seq.wrapping_add(1);
+        self.doc.bump_edit_seq();
     }
 
     fn refresh_stats_now(&mut self) {
-        self.doc.stats = DocumentStats::from_text(self.doc.text.as_str());
-        self.doc.stats_dirty = false;
+        // Force dirty so the Document method will recompute.
+        self.doc.stats_dirty = true;
+        self.doc.refresh_stats_if_dirty();
     }
 
     fn refresh_stats_if_due(&mut self, ctx: &egui::Context) {
@@ -1306,10 +1307,7 @@ impl RustdownApp {
     }
 
     fn note_text_changed(&mut self, defer_stats_recalc: bool) {
-        self.doc.dirty = true;
-        self.doc.last_edit_at = Some(Instant::now());
-        self.doc.stats_dirty = true;
-        self.doc.preview_dirty = true;
+        self.doc.mark_text_changed();
         if !defer_stats_recalc {
             self.refresh_stats_now();
         }
@@ -1487,10 +1485,7 @@ impl RustdownApp {
             return;
         }
 
-        if self.doc.preview_dirty {
-            self.doc.preview_cache.clear();
-            self.doc.preview_dirty = false;
-        }
+        self.doc.consume_preview_dirty();
 
         self.ensure_preview_style(ui.visuals());
 
