@@ -313,30 +313,23 @@ fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> 
     let num_cols = table.header.len().max(1);
     let col_width = (wrap_width / num_cols as f32).max(40.0);
     let base_row_h = body_size * 1.6;
-    // Per-row spacing from egui Grid (item_spacing.y, typically ~4px).
     let row_spacing = 4.0;
+
+    let row_height = |cells: &[StyledText]| -> f32 {
+        cells
+            .iter()
+            .fold(base_row_h, |max, c| {
+                estimate_text_height(&c.text, body_size, col_width).max(max)
+            })
+            + row_spacing
+    };
+
     let hdr = if table.header.is_empty() {
         0.0
     } else {
-        table
-            .header
-            .iter()
-            .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(base_row_h)
-            + row_spacing
+        row_height(&table.header)
     };
-    let rows_h: f32 = table
-        .rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
-                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or(base_row_h)
-                + row_spacing
-        })
-        .sum();
+    let rows_h: f32 = table.rows.iter().map(|r| row_height(r)).sum();
     body_size.mul_add(0.4, hdr + rows_h)
 }
 
@@ -429,7 +422,10 @@ fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, 
         if url.starts_with("//") || url.contains("://") || style.image_base_uri.is_empty() {
             std::borrow::Cow::Borrowed(url)
         } else {
-            std::borrow::Cow::Owned(format!("{}{url}", style.image_base_uri))
+            let mut s = String::with_capacity(style.image_base_uri.len() + url.len());
+            s.push_str(&style.image_base_uri);
+            s.push_str(url);
+            std::borrow::Cow::Owned(s)
         };
 
     let max_width = ui.available_width();
