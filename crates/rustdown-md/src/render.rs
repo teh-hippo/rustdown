@@ -841,7 +841,7 @@ fn render_ordered_list(
     let num_width = body_size * 0.6f32.mul_add(digit_count as f32, 1.0);
 
     for (i, item) in items.iter().enumerate() {
-        let num = start + i as u64;
+        let num = start.saturating_add(i as u64);
         ui.horizontal(|ui| {
             ui.add_space(indent_px);
             ui.allocate_ui_with_layout(
@@ -1023,7 +1023,9 @@ fn render_table_cell(
 /// On dark backgrounds (bright text) the colour is brightened;
 /// on light backgrounds (dark text) it is darkened.
 fn strengthen_color(color: egui::Color32) -> egui::Color32 {
-    let [red, green, blue, alpha] = color.to_array();
+    // Work in unmultiplied space so luma is correct for semi-transparent
+    // colours and the output never violates the premultiplied invariant.
+    let [red, green, blue, alpha] = color.to_srgba_unmultiplied();
     // Perceptual luminance (ITU-R BT.601).
     let luma = 0.114f32.mul_add(
         f32::from(blue),
@@ -1035,14 +1037,14 @@ fn strengthen_color(color: egui::Color32) -> egui::Color32 {
             let delta = (u16::from(255_u8.saturating_sub(val))) / 5;
             val.saturating_add(delta.min(255) as u8)
         };
-        egui::Color32::from_rgba_premultiplied(boost(red), boost(green), boost(blue), alpha)
+        egui::Color32::from_rgba_unmultiplied(boost(red), boost(green), boost(blue), alpha)
     } else {
         // Dark text (light background) → darken toward black.
         let darken = |val: u8| {
             let delta = u16::from(val) / 5;
             val.saturating_sub(delta.min(255) as u8)
         };
-        egui::Color32::from_rgba_premultiplied(darken(red), darken(green), darken(blue), alpha)
+        egui::Color32::from_rgba_unmultiplied(darken(red), darken(green), darken(blue), alpha)
     }
 }
 
@@ -4412,5 +4414,93 @@ Normal paragraph.
         assert_eq!(bytecount_newlines(b"\n"), 1);
         assert_eq!(bytecount_newlines(b"\n\n\n"), 3);
         assert_eq!(bytecount_newlines(b"a\nb\nc\n"), 3);
+    }
+
+    // ── Ordered list saturating_add for display number ─────────────
+
+    #[test]
+    fn ordered_list_huge_start_no_overflow() {
+        // start near u64::MAX must not panic via integer overflow.
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let _viewer = MarkdownViewer::new("ol_huge");
+
+        // Construct a Block directly because the parser caps start values.
+        cache.blocks = vec![Block::OrderedList {
+            start: u64::MAX - 1,
+            items: vec![
+                ListItem {
+                    content: StyledText {
+                        text: "first".to_owned(),
+                        spans: vec![],
+                    },
+                    children: vec![],
+                    checked: None,
+                },
+                ListItem {
+                    content: StyledText {
+                        text: "second".to_owned(),
+                        spans: vec![],
+                    },
+                    children: vec![],
+                    checked: None,
+                },
+                ListItem {
+                    content: StyledText {
+                        text: "third".to_owned(),
+                        spans: vec![],
+                    },
+                    children: vec![],
+                    checked: None,
+                },
+            ],
+        }];
+
+        // Must not panic — previous code used `start + i` which overflows.
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_blocks(ui, &cache.blocks, &style, 0);
+            });
+        });
+    }
+
+    // ── strengthen_color premultiplied-alpha correctness ────────────
+
+    #[test]
+    fn strengthen_color_opaque_still_works() {
+        // Opaque bright text → should brighten (no regression).
+        let bright = egui::Color32::from_rgb(200, 200, 200);
+        let result = strengthen_color(bright);
+        let [r, g, b, a] = result.to_srgba_unmultiplied();
+        assert_eq!(a, 255);
+        assert!(r > 200, "bright text should be brightened, got r={r}");
+        assert!(g > 200);
+        assert!(b > 200);
+
+        // Opaque dark text → should darken.
+        let dark = egui::Color32::from_rgb(40, 40, 40);
+        let result = strengthen_color(dark);
+        let [r2, g2, b2, a2] = result.to_srgba_unmultiplied();
+        assert_eq!(a2, 255);
+        assert!(r2 < 40, "dark text should be darkened, got r={r2}");
+        assert!(g2 < 40);
+        assert!(b2 < 40);
+    }
+
+    #[test]
+    fn strengthen_color_semitransparent_respects_alpha() {
+        // Semi-transparent bright text: premultiplied R,G,B must stay ≤ alpha.
+        let semi = egui::Color32::from_rgba_unmultiplied(200, 200, 200, 100);
+        let result = strengthen_color(semi);
+        let [r, g, b, a] = result.to_array(); // premultiplied
+        assert!(
+            r <= a && g <= a && b <= a,
+            "premultiplied channels must not exceed alpha: r={r} g={g} b={b} a={a}"
+        );
+        // Unmultiplied values should still be brightened.
+        let [ur, _, _, ua] = result.to_srgba_unmultiplied();
+        assert_eq!(ua, 100, "alpha should be preserved");
+        assert!(ur > 200, "unmultiplied R should be brightened, got {ur}");
     }
 }

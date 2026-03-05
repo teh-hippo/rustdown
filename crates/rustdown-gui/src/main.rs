@@ -1147,6 +1147,9 @@ impl RustdownApp {
         let scroll_byte = self.current_scroll_byte_offset(ctx);
 
         self.mode = mode;
+        // Clear stale sync state so the first SideBySide frame does not
+        // override a nav-driven scroll target with a stale byte comparison.
+        self.last_sync_editor_byte = None;
 
         if mode == Mode::Preview {
             // Preview doesn't render the editor; drop any cached galley to reduce memory.
@@ -1454,6 +1457,23 @@ impl RustdownApp {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
         }
+
+        // If the mode needs the editor galley for a byte-offset target but
+        // it hasn't been built yet (e.g. switching from Preview →
+        // Edit/SideBySide just dropped the cache), re-queue the target.
+        // The galley will be built during show_editor() this frame; next
+        // frame it will resolve successfully.
+        // `Top` targets always resolve to 0.0 and don't need the galley.
+        if self.uses_editor()
+            && self.doc.editor_galley_cache.is_none()
+            && matches!(target, NavScrollTarget::ByteOffset(_))
+        {
+            self.nav.pending_scroll = Some(target);
+            self.nav_scroll_applied_this_frame = true;
+            ctx.request_repaint();
+            return;
+        }
+
         let (editor_target_y, preview_target_y) = match target {
             NavScrollTarget::Top => (Some(0.0_f32), Some(0.0_f32)),
             NavScrollTarget::ByteOffset(byte_offset) => (
@@ -1473,6 +1493,10 @@ impl RustdownApp {
             Mode::SideBySide => {
                 self.nav.pending_editor_scroll_y = editor_target_y;
                 self.nav.pending_preview_scroll_y = preview_target_y;
+                // Pre-seed the sync byte so sync_side_by_side_scroll does
+                // not override the precise nav-driven preview position with
+                // a linearly-interpolated value on the next frame.
+                self.last_sync_editor_byte = editor_target_y.and_then(|y| self.editor_y_to_byte(y));
             }
         }
         self.nav_scroll_applied_this_frame = true;
