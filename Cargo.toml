@@ -39,6 +39,11 @@ option_if_let_else = "allow"
 [profile.release]
 strip = true
 lto = true
-opt-level = 3
+opt-level = "s"
 codegen-units = 1
 panic = "abort"
+
+# Optimize heavy dependencies harder for size — these are not
+# performance-critical for our app (image decoding, clipboard, windowing).
+[profile.release.package."*"]
+opt-level = "z"

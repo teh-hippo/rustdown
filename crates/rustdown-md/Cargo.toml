@@ -10,6 +10,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-egui = "0.33"
+egui = { version = "0.33", default-features = false }
 memchr = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
