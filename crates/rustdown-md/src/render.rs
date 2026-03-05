@@ -1845,6 +1845,126 @@ Normal paragraph.
         assert!(!cache.blocks.is_empty());
     }
 
+    // ── Table column width unit tests ─────────────────────────────
+
+    fn make_cells(texts: &[&str]) -> Vec<StyledText> {
+        texts
+            .iter()
+            .map(|t| StyledText {
+                text: t.to_string(),
+                spans: vec![],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn table_col_widths_single_column_capped() {
+        let header = make_cells(&["Status"]);
+        let rows = vec![make_cells(&["OK"]), make_cells(&["Error"])];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 1);
+        // Single-column table should be capped at ≤60% of usable.
+        assert!(
+            widths[0] <= 600.0 * 0.61,
+            "single column {} should be ≤60% of 600",
+            widths[0]
+        );
+    }
+
+    #[test]
+    fn table_col_widths_proportional_to_content() {
+        let header = make_cells(&["ID", "Full Name and Description Here"]);
+        let rows = vec![
+            make_cells(&["1", "Alice Johnson, Software Engineer"]),
+            make_cells(&["2", "Bob Smith, Product Manager"]),
+        ];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 2);
+        // The wider column should get significantly more space.
+        assert!(
+            widths[1] > widths[0] * 1.5,
+            "wide column {} should be much wider than narrow {}",
+            widths[1],
+            widths[0]
+        );
+    }
+
+    #[test]
+    fn table_col_widths_three_columns_reasonable() {
+        let header = make_cells(&["Left", "Center", "Right"]);
+        let rows = vec![
+            make_cells(&["data", "data", "data"]),
+            make_cells(&["more", "text", "here"]),
+        ];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 3);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "column {i} width {w} should be >= min {min_col_w}"
+            );
+        }
+        let total: f32 = widths.iter().sum();
+        assert!(total <= 601.0, "total {total} should not exceed usable 600");
+    }
+
+    #[test]
+    fn table_col_widths_ten_columns_all_minimum() {
+        let header = make_cells(&["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]);
+        let rows = vec![make_cells(&[
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+        ])];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 10);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "column {i} width {w} should be >= min {min_col_w}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_col_widths_one_dominant_column() {
+        let long_text = "x".repeat(200);
+        let header = make_cells(&["Tiny", "Medium text", &long_text]);
+        let rows = vec![make_cells(&["a", "something", "y"])];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 3);
+        // The dominant column should be capped, not take all 600px.
+        assert!(
+            widths[2] < 500.0,
+            "dominant column {} should be capped",
+            widths[2]
+        );
+    }
+
+    #[test]
+    fn table_col_widths_all_empty_cells() {
+        let header = make_cells(&["", "", ""]);
+        let rows = vec![make_cells(&["", "", ""])];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 3);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w >= min_col_w - 0.01,
+                "empty column {i} width {w} should be >= min {min_col_w}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_col_widths_tight_space() {
+        // 8 columns in 200px — very tight.
+        let header = make_cells(&["A", "B", "C", "D", "E", "F", "G", "H"]);
+        let rows = vec![make_cells(&["1", "2", "3", "4", "5", "6", "7", "8"])];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 200.0, 7.7, 14.0);
+        assert_eq!(widths.len(), 8);
+        let total: f32 = widths.iter().sum();
+        // Total width should be reasonable even if it overflows.
+        assert!(total >= 150.0, "total width {total} should be reasonable");
+    }
+
     // ── Lists ──────────────────────────────────────────────────────
 
     #[test]
