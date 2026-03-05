@@ -100,6 +100,16 @@ impl MarkdownCache {
         self.total_height = acc;
     }
 
+    /// Recompute `cum_y` and `total_height` from current `heights`.
+    fn recompute_cum_y(&mut self) {
+        let mut acc = 0.0_f32;
+        for (cum, h) in self.cum_y.iter_mut().zip(&self.heights) {
+            *cum = acc;
+            acc += h;
+        }
+        self.total_height = acc;
+    }
+
     /// Return the Y offset for the `ordinal`th **non-empty** heading block
     /// (0-based).  Empty headings (no visible text) are skipped so the
     /// ordinal aligns with `nav_outline::extract_headings` which also
@@ -167,6 +177,9 @@ impl MarkdownViewer {
             scroll_area = scroll_area.vertical_scroll_offset(y);
         }
 
+        // Track whether any estimated heights were corrected by measurement.
+        let mut heights_changed = false;
+
         scroll_area.show_viewport(ui, |ui, viewport| {
             // Record current scroll offset for external sync.
             cache.last_scroll_y = viewport.min.y;
@@ -192,14 +205,27 @@ impl MarkdownViewer {
                 ui.add_space(skip_h);
             }
 
-            // Render visible blocks.
+            // Render visible blocks, measuring actual heights.
             let mut idx = first;
             while idx < cache.blocks.len() {
                 let block_y = cache.cum_y[idx];
                 if block_y > vis_bottom {
                     break;
                 }
+
+                // ── Progressive height refinement ──────────────────
+                // Measure the actual rendered height via cursor delta
+                // and update the estimate if it drifted significantly.
+                let before_y = ui.cursor().top();
                 render_block(ui, &cache.blocks[idx], style, 0);
+                let after_y = ui.cursor().top();
+                let actual_h = after_y - before_y;
+
+                if actual_h > 0.0 && (cache.heights[idx] - actual_h).abs() > 2.0 {
+                    cache.heights[idx] = actual_h;
+                    heights_changed = true;
+                }
+
                 idx += 1;
             }
 
@@ -211,6 +237,13 @@ impl MarkdownViewer {
                 }
             }
         });
+
+        // Recompute cumulative offsets outside the viewport pass so the
+        // *next* frame sees corrected positions without perturbing the
+        // current frame's layout.
+        if heights_changed {
+            cache.recompute_cum_y();
+        }
     }
 
     /// Render markdown inline (no scroll area, no culling).
