@@ -339,6 +339,9 @@ struct RustdownApp {
     /// Last editor scroll byte offset used for `SideBySide` sync.
     /// Prevents feedback loops by only syncing when the source changes.
     last_sync_editor_byte: Option<usize>,
+    /// Set to `true` when `resolve_nav_scroll_target` applies a target this
+    /// frame; prevents `sync_side_by_side_scroll` from overriding it.
+    nav_scroll_applied_this_frame: bool,
 
     disk: DiskSyncState,
 }
@@ -1440,6 +1443,7 @@ impl RustdownApp {
     /// on the same frame.
     fn resolve_nav_scroll_target(&mut self, ctx: &egui::Context) {
         use nav_panel::NavScrollTarget;
+        self.nav_scroll_applied_this_frame = false;
         let Some(target) = self.nav.pending_scroll.take() else {
             return;
         };
@@ -1467,6 +1471,7 @@ impl RustdownApp {
                 self.nav.pending_preview_scroll_y = preview_target_y;
             }
         }
+        self.nav_scroll_applied_this_frame = true;
         ctx.request_repaint();
     }
 
@@ -1495,6 +1500,12 @@ impl RustdownApp {
     /// editor scroll position.  Uses byte offsets as an intermediate
     /// representation so both panes show the same content region.
     fn sync_side_by_side_scroll(&mut self, ctx: &egui::Context) {
+        // Skip sync if a nav-panel scroll target was already applied this frame;
+        // re-syncing would override it and cause a visible snap.
+        if self.nav_scroll_applied_this_frame {
+            return;
+        }
+
         self.ensure_row_byte_offsets();
         self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
 
