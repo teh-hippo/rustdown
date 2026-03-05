@@ -70,7 +70,7 @@ pub struct DiskSyncState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
+    use std::{io, sync::mpsc, time::SystemTime};
 
     fn dummy_rev() -> DiskRevision {
         DiskRevision {
@@ -115,5 +115,133 @@ mod tests {
         assert!(s.conflict.is_some());
         s.conflict = None;
         assert!(s.conflict.is_none());
+    }
+
+    #[test]
+    fn sync_state_defaults_are_inactive() {
+        let s = DiskSyncState::default();
+        assert_eq!(s.reload_nonce, 0);
+        assert!(s.watcher.is_none());
+        assert!(s.watch_root.is_none());
+        assert!(s.watch_target_name.is_none());
+        assert!(s.watch_rx.is_none());
+        assert!(s.poll_at.is_none());
+        assert!(s.pending_reload_at.is_none());
+        assert!(!s.reload_in_flight);
+        assert!(s.read_tx.is_none());
+        assert!(s.read_rx.is_none());
+        assert!(s.conflict.is_none());
+        assert!(s.merge_sidecar_path.is_none());
+    }
+
+    #[test]
+    fn channel_round_trip_replace() {
+        let (tx, rx) = mpsc::channel();
+        let msg = DiskReadMessage {
+            path: PathBuf::from("/tmp/test.md"),
+            nonce: 42,
+            edit_seq: 7,
+            outcome: Ok(DiskReloadOutcome::Replace {
+                disk_text: "new content".into(),
+                disk_rev: dummy_rev(),
+            }),
+        };
+        tx.send(msg).ok();
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        let m = received.unwrap_or_else(|_| unreachable!());
+        assert_eq!(m.nonce, 42);
+        assert_eq!(m.edit_seq, 7);
+        assert!(m.outcome.is_ok());
+    }
+
+    #[test]
+    fn channel_round_trip_merge_clean() {
+        let (tx, rx) = mpsc::channel();
+        let msg = DiskReadMessage {
+            path: PathBuf::from("/tmp/test.md"),
+            nonce: 5,
+            edit_seq: 3,
+            outcome: Ok(DiskReloadOutcome::MergeClean {
+                merged_text: "merged".into(),
+                disk_text: "disk".into(),
+                disk_rev: dummy_rev(),
+            }),
+        };
+        tx.send(msg).ok();
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+    }
+
+    #[test]
+    fn channel_round_trip_merge_conflict() {
+        let (tx, rx) = mpsc::channel();
+        let msg = DiskReadMessage {
+            path: PathBuf::from("/tmp/test.md"),
+            nonce: 10,
+            edit_seq: 8,
+            outcome: Ok(DiskReloadOutcome::MergeConflict {
+                disk_text: "disk".into(),
+                disk_rev: dummy_rev(),
+                conflict_marked: "<<<<<<< ours\nX\n=======\nY\n>>>>>>> theirs\n".into(),
+                ours_wins: "X\n".into(),
+            }),
+        };
+        tx.send(msg).ok();
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+    }
+
+    #[test]
+    fn channel_round_trip_error() {
+        let (tx, rx) = mpsc::channel();
+        let msg = DiskReadMessage {
+            path: PathBuf::from("/tmp/test.md"),
+            nonce: 1,
+            edit_seq: 0,
+            outcome: Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+        };
+        tx.send(msg).ok();
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        let m = received.unwrap_or_else(|_| unreachable!());
+        assert!(m.outcome.is_err());
+    }
+
+    #[test]
+    fn stale_nonce_detection_pattern() {
+        // Simulates the nonce-matching logic from drain_disk_read_results:
+        // messages with an old nonce should be skippable.
+        let mut s = DiskSyncState::default();
+        s.reload_nonce = s.reload_nonce.wrapping_add(1);
+        let stale_nonce = s.reload_nonce;
+        s.reload_nonce = s.reload_nonce.wrapping_add(1);
+        let current_nonce = s.reload_nonce;
+
+        assert_ne!(stale_nonce, current_nonce);
+        // A message with stale_nonce should be skipped.
+        assert_ne!(stale_nonce, s.reload_nonce);
+        // A message with current_nonce should be accepted.
+        assert_eq!(current_nonce, s.reload_nonce);
+    }
+
+    #[test]
+    fn pending_reload_debounce_pattern() {
+        // Simulates the debounce pattern: multiple events coalesce into one
+        // pending_reload_at, and only the first one is kept.
+        let mut s = DiskSyncState::default();
+        assert!(s.pending_reload_at.is_none());
+
+        let t1 = Instant::now() + std::time::Duration::from_millis(200);
+        s.pending_reload_at = Some(t1);
+        assert_eq!(s.pending_reload_at, Some(t1));
+
+        // Second event arrives — should NOT overwrite the earlier debounce.
+        let t2 = Instant::now() + std::time::Duration::from_millis(300);
+        if s.pending_reload_at.is_none() {
+            s.pending_reload_at = Some(t2);
+        }
+        // Original timestamp preserved.
+        assert_eq!(s.pending_reload_at, Some(t1));
     }
 }

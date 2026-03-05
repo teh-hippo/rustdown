@@ -556,4 +556,126 @@ mod tests {
         // Ours inserts at start, theirs inserts at end → clean.
         assert_clean("mid\n", "top\nmid\n", "mid\nbot\n", "top\nmid\nbot\n");
     }
+
+    #[test]
+    fn merge_max_lines_fallback_produces_whole_file_conflict() {
+        // Documents exceeding MAX_MERGE_LINES should produce a whole-file conflict
+        // without attempting line-level merge.
+        use std::fmt::Write;
+        let mut base = String::new();
+        let mut ours = String::new();
+        let mut theirs = String::new();
+        for i in 0..20_001 {
+            let _ = writeln!(base, "line {i}");
+            let _ = writeln!(ours, "ours {i}");
+            let _ = writeln!(theirs, "theirs {i}");
+        }
+        let (conflict, ours_wins) = assert_conflict(&base, &ours, &theirs);
+        assert!(conflict.starts_with("<<<<<<< ours\n"));
+        assert!(conflict.contains("=======\n"));
+        assert!(conflict.ends_with(">>>>>>> theirs\n"));
+        assert_eq!(ours_wins, ours);
+    }
+
+    #[test]
+    fn merge_multiple_non_adjacent_conflicts() {
+        // Two separate conflicting regions should produce two conflict markers.
+        let base = "a\nb\nc\nd\ne\n";
+        let ours = "A\nb\nc\nd\nE\n";
+        let theirs = "X\nb\nc\nd\nY\n";
+        let (conflict, ours_wins) = assert_conflict(base, ours, theirs);
+        let marker_count = conflict.matches("<<<<<<< ours").count();
+        assert_eq!(
+            marker_count, 2,
+            "Expected 2 conflict markers, got {marker_count}"
+        );
+        assert_eq!(ours_wins, ours);
+    }
+
+    #[test]
+    fn merge_delete_vs_modify_same_line_conflicts() {
+        // Ours deletes line 2; theirs modifies it → conflict.
+        let base = "a\nb\nc\n";
+        let ours = "a\nc\n";
+        let theirs = "a\nB\nc\n";
+        let (conflict, _) = assert_conflict(base, ours, theirs);
+        assert!(conflict.contains("<<<<<<< ours"));
+    }
+
+    #[test]
+    fn merge_symmetry_clean() {
+        // If merge(base, A, B) is clean, merge(base, B, A) should also be clean.
+        let base = "a\nb\nc\nd\ne\n";
+        let a = "A\nb\nc\nd\ne\n";
+        let b = "a\nb\nc\nd\nE\n";
+        assert_clean(base, a, b, "A\nb\nc\nd\nE\n");
+        assert_clean(base, b, a, "A\nb\nc\nd\nE\n");
+    }
+
+    #[test]
+    fn merge_symmetry_conflict() {
+        // Both orderings should produce a conflict with swapped ours/theirs chunks.
+        let base = "a\n";
+        let a = "X\n";
+        let b = "Y\n";
+        let (c1, ow1) = assert_conflict(base, a, b);
+        let (c2, ow2) = assert_conflict(base, b, a);
+        // ours_wins should reflect whichever was passed as "ours".
+        assert_eq!(ow1, "X\n");
+        assert_eq!(ow2, "Y\n");
+        // Both should contain conflict markers.
+        assert!(c1.contains("<<<<<<< ours"));
+        assert!(c2.contains("<<<<<<< ours"));
+    }
+
+    #[test]
+    fn merge_whitespace_only_changes() {
+        // Ours adds trailing space, theirs is unchanged → clean with ours' change.
+        assert_clean("line\n", "line \n", "line\n", "line \n");
+    }
+
+    #[test]
+    fn merge_ours_empty_theirs_nonempty() {
+        // Ours deletes everything; theirs keeps base → clean with ours' empty result.
+        assert_clean("content\n", "", "content\n", "");
+    }
+
+    #[test]
+    fn merge_theirs_empty_ours_nonempty() {
+        // Theirs deletes everything; ours keeps base → clean with theirs' empty result.
+        assert_clean("content\n", "content\n", "", "");
+    }
+
+    #[test]
+    fn edits_overlap_is_symmetric() {
+        let cases = [
+            (edit(0, 3, &["x\n"]), edit(2, 5, &["y\n"])),
+            (edit(0, 1, &["x\n"]), edit(2, 3, &["y\n"])),
+            (edit(2, 2, &["x\n"]), edit(2, 2, &["y\n"])),
+            (edit(1, 4, &["x\n"]), edit(2, 2, &["y\n"])),
+        ];
+        for (a, b) in &cases {
+            assert_eq!(
+                edits_overlap(a, b),
+                edits_overlap(b, a),
+                "Overlap not symmetric for {a:?} vs {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_range_with_edits_multiple_edits() {
+        let base_lines = vec!["a\n", "b\n", "c\n", "d\n", "e\n"];
+        let edits = vec![edit(1, 2, &["B\n"]), edit(3, 4, &["D\n"])];
+        let result = render_range_with_edits(&base_lines, 0, 5, &edits);
+        assert_eq!(result, "a\nB\nc\nD\ne\n");
+    }
+
+    #[test]
+    fn render_range_with_edits_subrange() {
+        // Only render lines 1..3 of a 5-line base.
+        let base_lines = vec!["a\n", "b\n", "c\n", "d\n", "e\n"];
+        let result = render_range_with_edits(&base_lines, 1, 3, &[]);
+        assert_eq!(result, "b\nc\n");
+    }
 }

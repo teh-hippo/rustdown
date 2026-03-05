@@ -99,7 +99,7 @@ pub fn preview_byte_to_scroll_y(
 
     // Fewer than 2 headings: fall back to simple linear mapping.
     if outline.len() < 2 {
-        return (byte_offset as f32 / max_byte as f32 * total_height).max(0.0);
+        return (byte_offset as f32 / max_byte as f32 * total_height).clamp(0.0, total_height);
     }
 
     let n = outline.len();
@@ -1092,6 +1092,139 @@ mod tests {
                 delta < 2,
                 "round-trip drift at byte={byte}: got back={back}, y={y:.2}, delta={delta}"
             );
+        }
+    }
+
+    // ── preview_byte_to_scroll_y boundary tests ─────────────────────
+
+    #[test]
+    fn preview_byte_to_scroll_y_byte_zero() {
+        let md = "# A\n\ntext\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let y = preview_byte_to_scroll_y(&outline, 0, 1000.0);
+        assert!((0.0..=1000.0).contains(&y),);
+    }
+
+    #[test]
+    fn preview_byte_to_scroll_y_byte_at_last_heading() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let max_byte = outline.last().map_or(0, |h| h.byte_offset);
+        let y = preview_byte_to_scroll_y(&outline, max_byte, 1000.0);
+        assert!(
+            (0.0..=1000.0).contains(&y),
+            "byte=max should be in bounds, got {y}"
+        );
+    }
+
+    #[test]
+    fn preview_byte_to_scroll_y_byte_beyond_max() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let total = 1000.0;
+        let y = preview_byte_to_scroll_y(&outline, 999_999, total);
+        assert!(
+            (0.0..=total).contains(&y),
+            "byte beyond max should still be in [0, total_height], got {y}"
+        );
+    }
+
+    #[test]
+    fn preview_byte_to_scroll_y_single_heading_beyond_max() {
+        // Single heading with byte_offset > 0: byte beyond max must clamp.
+        let md = "text\n\n# Only\n";
+        let outline = nav_outline::extract_headings(md);
+        assert_eq!(outline.len(), 1);
+        let total = 500.0;
+        let y = preview_byte_to_scroll_y(&outline, 999_999, total);
+        assert!(
+            y <= total,
+            "single-heading beyond-max should clamp to total_height, got {y}"
+        );
+    }
+
+    // ── preview_scroll_y_to_byte boundary tests ─────────────────────
+
+    #[test]
+    fn preview_scroll_y_to_byte_at_zero() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let byte = preview_scroll_y_to_byte(&outline, 0.0, 1000.0);
+        // scroll_y=0 maps to the first heading's region, not necessarily byte 0.
+        let first_offset = outline.first().map_or(0, |h| h.byte_offset);
+        assert_eq!(
+            byte, first_offset,
+            "scroll_y=0 should map to first heading offset"
+        );
+    }
+
+    #[test]
+    fn preview_scroll_y_to_byte_at_total_height() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let max_byte = outline.last().map_or(0, |h| h.byte_offset);
+        let byte = preview_scroll_y_to_byte(&outline, 1000.0, 1000.0);
+        assert!(
+            byte >= max_byte,
+            "scroll_y=total should map near end of doc"
+        );
+    }
+
+    #[test]
+    fn preview_scroll_y_to_byte_beyond_total_height() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let max_byte = outline.last().map_or(0, |h| h.byte_offset);
+        // scroll_y beyond total_height should be clamped.
+        let byte = preview_scroll_y_to_byte(&outline, 5000.0, 1000.0);
+        assert!(byte <= max_byte + 1000, "should clamp, got {byte}");
+    }
+
+    #[test]
+    fn preview_scroll_y_to_byte_negative() {
+        let md = "text\n\n# A\n\nmore\n\n## B\n";
+        let outline = nav_outline::extract_headings(md);
+        let byte = preview_scroll_y_to_byte(&outline, -100.0, 1000.0);
+        // Negative scroll_y clamps to 0, which maps to the first heading offset.
+        let first_offset = outline.first().map_or(0, |h| h.byte_offset);
+        assert_eq!(
+            byte, first_offset,
+            "negative scroll_y should clamp to first heading"
+        );
+    }
+
+    // ── compute_visible_headings additional tests ───────────────────
+
+    #[test]
+    fn compute_visible_max_depth_6_shows_everything_when_expanded() {
+        let md = "# A\n## B\n### C\n#### D\n##### E\n###### F\n";
+        let outline = nav_outline::extract_headings(md);
+        let expanded = HashSet::from([0, 1, 2, 3, 4]);
+        let visible = compute_visible_headings(&outline, &expanded, 6, 1);
+        assert_eq!(indices(&visible), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn compute_visible_alternating_h1_h6() {
+        let md = "# A\n###### deep\n# B\n###### deeper\n";
+        let outline = nav_outline::extract_headings(md);
+        // Collapsed: only H1s visible.
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 6, 1);
+        assert_eq!(indices(&visible), vec![0, 2]);
+        // Expand first H1: deep (H6) becomes visible.
+        let visible = compute_visible_headings(&outline, &HashSet::from([0]), 6, 1);
+        assert_eq!(indices(&visible), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn compute_visible_all_h1_no_children() {
+        let md = "# A\n# B\n# C\n# D\n";
+        let outline = nav_outline::extract_headings(md);
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 6, 1);
+        assert_eq!(visible.len(), 4);
+        // No heading should have children (all at same level).
+        for &(_, has_children) in &visible {
+            assert!(!has_children, "all H1s — none should have children");
         }
     }
 }

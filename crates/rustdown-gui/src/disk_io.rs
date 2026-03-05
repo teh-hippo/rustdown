@@ -343,4 +343,101 @@ mod tests {
         let rev = disk_revision(&path).unwrap_or_else(|_| unreachable!());
         assert_eq!(rev.len, 5);
     }
+
+    #[test]
+    fn atomic_write_empty_content() {
+        let dir = test_dir("rustdown-atomic-empty-test");
+        let path = dir.join("empty.md");
+        assert!(atomic_write_utf8(&path, "").is_ok());
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(content, "");
+        let rev = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        assert_eq!(rev.len, 0);
+    }
+
+    #[test]
+    fn read_stable_utf8_missing_file_returns_error() {
+        let result = read_stable_utf8(Path::new("/tmp/rustdown-nonexistent-stable-99999.md"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn disk_revision_unchanged_file_is_equal() {
+        let dir = test_dir("rustdown-disk-rev-eq-test");
+        let path = dir.join("stable.md");
+        fs::write(&path, "unchanged").ok();
+        let rev1 = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        let rev2 = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        assert_eq!(rev1, rev2);
+    }
+
+    #[test]
+    fn disk_revision_changed_file_differs() {
+        let dir = test_dir("rustdown-disk-rev-diff-test");
+        let path = dir.join("changing.md");
+        fs::write(&path, "v1").ok();
+        let rev1 = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        // Write different content (different length guarantees different revision).
+        fs::write(&path, "version2-longer").ok();
+        let rev2 = disk_revision(&path).unwrap_or_else(|_| unreachable!());
+        assert_ne!(rev1.len, rev2.len);
+    }
+
+    #[test]
+    fn next_merge_sidecar_path_exhaustion() {
+        let dir = test_dir("rustdown-sidecar-exhaust-test");
+        let original = dir.join("doc.md");
+
+        // Fill all 100 slots.
+        for n in 1..=MERGE_SIDECAR_MAX_FILES {
+            let name = if n == 1 {
+                "doc.rustdown-merge.md".to_owned()
+            } else {
+                format!("doc.rustdown-merge-{n}.md")
+            };
+            fs::write(dir.join(&name), "").ok();
+        }
+
+        let result = next_merge_sidecar_path(&original);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn atomic_write_round_trip_with_stable_read() {
+        let dir = test_dir("rustdown-round-trip-test");
+        let path = dir.join("round.md");
+        let content = "Hello, round-trip!\nLine 2\n";
+        assert!(atomic_write_utf8(&path, content).is_ok());
+        let (text, rev) = read_stable_utf8(&path).unwrap_or_else(|_| unreachable!());
+        assert_eq!(text, content);
+        assert_eq!(rev.len, content.len() as u64);
+    }
+
+    #[test]
+    fn atomic_write_unicode_content() {
+        let dir = test_dir("rustdown-atomic-unicode-test");
+        let path = dir.join("unicode.md");
+        let content = "日本語テスト 🦀 émojis\n";
+        assert!(atomic_write_utf8(&path, content).is_ok());
+        let read = fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(read, content);
+    }
+
+    #[test]
+    fn next_merge_sidecar_path_sequential_numbering() {
+        let dir = test_dir("rustdown-sidecar-seq-test");
+        let original = dir.join("notes.md");
+
+        // Fill slots 1 and 2, verify it returns slot 3.
+        fs::write(dir.join("notes.rustdown-merge.md"), "").ok();
+        fs::write(dir.join("notes.rustdown-merge-2.md"), "").ok();
+
+        let result = next_merge_sidecar_path(&original);
+        assert!(result.is_ok());
+        let sidecar = result.unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            sidecar.file_name().unwrap_or_default(),
+            "notes.rustdown-merge-3.md"
+        );
+    }
 }

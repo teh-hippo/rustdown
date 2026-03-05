@@ -345,6 +345,66 @@ mod tests {
         }
     }
 
+    // ── active_heading_index boundary tests ────────────────────────
+
+    #[test]
+    fn active_heading_index_at_each_heading_offset() {
+        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
+        let headings = extract_headings(md);
+        // Exact offset of each heading should return that heading (or earlier).
+        for (i, h) in headings.iter().enumerate() {
+            let idx = active_heading_index(&headings, 6, h.byte_offset);
+            assert_eq!(idx, Some(i), "exact offset of heading {i}");
+        }
+    }
+
+    #[test]
+    fn active_heading_index_one_byte_before_each_heading() {
+        let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
+        let headings = extract_headings(md);
+        for (i, h) in headings.iter().enumerate() {
+            if h.byte_offset == 0 {
+                continue;
+            }
+            let idx = active_heading_index(&headings, 6, h.byte_offset - 1);
+            // Should return the heading *before* this one.
+            assert!(idx.is_some_and(|v| v < i), "one byte before heading {i}");
+        }
+    }
+
+    #[test]
+    fn active_heading_index_far_beyond_document() {
+        let md = "# A\n## B\n";
+        let headings = extract_headings(md);
+        let idx = active_heading_index(&headings, 6, usize::MAX);
+        assert_eq!(idx, Some(headings.len() - 1));
+    }
+
+    #[test]
+    fn active_heading_index_alternating_h1_h6() {
+        let md = "# A\n###### deep\n# B\n###### deeper\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 4);
+        // At max_depth=1, only H1s are considered.
+        let deep_offset = headings[1].byte_offset;
+        assert_eq!(active_heading_index(&headings, 1, deep_offset), Some(0));
+        let deeper_offset = headings[3].byte_offset;
+        assert_eq!(active_heading_index(&headings, 1, deeper_offset), Some(2));
+        // At max_depth=6, all are considered.
+        assert_eq!(active_heading_index(&headings, 6, deep_offset), Some(1));
+        assert_eq!(active_heading_index(&headings, 6, deeper_offset), Some(3));
+    }
+
+    #[test]
+    fn active_heading_index_all_same_level() {
+        let md = "## A\n## B\n## C\n";
+        let headings = extract_headings(md);
+        for (i, h) in headings.iter().enumerate() {
+            let idx = active_heading_index(&headings, 6, h.byte_offset);
+            assert_eq!(idx, Some(i));
+        }
+    }
+
     // ── Cross-module: nav_outline ↔ render heading_y ordinal alignment ──
 
     #[test]
