@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/teh-hippo/rustdown"
@@ -39,11 +39,11 @@ option_if_let_else = "allow"
 [profile.release]
 strip = true
 lto = true
-opt-level = "s"
+opt-level = 2
 codegen-units = 1
 panic = "abort"
 
-# Optimize heavy dependencies harder for size — these are not
+# Optimize heavy dependencies for size — these are not
 # performance-critical for our app (image decoding, clipboard, windowing).
 [profile.release.package."*"]
 opt-level = "z"

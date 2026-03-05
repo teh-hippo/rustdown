@@ -57,12 +57,37 @@ pub fn replace_all_occurrences<'a>(
         return (Cow::Borrowed(haystack), 0);
     }
 
-    let matches = find_match_count(haystack, needle);
-    if matches == 0 {
+    // Single-pass: find all occurrences and build the result in one scan.
+    let needle_bytes = needle.as_bytes();
+    let haystack_bytes = haystack.as_bytes();
+    let mut iter = memchr::memmem::find_iter(haystack_bytes, needle_bytes);
+    let Some(first) = iter.next() else {
         return (Cow::Borrowed(haystack), 0);
+    };
+
+    // Pre-allocate with a reasonable estimate.
+    let estimated = if replacement.len() >= needle.len() {
+        haystack.len() + (replacement.len() - needle.len()) * 4
+    } else {
+        haystack.len()
+    };
+    let mut result = String::with_capacity(estimated);
+    let mut count = 1usize;
+    let mut prev_end = 0;
+
+    result.push_str(&haystack[prev_end..first]);
+    result.push_str(replacement);
+    prev_end = first + needle.len();
+
+    for pos in iter {
+        result.push_str(&haystack[prev_end..pos]);
+        result.push_str(replacement);
+        prev_end = pos + needle.len();
+        count += 1;
     }
 
-    (Cow::Owned(haystack.replace(needle, replacement)), matches)
+    result.push_str(&haystack[prev_end..]);
+    (Cow::Owned(result), count)
 }
 
 #[cfg(test)]
