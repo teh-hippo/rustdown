@@ -196,7 +196,7 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
 /// Scans events starting at `offset`, consuming `Text`, `Code`, and break
 /// events until `End(Image)` is found.  Returns `(alt_text, events_consumed)`.
 fn collect_image_alt(events: &[Event<'_>], offset: usize) -> (String, usize) {
-    let mut alt = String::new();
+    let mut alt = String::with_capacity(64);
     let mut i = offset;
     while i < events.len() {
         match &events[i] {
@@ -228,8 +228,10 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
         Event::Start(Tag::CodeBlock(kind)) => {
             let lang = match kind {
-                pulldown_cmark::CodeBlockKind::Fenced(l) => l.to_string(),
-                pulldown_cmark::CodeBlockKind::Indented => String::new(),
+                pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => {
+                    l.as_ref().to_owned()
+                }
+                _ => String::new(),
             };
             parse_code_block(events, lang, blocks)
         }
@@ -331,7 +333,7 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
 
     // Use shared alt-text collector, but reject if any unexpected events appear
     // (which would mean this isn't a standalone image paragraph).
-    let mut alt = String::new();
+    let mut alt = String::with_capacity(64);
     let mut i = 2;
     while i < events.len() {
         match &events[i] {
@@ -371,7 +373,7 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
 }
 
 fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Block>) -> usize {
-    let mut code = String::new();
+    let mut code = String::with_capacity(256);
     let mut consumed = 1;
     while consumed < events.len() {
         match &events[consumed] {
@@ -391,7 +393,7 @@ fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Blo
 }
 
 fn parse_blockquote(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
-    let mut inner = Vec::new();
+    let mut inner = Vec::with_capacity(4);
     let mut consumed = 1;
     while consumed < events.len() {
         if let Event::End(TagEnd::BlockQuote(_)) = &events[consumed] {
@@ -411,7 +413,7 @@ fn parse_list(
     blocks: &mut Vec<Block>,
     fmt: &mut InlineState,
 ) -> usize {
-    let mut items = Vec::new();
+    let mut items = Vec::with_capacity(8);
     let mut consumed = 1;
     while consumed < events.len() {
         match &events[consumed] {
@@ -486,7 +488,7 @@ fn parse_table(
 
     let num_cols = aligns.len();
     let mut header = Vec::with_capacity(num_cols);
-    let mut rows: Vec<Vec<StyledText>> = Vec::new();
+    let mut rows: Vec<Vec<StyledText>> = Vec::with_capacity(16);
     let mut in_head = false;
     let mut current_row: Vec<StyledText> = Vec::with_capacity(num_cols);
     let mut current_cell = StyledText::default();
@@ -670,10 +672,13 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
         Event::End(TagEnd::Link) => state.pop_link(),
         // Render footnote references as bracketed text.
         Event::FootnoteReference(label) => {
+            // Build bracket text in one shot to avoid multiple style clones.
             let style = state.style();
-            styled.push_text("[", style.clone());
-            styled.push_text(label, style.clone());
-            styled.push_text("]", style);
+            let mut ref_text = String::with_capacity(label.len() + 2);
+            ref_text.push('[');
+            ref_text.push_str(label);
+            ref_text.push(']');
+            styled.push_text(&ref_text, style);
         }
         // Render inline HTML as plain text.
         Event::InlineHtml(html) | Event::Html(html) => {
