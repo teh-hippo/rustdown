@@ -36,7 +36,8 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         .max(imara_diff::sources::lines(ours).count())
         .max(imara_diff::sources::lines(theirs).count());
     if max_lines > MAX_MERGE_LINES {
-        let mut conflict_marked = String::new();
+        let cap = ours.len() + theirs.len() + 80;
+        let mut conflict_marked = String::with_capacity(cap);
         conflict_marked.push_str("<<<<<<< ours\n");
         conflict_marked.push_str(ours);
         ensure_newline(&mut conflict_marked);
@@ -58,8 +59,9 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
     let mut pos = 0usize;
     let mut i_ours = 0usize;
     let mut i_theirs = 0usize;
-    let mut ours_wins = String::new();
-    let mut conflict_marked = String::new();
+    let estimated_cap = base.len().max(ours.len()).max(theirs.len()) + 256;
+    let mut ours_wins = String::with_capacity(estimated_cap);
+    let mut conflict_marked = String::with_capacity(estimated_cap);
     let mut has_conflicts = false;
 
     loop {

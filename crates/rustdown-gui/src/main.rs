@@ -579,15 +579,19 @@ impl eframe::App for RustdownApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut clear_merge_sidecar = false;
-                    if let Some(path) = self.disk.merge_sidecar_path.clone() {
+                    let mut open_merge_path: Option<std::path::PathBuf> = None;
+                    if let Some(path) = &self.disk.merge_sidecar_path {
                         if ui.button("x").clicked() {
                             clear_merge_sidecar = true;
                         }
                         if ui.button("Open merge file").clicked() {
-                            self.request_action(PendingAction::Open(path.clone()));
+                            open_merge_path = Some(path.clone());
                         }
                         ui.label(path.to_string_lossy());
                         ui.separator();
+                    }
+                    if let Some(path) = open_merge_path {
+                        self.request_action(PendingAction::Open(path));
                     }
 
                     if let Some(error) = self.error.as_deref() {
