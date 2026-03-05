@@ -404,7 +404,7 @@ fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, 
     let hover_text = if alt.is_empty() { url } else { alt };
     response.on_hover_text(hover_text);
 
-    ui.add_space(body_size * 0.3);
+    ui.add_space(body_size * 0.4);
 }
 
 fn render_heading(
@@ -910,7 +910,12 @@ fn render_table_cell(
     ui.with_layout(layout, |ui| {
         if is_header {
             let body_size = ui.text_style_height(&egui::TextStyle::Body);
-            render_styled_text_ex(ui, cell, style, Some(body_size), None);
+            let color = strengthen_color(
+                style
+                    .body_color
+                    .unwrap_or_else(|| ui.visuals().text_color()),
+            );
+            render_styled_text_ex(ui, cell, style, Some(body_size), Some(color));
         } else {
             render_styled_text(ui, cell, style);
         }

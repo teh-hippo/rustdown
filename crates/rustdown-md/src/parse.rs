@@ -198,21 +198,37 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, blocks, fmt),
         Event::Start(Tag::List(start)) => parse_list(events, *start, blocks, fmt),
         Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks, fmt),
-        Event::Start(Tag::Image {
-            dest_url, title, ..
-        }) => {
-            blocks.push(Block::Image {
-                url: dest_url.to_string(),
-                alt: title.to_string(),
-            });
-            // Skip to end of image tag.
+        Event::Start(Tag::Image { dest_url, .. }) => {
+            // Collect alt text from inline events between Start(Image) and End(Image).
+            // In pulldown-cmark the `title` field is the *tooltip* title, not the alt text;
+            // the alt text is emitted as child Text/Code events.
+            let mut alt = String::new();
             let mut consumed = 1;
             while consumed < events.len() {
-                if matches!(events[consumed], Event::End(TagEnd::Image)) {
-                    return consumed + 1;
+                match &events[consumed] {
+                    Event::End(TagEnd::Image) => {
+                        consumed += 1;
+                        break;
+                    }
+                    Event::Text(t) => {
+                        alt.push_str(t);
+                        consumed += 1;
+                    }
+                    Event::Code(c) => {
+                        alt.push_str(c);
+                        consumed += 1;
+                    }
+                    Event::SoftBreak | Event::HardBreak => {
+                        alt.push(' ');
+                        consumed += 1;
+                    }
+                    _ => consumed += 1,
                 }
-                consumed += 1;
             }
+            blocks.push(Block::Image {
+                url: dest_url.to_string(),
+                alt,
+            });
             consumed
         }
         Event::Rule => {
