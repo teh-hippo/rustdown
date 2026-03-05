@@ -4,6 +4,7 @@ This repo is a native (non-webview) Markdown editor in Rust (no wasm/web build).
 
 ## Project structure
 - `crates/rustdown-gui`: eframe/egui native GUI app
+- `crates/rustdown-md`: Markdown parsing and rendering library (egui widgets)
 
 ## Dev commands
 ```bash
