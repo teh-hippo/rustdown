@@ -39,8 +39,8 @@ pub struct NavState {
     pub pending_editor_scroll_y: Option<f32>,
     /// Pending preview scroll target in pixels.
     pub pending_preview_scroll_y: Option<f32>,
-    /// Cached visible heading indices (recomputed only when state changes).
-    cached_visible: Vec<usize>,
+    /// Cached visible heading indices with precomputed `has_children` flag.
+    cached_visible: Vec<(usize, bool)>,
     /// Sequence counter for visible-heading cache invalidation.
     visible_seq: u64,
     /// The expanded set hash when `cached_visible` was last computed.
@@ -248,7 +248,6 @@ impl NavState {
                         outline: &self.outline,
                         visible: &self.cached_visible,
                         min_level,
-                        max_depth,
                         expanded: &self.expanded,
                         active_index: self.active_index,
                         source: &source,
@@ -308,9 +307,8 @@ struct RowStyle {
 /// All data needed to render the heading list (avoids too-many-arguments).
 struct RenderContext<'a> {
     outline: &'a [HeadingEntry],
-    visible: &'a [usize],
+    visible: &'a [(usize, bool)],
     min_level: u8,
-    max_depth: u8,
     expanded: &'a HashSet<usize>,
     active_index: Option<usize>,
     source: &'a str,
@@ -319,12 +317,32 @@ struct RenderContext<'a> {
 
 /// Compute which outline indices are visible given the current expanded set.
 /// Uses a parent stack for O(n) traversal instead of O(n²) reverse scans.
+/// Also precomputes which headings have children within `max_depth` in a
+/// single backward pass (O(n) total instead of O(n²) per render call).
 fn compute_visible_headings(
     outline: &[HeadingEntry],
     expanded: &HashSet<usize>,
     max_depth: u8,
     min_level: u8,
-) -> Vec<usize> {
+) -> Vec<(usize, bool)> {
+    // Precompute has_children in a backward pass: O(n).
+    let mut has_children = vec![false; outline.len()];
+    for i in (0..outline.len()).rev() {
+        if outline[i].level > max_depth {
+            continue;
+        }
+        let level = outline[i].level;
+        for h in &outline[i + 1..] {
+            if h.level <= level {
+                break;
+            }
+            if h.level <= max_depth {
+                has_children[i] = true;
+                break;
+            }
+        }
+    }
+
     let mut visible = Vec::new();
     let mut is_visible = vec![false; outline.len()];
     // Stack of ancestor indices; top has the nearest parent at a lower level.
@@ -352,33 +370,18 @@ fn compute_visible_headings(
 
         if show {
             is_visible[idx] = true;
-            visible.push(idx);
+            visible.push((idx, has_children[idx]));
         }
         parent_stack.push(idx);
     }
     visible
 }
 
-/// Check whether heading at `idx` has any children within `max_depth`.
-fn has_visible_children(outline: &[HeadingEntry], max_depth: u8, idx: usize) -> bool {
-    let level = outline[idx].level;
-    for h in &outline[idx + 1..] {
-        if h.level <= level {
-            break;
-        }
-        if h.level <= max_depth {
-            return true;
-        }
-    }
-    false
-}
-
 fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickAction> {
     let mut result = None;
 
-    for &gi in cx.visible {
+    for &(gi, has_children) in cx.visible {
         let h = &cx.outline[gi];
-        let has_children = has_visible_children(cx.outline, cx.max_depth, gi);
         let is_expanded = cx.expanded.contains(&gi);
 
         let style = RowStyle {
@@ -440,6 +443,11 @@ fn render_heading_row(
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    /// Extract just the outline indices from a visible headings list.
+    fn indices(v: &[(usize, bool)]) -> Vec<usize> {
+        v.iter().map(|&(i, _)| i).collect()
+    }
 
     fn make_state(md: &str) -> NavState {
         let mut state = NavState {
@@ -610,7 +618,7 @@ mod tests {
         let expanded = HashSet::new();
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         // Only H1 headings visible when nothing is expanded.
-        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 1]);
     }
 
@@ -622,31 +630,38 @@ mod tests {
         let mut expanded = HashSet::new();
         expanded.insert(0);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 2, 1]); // A, B, D
 
         // Now also expand B — should reveal C.
         expanded.insert(1);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 2, 3, 1]); // A, B, C, D
     }
 
     #[test]
-    fn has_visible_children_detects_children() {
+    fn has_children_flag_detects_children() {
         let md = "# A\n## B\n# C\n";
         let outline = nav_outline::extract_headings(md);
-        assert!(has_visible_children(&outline, 4, 0)); // A has child B
-        assert!(!has_visible_children(&outline, 4, 1)); // B has no children
-        assert!(!has_visible_children(&outline, 4, 2)); // C has no children
+        let expanded = HashSet::from([0, 2]);
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        // A(0) has child B → true, B(1) has no children → false, C(2) has no children → false
+        let children: Vec<_> = visible.iter().map(|&(_, hc)| hc).collect();
+        assert_eq!(children, vec![true, false, false]);
     }
 
     #[test]
-    fn has_visible_children_respects_max_depth() {
+    fn has_children_flag_respects_max_depth() {
         let md = "# A\n### C\n";
         let outline = nav_outline::extract_headings(md);
-        assert!(has_visible_children(&outline, 4, 0)); // C is within depth
-        assert!(!has_visible_children(&outline, 1, 0)); // C exceeds max_depth=1
+        let expanded = HashSet::from([0]);
+        // max_depth=4: C is within depth → A has children
+        let visible = compute_visible_headings(&outline, &expanded, 4, 1);
+        assert!(visible[0].1); // A has children
+        // max_depth=1: C exceeds depth → A has no visible children
+        let visible = compute_visible_headings(&outline, &HashSet::new(), 1, 1);
+        assert!(!visible[0].1); // A has no children at depth 1
     }
 
     #[test]
@@ -657,19 +672,19 @@ mod tests {
         let mut expanded = HashSet::new();
         // Nothing expanded: only H1 visible.
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0]);
+        assert_eq!(indices(&visible), vec![0]);
         // Expand A: B visible.
         expanded.insert(0);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0, 1]);
+        assert_eq!(indices(&visible), vec![0, 1]);
         // Expand B: C visible.
         expanded.insert(1);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0, 1, 2]);
+        assert_eq!(indices(&visible), vec![0, 1, 2]);
         // Expand C: D visible.
         expanded.insert(2);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0, 1, 2, 3]);
+        assert_eq!(indices(&visible), vec![0, 1, 2, 3]);
     }
 
     #[test]
@@ -681,7 +696,7 @@ mod tests {
         // Expand A: both C and B are direct children (C at level 3, B at level 2).
         expanded.insert(0);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 3, 2]);
     }
 
@@ -694,11 +709,11 @@ mod tests {
         expanded.insert(1);
         // All visible.
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0, 1, 2]);
+        assert_eq!(indices(&visible), vec![0, 1, 2]);
         // Collapse A: B and C should be hidden even though B is still "expanded".
         expanded.remove(&0);
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
-        assert_eq!(visible, vec![0]);
+        assert_eq!(indices(&visible), vec![0]);
     }
 
     #[test]
@@ -716,7 +731,7 @@ mod tests {
         let outline = nav_outline::extract_headings(md);
         let expanded = HashSet::new();
         let visible = compute_visible_headings(&outline, &expanded, 4, 2);
-        assert_eq!(visible, vec![0, 1, 2]);
+        assert_eq!(indices(&visible), vec![0, 1, 2]);
     }
 
     #[test]
@@ -729,7 +744,7 @@ mod tests {
         expanded.insert(2);
         // max_depth=2 hides C and D.
         let visible = compute_visible_headings(&outline, &expanded, 2, 1);
-        let levels: Vec<_> = visible.iter().map(|&i| outline[i].level).collect();
+        let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 2]);
     }
 
@@ -823,7 +838,7 @@ mod tests {
         );
 
         // Expand first heading — should reveal more
-        state.expanded.insert(all[0]);
+        state.expanded.insert(all[0].0);
         let expanded =
             compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
         assert!(
@@ -832,7 +847,7 @@ mod tests {
         );
 
         // Collapse — should return to original
-        state.expanded.remove(&all[0]);
+        state.expanded.remove(&all[0].0);
         let collapsed =
             compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1);
         assert_eq!(collapsed.len(), all.len());

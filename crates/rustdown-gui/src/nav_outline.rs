@@ -89,20 +89,27 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
 /// Returns the index of the last heading whose `byte_offset` ≤ `position`,
 /// considering only entries with `level ≤ max_depth`.  Returns `None` when
 /// no heading precedes `position`.
+///
+/// Uses binary search on sorted `byte_offset` values (O(log n) to find the
+/// neighbourhood, then a short backward scan for the depth filter).
 pub fn active_heading_index(
     entries: &[HeadingEntry],
     max_depth: u8,
     position: usize,
 ) -> Option<usize> {
-    let mut result = None;
-    for (i, entry) in entries.iter().enumerate() {
-        if entry.level <= max_depth && entry.byte_offset <= position {
-            result = Some(i);
-        } else if entry.byte_offset > position {
-            break;
-        }
+    if entries.is_empty() {
+        return None;
     }
-    result
+    // Binary search: find the rightmost entry with byte_offset ≤ position.
+    let upper = match entries.binary_search_by_key(&position, |e| e.byte_offset) {
+        Ok(i) => i,
+        Err(0) => return None, // all headings are after position
+        Err(i) => i - 1,
+    };
+    // Walk backwards from `upper` to find the first entry matching depth.
+    (0..=upper)
+        .rev()
+        .find(|&i| entries[i].level <= max_depth)
 }
 
 const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
