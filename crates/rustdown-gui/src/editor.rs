@@ -125,4 +125,63 @@ mod tests {
         // Between first and second row maps to first row.
         assert_eq!(row_byte_offset_to_y(&rows, 15), 0.0);
     }
+
+    // ── Single-row (long line / no newlines) ────────────────────────
+
+    #[test]
+    fn row_byte_offset_to_y_single_row() {
+        let rows = vec![(5.0, 0u32)];
+        assert_eq!(row_byte_offset_to_y(&rows, 0), 5.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 500), 5.0);
+        assert_eq!(row_byte_offset_to_y(&rows, usize::MAX), 5.0);
+    }
+
+    #[test]
+    fn row_y_to_byte_offset_single_row() {
+        let rows = vec![(5.0, 0u32)];
+        assert_eq!(row_y_to_byte_offset(&rows, 0.0), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, 5.0), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, 999.0), 0);
+    }
+
+    // ── Multi-byte UTF-8 aligned offsets ────────────────────────────
+
+    #[test]
+    fn row_byte_offset_to_y_multibyte_offsets() {
+        // Simulates rows where boundaries fall on multi-byte char edges.
+        // "café\n" is 6 bytes: c(1) a(1) f(1) é(2) \n(1)
+        let rows = vec![(0.0, 0u32), (20.0, 6), (40.0, 12)];
+        assert_eq!(row_byte_offset_to_y(&rows, 0), 0.0);
+        assert_eq!(row_byte_offset_to_y(&rows, 3), 0.0); // inside first row
+        assert_eq!(row_byte_offset_to_y(&rows, 6), 20.0); // exact second row start
+        assert_eq!(row_byte_offset_to_y(&rows, 9), 20.0); // inside second row
+        assert_eq!(row_byte_offset_to_y(&rows, 12), 40.0);
+    }
+
+    #[test]
+    fn row_y_to_byte_offset_multibyte_offsets() {
+        let rows = vec![(0.0, 0u32), (20.0, 6), (40.0, 12)];
+        assert_eq!(row_y_to_byte_offset(&rows, 0.0), 0);
+        assert_eq!(row_y_to_byte_offset(&rows, 20.0), 6);
+        assert_eq!(row_y_to_byte_offset(&rows, 40.0), 12);
+        assert_eq!(row_y_to_byte_offset(&rows, 30.0), 6); // between rows 2 and 3
+    }
+
+    // ── char_index_to_byte extended ─────────────────────────────────
+
+    #[test]
+    fn char_index_to_byte_empty_string() {
+        assert_eq!(char_index_to_byte("", 0), 0);
+        assert_eq!(char_index_to_byte("", 5), 0);
+    }
+
+    #[test]
+    fn char_index_to_byte_cjk_and_emoji() {
+        // '日' is 3 bytes, '🦀' is 4 bytes
+        let text = "日🦀x";
+        assert_eq!(char_index_to_byte(text, 0), 0); // '日'
+        assert_eq!(char_index_to_byte(text, 1), 3); // '🦀'
+        assert_eq!(char_index_to_byte(text, 2), 7); // 'x'
+        assert_eq!(char_index_to_byte(text, 3), 8); // past end
+    }
 }

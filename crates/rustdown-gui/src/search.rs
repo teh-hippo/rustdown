@@ -184,6 +184,37 @@ mod tests {
         assert_eq!(result, "a---b---c");
     }
 
+    #[test]
+    fn replace_same_length_different_strings() {
+        let (result, count) = replace_all_occurrences("abc def abc", "abc", "xyz");
+        assert_eq!(count, 2);
+        assert_eq!(result, "xyz def xyz");
+        assert!(matches!(result, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn replace_with_shorter_replacement() {
+        let (result, count) = replace_all_occurrences("hello world hello", "hello", "hi");
+        assert_eq!(count, 2);
+        assert_eq!(result, "hi world hi");
+    }
+
+    #[test]
+    fn replace_empty_haystack() {
+        let (result, count) = replace_all_occurrences("", "abc", "xyz");
+        assert_eq!(count, 0);
+        assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn count_literal_special_chars() {
+        // Confirm that regex-special characters are treated as literal bytes.
+        assert_eq!(find_match_count("a.b.c", "."), 2);
+        assert_eq!(find_match_count("a*b*c", "*"), 2);
+        assert_eq!(find_match_count("(a)(b)", "("), 2);
+        assert_eq!(find_match_count("[x][y][x]", "[x]"), 2);
+    }
+
     // ── SearchState::match_count (caching) ──────────────────────────
 
     #[test]
