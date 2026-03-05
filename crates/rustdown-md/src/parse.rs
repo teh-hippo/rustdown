@@ -69,6 +69,10 @@ pub struct ListItem {
 pub struct StyledText {
     pub text: String,
     pub spans: Vec<Span>,
+    /// Cached character count (avoids repeated O(n) UTF-8 scans for non-ASCII text).
+    pub char_count: u32,
+    /// Whether any span has a link (avoids linear scan in render path).
+    pub has_links: bool,
 }
 
 /// Inline formatting flags that can be combined (e.g., bold + italic).
@@ -152,6 +156,10 @@ impl StyledText {
         let start = self.text.len() as u32;
         self.text.push_str(s);
         let end = self.text.len() as u32;
+        self.char_count += s.chars().count() as u32;
+        if style.link.is_some() {
+            self.has_links = true;
+        }
         if start < end {
             // Merge adjacent spans of the same style.
             if let Some(last) = self.spans.last_mut()

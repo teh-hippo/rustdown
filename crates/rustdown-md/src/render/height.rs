@@ -16,13 +16,13 @@ pub(super) fn estimate_block_height(
         Block::Heading { level, text } => {
             let idx = (*level as usize).saturating_sub(1).min(5);
             let size = body_size * style.headings[idx].font_scale;
-            let text_h = estimate_text_height(&text.text, size, wrap_width);
+            let text_h = estimate_styled_height(text, size, wrap_width);
             let sep = if *level <= 2 { 4.0 } else { 0.0 };
             // Render adds top_space (0.3) + bottom_space (0.15).
             size.mul_add(0.45, text_h) + sep
         }
         Block::Paragraph(text) => {
-            body_size.mul_add(0.4, estimate_text_height(&text.text, body_size, wrap_width))
+            body_size.mul_add(0.4, estimate_styled_height(text, body_size, wrap_width))
         }
         Block::Code { language, code, .. } => {
             let mono_size = body_size * 0.9;
@@ -95,7 +95,7 @@ pub(super) fn estimate_list_height(
     let item_h: f32 = items
         .iter()
         .map(|item| {
-            let text_h = estimate_text_height(&item.content.text, body_size, content_w);
+            let text_h = estimate_styled_height(&item.content, body_size, content_w);
             let child_h: f32 = item
                 .children
                 .iter()
@@ -117,7 +117,7 @@ pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_widt
 
     let row_height = |cells: &[StyledText]| -> f32 {
         cells.iter().fold(base_row_h, |max, c| {
-            estimate_text_height(&c.text, body_size, col_width).max(max)
+            estimate_styled_height(c, body_size, col_width).max(max)
         }) + row_spacing
     };
 
@@ -132,8 +132,32 @@ pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_widt
 
 /// Rough text height estimate using byte-level newline counting.
 /// Avoids `.lines()` iteration for better throughput on large texts.
+#[cfg(test)]
 #[allow(clippy::cast_precision_loss)] // UI math — counts are small
 pub(super) fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
+    estimate_text_height_inner(text, font_size, wrap_width, None)
+}
+
+/// Like [`estimate_text_height`], but uses a pre-computed character count
+/// from [`StyledText::char_count`] to skip the O(n) UTF-8 scan for non-ASCII text.
+#[allow(clippy::cast_precision_loss)]
+pub(super) fn estimate_styled_height(st: &StyledText, font_size: f32, wrap_width: f32) -> f32 {
+    // Only use cached count when it was actually populated (> 0 for non-empty text).
+    let hint = if st.char_count > 0 {
+        Some(st.char_count as usize)
+    } else {
+        None
+    };
+    estimate_text_height_inner(&st.text, font_size, wrap_width, hint)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn estimate_text_height_inner(
+    text: &str,
+    font_size: f32,
+    wrap_width: f32,
+    char_count_hint: Option<usize>,
+) -> f32 {
     if text.is_empty() {
         return font_size;
     }
@@ -151,11 +175,10 @@ pub(super) fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) 
     let hard_lines = (newline_count + 1).max(1);
     // Use character count (not byte count) for average line length to avoid
     // inflating wrap estimates for multi-byte characters like CJK.
-    // Rust's chars().count() is internally optimized to count leading bytes.
-    let char_count = if is_ascii {
-        text.len()
-    } else {
-        text.chars().count()
+    let char_count = match char_count_hint {
+        Some(hint) => hint,
+        None if is_ascii => text.len(),
+        None => text.chars().count(),
     };
     let avg_line_len = char_count as f32 / hard_lines as f32;
     let wraps_per_line = (avg_line_len / chars_per_line).ceil().max(1.0);

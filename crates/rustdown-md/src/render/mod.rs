@@ -108,15 +108,13 @@ impl MarkdownCache {
         self.height_body_size = body_size;
         self.height_wrap_width = wrap_width;
         let n = self.blocks.len();
-        self.heights.clear();
-        self.heights.reserve(n);
-        self.cum_y.clear();
-        self.cum_y.reserve(n);
+        self.heights.resize(n, 0.0);
+        self.cum_y.resize(n, 0.0);
         let mut acc = 0.0_f32;
-        for block in &self.blocks {
-            self.cum_y.push(acc);
+        for (i, block) in self.blocks.iter().enumerate() {
+            self.cum_y[i] = acc;
             let h = estimate_block_height(block, body_size, wrap_width, style);
-            self.heights.push(h);
+            self.heights[i] = h;
             acc += h;
         }
         self.total_height = acc;
@@ -689,6 +687,7 @@ mod tests {
         let cell = |s: &str| StyledText {
             text: s.to_owned(),
             spans: vec![],
+            ..StyledText::default()
         };
         let blocks: Vec<(&str, Block)> = vec![
             (
@@ -1065,6 +1064,7 @@ mod tests {
             .map(|t| StyledText {
                 text: t.to_string(),
                 spans: vec![],
+                ..StyledText::default()
             })
             .collect()
     }
@@ -1449,6 +1449,7 @@ mod tests {
             .map(|s| StyledText {
                 text: (*s).to_owned(),
                 spans: vec![],
+                ..StyledText::default()
             })
             .collect();
         let row_data: Vec<Vec<StyledText>> = rows
@@ -1458,6 +1459,7 @@ mod tests {
                     .map(|s| StyledText {
                         text: (*s).to_owned(),
                         spans: vec![],
+                        ..StyledText::default()
                     })
                     .collect()
             })
@@ -1641,6 +1643,7 @@ mod tests {
         let cell = |s: &str| StyledText {
             text: s.to_owned(),
             spans: vec![],
+            ..StyledText::default()
         };
         let make_item = |text: &str| ListItem {
             content: cell(text),
@@ -2453,6 +2456,7 @@ mod tests {
         StyledText {
             text: s.to_owned(),
             spans: vec![],
+            ..StyledText::default()
         }
     }
 
@@ -2886,6 +2890,7 @@ mod tests {
                     content: StyledText {
                         text: "first".to_owned(),
                         spans: vec![],
+                        ..StyledText::default()
                     },
                     children: vec![],
                     checked: None,
@@ -2894,6 +2899,7 @@ mod tests {
                     content: StyledText {
                         text: "second".to_owned(),
                         spans: vec![],
+                        ..StyledText::default()
                     },
                     children: vec![],
                     checked: None,
@@ -2902,6 +2908,7 @@ mod tests {
                     content: StyledText {
                         text: "third".to_owned(),
                         spans: vec![],
+                        ..StyledText::default()
                     },
                     children: vec![],
                     checked: None,
@@ -3306,6 +3313,7 @@ mod tests {
             content: StyledText {
                 text: text.to_owned(),
                 spans: vec![],
+                ..StyledText::default()
             },
             children: vec![],
             checked: None,
@@ -3608,6 +3616,7 @@ mod tests {
                     style: SpanStyle::plain(),
                 },
             ],
+            ..StyledText::default()
         };
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -3630,6 +3639,7 @@ mod tests {
                 end: 14,
                 style: SpanStyle::plain(),
             }],
+            ..StyledText::default()
         };
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -3659,6 +3669,7 @@ mod tests {
                     style: italic_style,
                 },
             ],
+            ..StyledText::default()
         };
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -3680,6 +3691,7 @@ mod tests {
                 end: 9,
                 style: code_style,
             }],
+            ..StyledText::default()
         };
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -4172,6 +4184,7 @@ mod tests {
                 content: StyledText {
                     text: format!("item {i}"),
                     spans: vec![],
+                    ..StyledText::default()
                 },
                 children: vec![],
                 checked: None,

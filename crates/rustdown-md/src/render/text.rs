@@ -73,7 +73,7 @@ pub(super) fn render_styled_text_ex(
         return;
     }
 
-    let has_links = st.spans.iter().any(|s| s.style.link.is_some());
+    let has_links = st.has_links;
 
     // If there are links, render in a horizontal wrap so we can make links clickable.
     if has_links {
