@@ -4,7 +4,9 @@
 //! Key feature: viewport culling in `show_scrollable` — only blocks
 //! overlapping the visible region are laid out, giving O(visible) cost.
 
-use crate::parse::{Alignment, Block, ListItem, SpanStyle, StyledText, parse_markdown_into};
+use crate::parse::{
+    Alignment, Block, ListItem, SpanStyle, StyledText, TableData, parse_markdown_into,
+};
 use crate::style::MarkdownStyle;
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -249,68 +251,12 @@ fn estimate_block_height(
             let lang_h = if language.is_empty() { 0.0 } else { body_size };
             body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0) + lang_h)
         }
-        Block::Quote(inner) => {
-            // Reserve: bar_margin (0.4em) + bar_width (3px) + content_margin (0.6em) ≈ 1em + 3px.
-            let reserved = body_size + 3.0;
-            let inner_w = (wrap_width - reserved).max(40.0);
-            let inner_h: f32 = inner
-                .iter()
-                .map(|b| estimate_block_height(b, body_size, inner_w, style))
-                .sum();
-            body_size.mul_add(0.3, inner_h)
-        }
+        Block::Quote(inner) => estimate_quote_height(inner, body_size, wrap_width, style),
         Block::UnorderedList(items) | Block::OrderedList { items, .. } => {
-            // Each item: indent + bullet/number column + gap + content.
-            let bullet_col = body_size.mul_add(1.5, 2.0);
-            let content_w = (wrap_width - bullet_col).max(40.0);
-            let item_h: f32 = items
-                .iter()
-                .map(|item| {
-                    let text_h = estimate_text_height(&item.content.text, body_size, content_w);
-                    let child_h: f32 = item
-                        .children
-                        .iter()
-                        .map(|b| estimate_block_height(b, body_size, content_w, style))
-                        .sum();
-                    // ui.horizontal adds ~body_size vertical per item.
-                    body_size.mul_add(0.3, text_h + child_h)
-                })
-                .sum();
-            body_size.mul_add(0.2, item_h)
+            estimate_list_height(items, body_size, wrap_width, style)
         }
         Block::ThematicBreak => body_size * 0.8,
-        Block::Table(table) => {
-            let num_cols = table.header.len().max(1);
-            let col_width = (wrap_width / num_cols as f32).max(40.0);
-            let base_row_h = body_size * 1.6;
-            // Per-row spacing from egui Grid (item_spacing.y, typically ~4px).
-            let row_spacing = 4.0;
-            let hdr = if table.header.is_empty() {
-                0.0
-            } else {
-                table
-                    .header
-                    .iter()
-                    .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
-                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                    .unwrap_or(base_row_h)
-                    + row_spacing
-            };
-            let rows_h: f32 = table
-                .rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|c| {
-                            estimate_text_height(&c.text, body_size, col_width).max(base_row_h)
-                        })
-                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                        .unwrap_or(base_row_h)
-                        + row_spacing
-                })
-                .sum();
-            body_size.mul_add(0.4, hdr + rows_h)
-        }
+        Block::Table(table) => estimate_table_height(table, body_size, wrap_width),
         Block::Image { .. } => {
             // Images vary wildly — use a generous overestimate so viewport
             // culling never clips them. max_width constrains width to the
@@ -319,6 +265,79 @@ fn estimate_block_height(
             body_size.mul_add(0.4, max_image_h.max(body_size * 8.0))
         }
     }
+}
+
+fn estimate_quote_height(
+    inner: &[Block],
+    body_size: f32,
+    wrap_width: f32,
+    style: &MarkdownStyle,
+) -> f32 {
+    // Reserve: bar_margin (0.4em) + bar_width (3px) + content_margin (0.6em) ≈ 1em + 3px.
+    let reserved = body_size + 3.0;
+    let inner_w = (wrap_width - reserved).max(40.0);
+    let inner_h: f32 = inner
+        .iter()
+        .map(|b| estimate_block_height(b, body_size, inner_w, style))
+        .sum();
+    body_size.mul_add(0.3, inner_h)
+}
+
+fn estimate_list_height(
+    items: &[ListItem],
+    body_size: f32,
+    wrap_width: f32,
+    style: &MarkdownStyle,
+) -> f32 {
+    // Each item: indent + bullet/number column + gap + content.
+    let bullet_col = body_size.mul_add(1.5, 2.0);
+    let content_w = (wrap_width - bullet_col).max(40.0);
+    let item_h: f32 = items
+        .iter()
+        .map(|item| {
+            let text_h = estimate_text_height(&item.content.text, body_size, content_w);
+            let child_h: f32 = item
+                .children
+                .iter()
+                .map(|b| estimate_block_height(b, body_size, content_w, style))
+                .sum();
+            // ui.horizontal adds ~body_size vertical per item.
+            body_size.mul_add(0.3, text_h + child_h)
+        })
+        .sum();
+    body_size.mul_add(0.2, item_h)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> f32 {
+    let num_cols = table.header.len().max(1);
+    let col_width = (wrap_width / num_cols as f32).max(40.0);
+    let base_row_h = body_size * 1.6;
+    // Per-row spacing from egui Grid (item_spacing.y, typically ~4px).
+    let row_spacing = 4.0;
+    let hdr = if table.header.is_empty() {
+        0.0
+    } else {
+        table
+            .header
+            .iter()
+            .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(base_row_h)
+            + row_spacing
+    };
+    let rows_h: f32 = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| estimate_text_height(&c.text, body_size, col_width).max(base_row_h))
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or(base_row_h)
+                + row_spacing
+        })
+        .sum();
+    body_size.mul_add(0.4, hdr + rows_h)
 }
 
 /// Rough text height estimate using byte-level newline counting.
