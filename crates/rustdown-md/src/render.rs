@@ -1072,7 +1072,11 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(
+    clippy::panic,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
 mod tests {
     use super::*;
     use crate::parse::TableData;
@@ -3285,6 +3289,544 @@ Normal paragraph.
         }
     }
 
+    // ── Viewport culling stress tests ─────────────────────────────────
+
+    /// Replicate the viewport culling binary search from `show_scrollable`.
+    /// Returns `(first_visible_block, last_exclusive_block)`.
+    fn viewport_range(cache: &MarkdownCache, vis_top: f32, vis_bottom: f32) -> (usize, usize) {
+        if cache.blocks.is_empty() {
+            return (0, 0);
+        }
+        let first = match cache
+            .cum_y
+            .binary_search_by(|y| y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let mut idx = first;
+        while idx < cache.blocks.len() {
+            if cache.cum_y[idx] > vis_bottom {
+                break;
+            }
+            idx += 1;
+        }
+        (first, idx)
+    }
+
+    /// Build a cache with heights computed for the given source.
+    fn build_cache(source: &str) -> MarkdownCache {
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(source);
+        cache.ensure_heights(14.0, 900.0, &style);
+        cache
+    }
+
+    /// Generate a document with the given number of short paragraphs.
+    fn uniform_paragraph_doc(n: usize) -> String {
+        let mut doc = String::with_capacity(n * 20);
+        for i in 0..n {
+            write!(doc, "Paragraph {i}\n\n").ok();
+        }
+        doc
+    }
+
+    // 1. 10,000+ blocks — binary search at 0%, 25%, 50%, 75%, 100%
+    #[test]
+    fn viewport_10k_blocks_various_scroll_positions() {
+        let doc = uniform_paragraph_doc(10_500);
+        let cache = build_cache(&doc);
+        assert!(
+            cache.blocks.len() >= 10_000,
+            "expected ≥10k blocks, got {}",
+            cache.blocks.len()
+        );
+        assert!(cache.total_height > 0.0);
+
+        let viewport_h = 800.0_f32;
+        let total = cache.total_height;
+
+        for &frac in &[0.0, 0.25, 0.5, 0.75, 1.0] {
+            let vis_top = total * frac;
+            let vis_bottom = vis_top + viewport_h;
+            let (first, last) = viewport_range(&cache, vis_top, vis_bottom);
+
+            // first must be a valid block index
+            assert!(
+                first < cache.blocks.len(),
+                "first={first} out of bounds at {frac:.0}%"
+            );
+
+            // The first block's start must be ≤ vis_top (it contains vis_top)
+            assert!(
+                cache.cum_y[first] <= vis_top,
+                "block {first} starts at {} which is past vis_top={vis_top} ({frac:.0}%)",
+                cache.cum_y[first]
+            );
+
+            // If first > 0, the next block's start must be > vis_top - heights[first]
+            // i.e. the previous block must end before vis_top
+            if first > 0 {
+                let prev_end = cache.cum_y[first - 1] + cache.heights[first - 1];
+                assert!(
+                    prev_end <= vis_top + f32::EPSILON,
+                    "previous block {f} ends at {prev_end} but vis_top={vis_top} — \
+                     should have started from block {f} ({frac:.0}%)",
+                    f = first - 1,
+                );
+            }
+
+            // At least one block should be rendered (unless scrolled past end)
+            assert!(last > first, "no blocks rendered at {frac:.0}%");
+        }
+    }
+
+    // 2. Scroll to exact block boundaries (cum_y[i] values)
+    #[test]
+    fn viewport_exact_boundary_finds_correct_block() {
+        let doc = uniform_paragraph_doc(200);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        assert!(n >= 200);
+
+        let viewport_h = 800.0;
+        for i in 0..n {
+            let vis_top = cache.cum_y[i];
+            let vis_bottom = vis_top + viewport_h;
+            let (first, _) = viewport_range(&cache, vis_top, vis_bottom);
+            assert_eq!(
+                first, i,
+                "scrolling to cum_y[{i}]={vis_top} should start at block {i}, got {first}"
+            );
+        }
+    }
+
+    // 3. Scroll to positions between blocks
+    #[test]
+    fn viewport_between_blocks_includes_containing_block() {
+        let doc = uniform_paragraph_doc(200);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        assert!(n >= 2);
+
+        let viewport_h = 800.0;
+        for i in 0..(n - 1) {
+            // Midpoint between block i start and block i+1 start
+            let mid = f32::midpoint(cache.cum_y[i], cache.cum_y[i + 1]);
+            let vis_bottom = mid + viewport_h;
+            let (first, _) = viewport_range(&cache, mid, vis_bottom);
+            assert_eq!(
+                first,
+                i,
+                "midpoint between blocks {i} and {} should start at block {i}, got {first}",
+                i + 1,
+            );
+        }
+    }
+
+    // 4. Scroll past total_height — no panic, no out-of-bounds
+    #[test]
+    fn viewport_scroll_past_total_height_no_panic() {
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+
+        let vis_top = cache.total_height * 2.0;
+        let vis_bottom = vis_top + 800.0;
+        let (first, last) = viewport_range(&cache, vis_top, vis_bottom);
+        // Should not panic; first must be valid
+        assert!(first < cache.blocks.len());
+        // May render the last block (it's the best-effort closest)
+        assert!(last <= cache.blocks.len());
+    }
+
+    // 4b. Also test via the full render pipeline
+    #[test]
+    fn viewport_scroll_past_total_height_headless() {
+        let md = "# Hello\n\nWorld\n\n";
+        let (block_count, total_h) = headless_render_scrollable(md, Some(999_999.0));
+        assert!(block_count > 0);
+        assert!(total_h > 0.0);
+    }
+
+    // 5. Scroll to negative Y — overlapping viewport still renders blocks
+    #[test]
+    fn viewport_negative_scroll_starts_at_block_zero() {
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+
+        // Viewport overlaps the document (vis_bottom > 0)
+        let vis_top = -100.0_f32;
+        let vis_bottom = vis_top + 800.0; // 700.0
+        let (first, last) = viewport_range(&cache, vis_top, vis_bottom);
+        assert_eq!(first, 0, "negative scroll should start at block 0");
+        assert!(last > 0, "overlapping viewport should render blocks");
+    }
+
+    // 5b. Entirely negative viewport renders nothing (correct behavior)
+    #[test]
+    fn viewport_entirely_negative_renders_nothing() {
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+
+        let vis_top = -1000.0_f32;
+        let vis_bottom = vis_top + 800.0; // -200.0
+        let (first, last) = viewport_range(&cache, vis_top, vis_bottom);
+        assert_eq!(first, 0, "should clamp to block 0");
+        assert_eq!(last, 0, "entirely-above viewport should render nothing");
+    }
+
+    // 5b. Via full render pipeline
+    #[test]
+    fn viewport_negative_scroll_headless() {
+        let md = "# Hello\n\nWorld\n\n";
+        let (block_count, _) = headless_render_scrollable(md, Some(-500.0));
+        assert!(block_count > 0, "negative scroll should not crash");
+    }
+
+    // 6. Uniform heights — binary search should be exact
+    #[test]
+    fn viewport_uniform_heights_exact_binary_search() {
+        let doc = uniform_paragraph_doc(500);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        assert!(n >= 500);
+
+        // All heights should be the same (identical paragraph text pattern)
+        let h0 = cache.heights[0];
+        for (i, &h) in cache.heights.iter().enumerate() {
+            assert!(
+                (h - h0).abs() < f32::EPSILON,
+                "block {i} height {h} differs from block 0 height {h0}"
+            );
+        }
+
+        // Verify cum_y is exact multiples of h0
+        for (i, &y) in cache.cum_y.iter().enumerate() {
+            let expected = h0 * i as f32;
+            assert!(
+                (y - expected).abs() < 0.1,
+                "cum_y[{i}]={y} expected ~{expected}"
+            );
+        }
+
+        // Binary search at exact multiples
+        let viewport_h = 800.0;
+        for i in (0..n).step_by(50) {
+            let vis_top = cache.cum_y[i];
+            let (first, _) = viewport_range(&cache, vis_top, vis_top + viewport_h);
+            assert_eq!(
+                first, i,
+                "exact boundary at block {i} should find block {i}"
+            );
+        }
+    }
+
+    // 7. Wildly varying heights — tiny paragraph then huge code block
+    #[test]
+    fn viewport_varying_heights_does_not_skip_large_block() {
+        // Tiny paragraph followed by a huge code block (many lines)
+        let mut doc = String::from("Hi\n\n");
+        doc.push_str("```\n");
+        for i in 0..500 {
+            writeln!(doc, "code line {i}").ok();
+        }
+        doc.push_str("```\n\n");
+        doc.push_str("After code\n\n");
+
+        let cache = build_cache(&doc);
+        assert!(cache.blocks.len() >= 3, "expected at least 3 blocks");
+
+        // The code block (index 1) should be much taller than the paragraph
+        assert!(
+            cache.heights[1] > cache.heights[0] * 10.0,
+            "code block height {} should be much larger than paragraph {}",
+            cache.heights[1],
+            cache.heights[0]
+        );
+
+        // Scroll to the middle of the code block — it must be included
+        let code_start = cache.cum_y[1];
+        let code_mid = code_start + cache.heights[1] / 2.0;
+        let viewport_h = 100.0; // Small viewport
+        let (first, last) = viewport_range(&cache, code_mid, code_mid + viewport_h);
+        assert!(
+            first <= 1 && last > 1,
+            "code block (idx 1) must be in range [{first}, {last})"
+        );
+
+        // Scroll to just before the code block ends
+        let code_end = code_start + cache.heights[1] - 1.0;
+        let (first2, last2) = viewport_range(&cache, code_end, code_end + viewport_h);
+        assert!(
+            first2 <= 1 && last2 > 1,
+            "near end of code block: block 1 must be in [{first2}, {last2})"
+        );
+    }
+
+    // 8. Single-block document at Y=0
+    #[test]
+    fn viewport_single_block_scroll_zero() {
+        let cache = build_cache("# Only heading\n");
+        assert_eq!(cache.blocks.len(), 1);
+        assert!(cache.total_height > 0.0);
+        assert!(
+            (cache.cum_y[0]).abs() < f32::EPSILON,
+            "cum_y[0] should be 0"
+        );
+
+        let (first, last) = viewport_range(&cache, 0.0, 800.0);
+        assert_eq!(first, 0);
+        assert_eq!(last, 1);
+    }
+
+    // 8b. Via full render pipeline
+    #[test]
+    fn viewport_single_block_headless() {
+        let (count, h) = headless_render_scrollable("# Only\n", Some(0.0));
+        assert_eq!(count, 1);
+        assert!(h > 0.0);
+    }
+
+    // 9. Empty document — should render nothing, not crash
+    #[test]
+    fn viewport_empty_document_no_crash() {
+        let cache = build_cache("");
+        assert!(cache.blocks.is_empty());
+        assert!((cache.total_height).abs() < f32::EPSILON);
+        assert!(cache.cum_y.is_empty());
+
+        let (first, last) = viewport_range(&cache, 0.0, 800.0);
+        assert_eq!(first, 0);
+        assert_eq!(last, 0);
+    }
+
+    // 9b. Via full render pipeline
+    #[test]
+    fn viewport_empty_document_headless() {
+        let (count, h) = headless_render_scrollable("", Some(0.0));
+        assert_eq!(count, 0);
+        assert!((h).abs() < f32::EPSILON);
+    }
+
+    // 10. cum_y is monotonically increasing (10k+ blocks)
+    #[test]
+    fn viewport_cum_y_monotonic_10k() {
+        let doc = uniform_paragraph_doc(10_500);
+        let cache = build_cache(&doc);
+        assert!(cache.cum_y.len() >= 10_000);
+
+        for i in 1..cache.cum_y.len() {
+            assert!(
+                cache.cum_y[i] >= cache.cum_y[i - 1],
+                "cum_y not monotonic at {i}: {} < {}",
+                cache.cum_y[i],
+                cache.cum_y[i - 1]
+            );
+        }
+    }
+
+    // 10b. Also on mixed doc
+    #[test]
+    fn viewport_cum_y_monotonic_mixed_doc() {
+        let doc = crate::stress::large_mixed_doc(200);
+        let cache = build_cache(&doc);
+
+        for i in 1..cache.cum_y.len() {
+            assert!(
+                cache.cum_y[i] > cache.cum_y[i - 1],
+                "cum_y not strictly increasing at {i}: {} vs {}",
+                cache.cum_y[i],
+                cache.cum_y[i - 1]
+            );
+        }
+    }
+
+    // 11. total_height == sum of all heights
+    #[test]
+    fn viewport_total_height_equals_sum_of_heights() {
+        let doc = crate::stress::large_mixed_doc(100);
+        let cache = build_cache(&doc);
+        let sum: f32 = cache.heights.iter().sum();
+        assert!(
+            (cache.total_height - sum).abs() < 1.0,
+            "total_height={} but sum of heights={}",
+            cache.total_height,
+            sum
+        );
+    }
+
+    // 11b. On uniform doc
+    #[test]
+    fn viewport_total_height_equals_sum_uniform() {
+        let doc = uniform_paragraph_doc(1_000);
+        let cache = build_cache(&doc);
+        let sum: f32 = cache.heights.iter().sum();
+        assert!(
+            (cache.total_height - sum).abs() < 1.0,
+            "total_height={} but sum={}",
+            cache.total_height,
+            sum
+        );
+    }
+
+    // 12. cum_y[0] == 0 always
+    #[test]
+    fn viewport_cum_y_zero_always_zero() {
+        // Single block
+        let c1 = build_cache("# H\n");
+        assert!(
+            (c1.cum_y[0]).abs() < f32::EPSILON,
+            "single: cum_y[0]={}",
+            c1.cum_y[0]
+        );
+
+        // Many blocks
+        let doc = uniform_paragraph_doc(500);
+        let c2 = build_cache(&doc);
+        assert!(
+            (c2.cum_y[0]).abs() < f32::EPSILON,
+            "many: cum_y[0]={}",
+            c2.cum_y[0]
+        );
+
+        // Mixed doc
+        let doc = crate::stress::large_mixed_doc(50);
+        let c3 = build_cache(&doc);
+        assert!(
+            (c3.cum_y[0]).abs() < f32::EPSILON,
+            "mixed: cum_y[0]={}",
+            c3.cum_y[0]
+        );
+    }
+
+    // 13. Very narrow viewport (height=1px)
+    #[test]
+    fn viewport_narrow_1px_renders_at_least_one_block() {
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+
+        // 1px viewport at various positions
+        for i in (0..cache.blocks.len()).step_by(10) {
+            let vis_top = cache.cum_y[i];
+            let vis_bottom = vis_top + 1.0;
+            let (first, last) = viewport_range(&cache, vis_top, vis_bottom);
+            assert!(
+                last > first,
+                "1px viewport at block {i} should render ≥1 block, got [{first}, {last})"
+            );
+        }
+    }
+
+    // 13b. 1px viewport in the middle of a block
+    #[test]
+    fn viewport_narrow_1px_mid_block() {
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+
+        let mid_y = cache.cum_y[50] + cache.heights[50] / 2.0;
+        let (first, last) = viewport_range(&cache, mid_y, mid_y + 1.0);
+        assert!(
+            first <= 50 && last > 50,
+            "1px viewport at mid-block 50: [{first}, {last}) should include block 50"
+        );
+    }
+
+    // 14. Very wide viewport (100,000px) includes all blocks
+    #[test]
+    fn viewport_wide_100k_includes_all_blocks() {
+        let doc = uniform_paragraph_doc(500);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+
+        let (first, last) = viewport_range(&cache, 0.0, 100_000.0);
+        assert_eq!(first, 0, "wide viewport should start at block 0");
+        assert_eq!(last, n, "wide viewport should include all {n} blocks");
+    }
+
+    // 14b. Wide viewport starting from a non-zero offset
+    #[test]
+    fn viewport_wide_from_middle_includes_rest() {
+        let doc = uniform_paragraph_doc(500);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        let mid = n / 2;
+
+        let vis_top = cache.cum_y[mid];
+        let (first, last) = viewport_range(&cache, vis_top, vis_top + 100_000.0);
+        assert_eq!(first, mid, "should start at block {mid}");
+        assert_eq!(last, n, "should include all remaining blocks");
+    }
+
+    // ── Additional edge cases ─────────────────────────────────────────
+
+    // Verify scrollable render pipeline handles all extreme positions
+    #[test]
+    fn viewport_10k_headless_no_panic() {
+        let doc = uniform_paragraph_doc(10_500);
+        let (count, total_h) = headless_render_scrollable(&doc, None);
+        assert!(count >= 10_000);
+        assert!(total_h > 0.0);
+
+        // Scroll to various positions via full pipeline
+        for &frac in &[0.0, 0.25, 0.5, 0.75, 1.0, 1.5] {
+            let y = total_h * frac;
+            let (c, _) = headless_render_scrollable(&doc, Some(y));
+            assert!(
+                c >= 10_000,
+                "block count should be stable at scroll {frac:.0}"
+            );
+        }
+    }
+
+    // Verify the pathological doc doesn't break viewport culling
+    #[test]
+    fn viewport_pathological_doc_invariants() {
+        let doc = crate::stress::pathological_doc(50);
+        let cache = build_cache(&doc);
+
+        // All invariants must hold
+        assert!(!cache.cum_y.is_empty());
+        assert!((cache.cum_y[0]).abs() < f32::EPSILON);
+        for i in 1..cache.cum_y.len() {
+            assert!(cache.cum_y[i] >= cache.cum_y[i - 1]);
+        }
+        let sum: f32 = cache.heights.iter().sum();
+        assert!((cache.total_height - sum).abs() < 1.0);
+
+        // Full sweep: every position should be reachable without panic
+        let step = cache.total_height / 100.0;
+        for i in 0..=110 {
+            let vis_top = step * i as f32;
+            let (first, last) = viewport_range(&cache, vis_top, vis_top + 800.0);
+            assert!(first <= last);
+            assert!(last <= cache.blocks.len());
+        }
+    }
+
+    // Boundary: last block's cum_y + height == total_height
+    #[test]
+    fn viewport_last_block_boundary_consistency() {
+        let doc = uniform_paragraph_doc(200);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        let last_end = cache.cum_y[n - 1] + cache.heights[n - 1];
+        assert!(
+            (last_end - cache.total_height).abs() < 0.01,
+            "last block end {last_end} != total_height {}",
+            cache.total_height
+        );
+    }
+
+    // Lengths consistency: blocks, heights, cum_y all same length
+    #[test]
+    fn viewport_array_lengths_match() {
+        let doc = crate::stress::large_mixed_doc(100);
+        let cache = build_cache(&doc);
+        assert_eq!(cache.blocks.len(), cache.heights.len());
+        assert_eq!(cache.blocks.len(), cache.cum_y.len());
+    }
+
     #[test]
     fn stress_test_multiple_viewports() {
         let md = include_str!("../../../test-assets/stress-test.md");
@@ -3338,5 +3880,537 @@ Normal paragraph.
                 });
             }
         }
+    }
+
+    // ── Height estimation stress tests ─────────────────────────────
+
+    /// Helper: build a `StyledText` with no spans.
+    fn plain(s: &str) -> StyledText {
+        StyledText {
+            text: s.to_owned(),
+            spans: vec![],
+        }
+    }
+
+    /// Helper: build a `TableData` with `ncols` columns and `nrows` data rows.
+    fn make_table(ncols: usize, nrows: usize, cell: &str) -> TableData {
+        let header: Vec<StyledText> = (0..ncols).map(|i| plain(&format!("H{i}"))).collect();
+        let aligns = vec![Alignment::None; ncols];
+        let rows: Vec<Vec<StyledText>> = (0..nrows)
+            .map(|_| (0..ncols).map(|_| plain(cell)).collect())
+            .collect();
+        TableData {
+            header,
+            alignments: aligns,
+            rows,
+        }
+    }
+
+    /// Assert that a height is finite, positive, and not NaN.
+    fn assert_sane_height(h: f32, label: &str) {
+        assert!(h.is_finite(), "{label}: height is not finite ({h})");
+        assert!(h > 0.0, "{label}: height should be > 0, got {h}");
+    }
+
+    // ── Tables: extreme column counts ──────────────────────────────
+
+    #[test]
+    fn table_height_scales_with_rows() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let small = Block::Table(Box::new(make_table(3, 10, "cell")));
+        let large = Block::Table(Box::new(make_table(3, 100, "cell")));
+        let h_small = estimate_block_height(&small, 14.0, 600.0, &style);
+        let h_large = estimate_block_height(&large, 14.0, 600.0, &style);
+        assert_sane_height(h_small, "10-row table");
+        assert_sane_height(h_large, "100-row table");
+        assert!(
+            h_large > h_small,
+            "100-row table ({h_large}) should be taller than 10-row ({h_small})"
+        );
+    }
+
+    #[test]
+    fn table_height_extreme_column_counts() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        for ncols in [1, 50, 100] {
+            let table = Block::Table(Box::new(make_table(ncols, 5, "val")));
+            let h = estimate_block_height(&table, 14.0, 600.0, &style);
+            assert_sane_height(h, &format!("{ncols}-col table"));
+        }
+    }
+
+    #[test]
+    fn table_height_long_cell_content() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let long_cell = "word ".repeat(200); // ~1000 chars, lots of wrapping
+        let table = Block::Table(Box::new(make_table(3, 5, &long_cell)));
+        let h = estimate_block_height(&table, 14.0, 600.0, &style);
+        assert_sane_height(h, "table with long cells");
+        // Should be much taller than a table with short cells.
+        let short = Block::Table(Box::new(make_table(3, 5, "x")));
+        let h_short = estimate_block_height(&short, 14.0, 600.0, &style);
+        assert!(
+            h > h_short,
+            "long-cell table ({h}) should be taller than short-cell ({h_short})"
+        );
+    }
+
+    #[test]
+    fn table_height_empty_header() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let table = TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![vec![plain("a"), plain("b")]],
+        };
+        let h = estimate_block_height(&Block::Table(Box::new(table)), 14.0, 600.0, &style);
+        // Even with no header, height should be > 0 for the data row.
+        assert!(h > 0.0, "table with empty header should still have height");
+        assert!(h.is_finite());
+    }
+
+    #[test]
+    fn table_height_empty_rows() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let table = TableData {
+            header: vec![plain("H1")],
+            alignments: vec![Alignment::None],
+            rows: vec![],
+        };
+        let h = estimate_block_height(&Block::Table(Box::new(table)), 14.0, 600.0, &style);
+        assert!(h > 0.0, "header-only table should have positive height");
+        assert!(h.is_finite());
+    }
+
+    #[test]
+    fn table_height_zero_rows_zero_header() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let table = TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![],
+        };
+        let h = estimate_block_height(&Block::Table(Box::new(table)), 14.0, 600.0, &style);
+        // With nothing at all, we still get the base padding.
+        assert!(h.is_finite(), "fully empty table should produce finite h");
+        assert!(h >= 0.0);
+    }
+
+    // ── Deeply nested lists ────────────────────────────────────────
+
+    #[test]
+    fn deeply_nested_list_height() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // Build 10-level deep nested list.
+        let mut block = Block::UnorderedList(vec![ListItem {
+            content: plain("leaf"),
+            children: vec![],
+            checked: None,
+        }]);
+        for depth in 0..10 {
+            block = Block::UnorderedList(vec![ListItem {
+                content: plain(&format!("level {depth}")),
+                children: vec![block],
+                checked: None,
+            }]);
+        }
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "10-level nested list");
+    }
+
+    #[test]
+    fn list_with_long_item_text() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let long_text = "word ".repeat(500); // ~2500 chars
+        let block = Block::UnorderedList(vec![ListItem {
+            content: plain(&long_text),
+            children: vec![],
+            checked: None,
+        }]);
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "list with very long item");
+        // Should be much taller than a short item.
+        let short = Block::UnorderedList(vec![ListItem {
+            content: plain("hi"),
+            children: vec![],
+            checked: None,
+        }]);
+        let h_short = estimate_block_height(&short, 14.0, 600.0, &style);
+        assert!(
+            h > h_short,
+            "long item list ({h}) should exceed short ({h_short})"
+        );
+    }
+
+    #[test]
+    fn list_height_with_narrow_wrap_width() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::UnorderedList(vec![ListItem {
+            content: plain("some item text here"),
+            children: vec![],
+            checked: None,
+        }]);
+        // Wrap width smaller than bullet_col, triggers the .max(40.0) floor.
+        let h = estimate_block_height(&block, 14.0, 10.0, &style);
+        assert_sane_height(h, "list with 10px wrap");
+    }
+
+    // ── Code blocks: edge cases ────────────────────────────────────
+
+    #[test]
+    fn code_block_empty_content() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Code {
+            language: String::new(),
+            code: String::new(),
+        };
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "empty code block");
+    }
+
+    #[test]
+    fn code_block_single_line() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Code {
+            language: "rust".to_owned(),
+            code: "let x = 1;".to_owned(),
+        };
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "single-line code block");
+    }
+
+    #[test]
+    fn code_block_thousands_of_lines() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut code = String::with_capacity(30_000);
+        for i in 0..3000 {
+            writeln!(code, "line {i}").ok();
+        }
+        let block = Block::Code {
+            language: "text".to_owned(),
+            code,
+        };
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "3000-line code block");
+        // Should be very tall.
+        assert!(h > 1000.0, "3000 lines should be > 1000px, got {h}");
+    }
+
+    #[test]
+    fn code_block_scales_with_lines() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let small = Block::Code {
+            language: String::new(),
+            code: "a\nb\nc\n".to_owned(),
+        };
+        let large = Block::Code {
+            language: String::new(),
+            code: (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        let h_small = estimate_block_height(&small, 14.0, 600.0, &style);
+        let h_large = estimate_block_height(&large, 14.0, 600.0, &style);
+        assert!(
+            h_large > h_small,
+            "100-line code ({h_large}) should exceed 3-line ({h_small})"
+        );
+    }
+
+    #[test]
+    fn code_block_very_long_single_line() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let code = "x".repeat(10_000); // 10k chars, no newlines
+        let block = Block::Code {
+            language: String::new(),
+            code,
+        };
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "10k-char single-line code");
+        // Code blocks count newlines, so single line → height for 1 line.
+        assert!(h.is_finite());
+    }
+
+    #[test]
+    fn code_block_with_language_taller_than_without() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let with_lang = Block::Code {
+            language: "python".to_owned(),
+            code: "pass".to_owned(),
+        };
+        let without_lang = Block::Code {
+            language: String::new(),
+            code: "pass".to_owned(),
+        };
+        let h_with = estimate_block_height(&with_lang, 14.0, 600.0, &style);
+        let h_without = estimate_block_height(&without_lang, 14.0, 600.0, &style);
+        assert!(
+            h_with > h_without,
+            "code with language label ({h_with}) should be taller than without ({h_without})"
+        );
+    }
+
+    // ── Images: narrow wrap widths ─────────────────────────────────
+
+    #[test]
+    fn image_height_narrow_wrap_widths() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Image {
+            url: "pic.png".to_owned(),
+            alt: "alt".to_owned(),
+        };
+        for width in [1.0_f32, 10.0, 50.0] {
+            let h = estimate_block_height(&block, 14.0, width, &style);
+            assert_sane_height(h, &format!("image at {width}px wrap"));
+        }
+    }
+
+    #[test]
+    fn image_height_zero_wrap_width() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Image {
+            url: "pic.png".to_owned(),
+            alt: "alt".to_owned(),
+        };
+        let h = estimate_block_height(&block, 14.0, 0.0, &style);
+        // The .max(body_size * 8.0) floor should keep this positive.
+        assert_sane_height(h, "image at 0px wrap");
+    }
+
+    // ── Blockquotes: deep nesting ──────────────────────────────────
+
+    #[test]
+    fn blockquote_deeply_nested_hits_width_floor() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // Build 8-level deep nested blockquote.
+        let mut block = Block::Quote(vec![Block::Paragraph(plain("deep content"))]);
+        for _ in 0..7 {
+            block = Block::Quote(vec![block]);
+        }
+        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        assert_sane_height(h, "8-level nested blockquote");
+    }
+
+    #[test]
+    fn blockquote_inner_width_never_below_floor() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // Even with extreme nesting, the 40px floor should prevent
+        // negative or zero inner widths.
+        let mut block = Block::Quote(vec![Block::Paragraph(plain("text"))]);
+        for _ in 0..20 {
+            block = Block::Quote(vec![block]);
+        }
+        let h = estimate_block_height(&block, 14.0, 200.0, &style);
+        assert_sane_height(h, "20-level nested blockquote (narrow)");
+    }
+
+    // ── Paragraph: no wrap opportunities ───────────────────────────
+
+    #[test]
+    fn paragraph_single_long_word() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let word = "x".repeat(5000); // 5000-char word, no spaces
+        let block = Block::Paragraph(plain(&word));
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        assert_sane_height(h, "paragraph with 5k-char word");
+    }
+
+    #[test]
+    fn paragraph_empty_text() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Paragraph(plain(""));
+        let h = estimate_block_height(&block, 14.0, 600.0, &style);
+        // Empty text → estimate_text_height returns font_size, plus padding.
+        assert!(h > 0.0, "empty paragraph should still have height");
+        assert!(h.is_finite());
+    }
+
+    // ── estimate_text_height edge cases ────────────────────────────
+
+    #[test]
+    fn text_height_empty_string() {
+        let h = estimate_text_height("", 14.0, 200.0);
+        assert!((h - 14.0).abs() < f32::EPSILON, "empty text → font_size");
+    }
+
+    #[test]
+    fn text_height_wrap_width_zero() {
+        // Must not divide by zero. chars_per_line = (0/avg).max(1.0) = 1.0.
+        let h = estimate_text_height("hello world", 14.0, 0.0);
+        assert!(h.is_finite(), "wrap_width=0 should not produce Inf/NaN");
+        assert!(h > 0.0);
+    }
+
+    #[test]
+    fn text_height_wrap_width_negative() {
+        // Negative wrap_width is degenerate but must not panic or produce NaN.
+        let h = estimate_text_height("hello", 14.0, -100.0);
+        assert!(h.is_finite(), "negative wrap_width should produce finite h");
+        assert!(h > 0.0, "height should be positive even with negative wrap");
+    }
+
+    #[test]
+    fn text_height_scales_with_length() {
+        let short = estimate_text_height("hi", 14.0, 200.0);
+        let long = estimate_text_height(&"word ".repeat(200), 14.0, 200.0);
+        assert!(
+            long > short,
+            "longer text ({long}) should be taller ({short})"
+        );
+    }
+
+    #[test]
+    fn text_height_multiline() {
+        let one_line = estimate_text_height("hello", 14.0, 400.0);
+        let ten_lines = estimate_text_height(&"hello\n".repeat(10), 14.0, 400.0);
+        assert!(
+            ten_lines > one_line,
+            "10 lines ({ten_lines}) should exceed 1 ({one_line})"
+        );
+    }
+
+    // ── wrap_width=0 across all block types ────────────────────────
+
+    #[test]
+    fn all_block_types_handle_zero_wrap_width() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let blocks: Vec<Block> = vec![
+            Block::Heading {
+                level: 1,
+                text: plain("Title"),
+            },
+            Block::Paragraph(plain("text")),
+            Block::Code {
+                language: "rs".to_owned(),
+                code: "code".to_owned(),
+            },
+            Block::Quote(vec![Block::Paragraph(plain("q"))]),
+            Block::UnorderedList(vec![ListItem {
+                content: plain("item"),
+                children: vec![],
+                checked: None,
+            }]),
+            Block::OrderedList {
+                start: 1,
+                items: vec![ListItem {
+                    content: plain("item"),
+                    children: vec![],
+                    checked: None,
+                }],
+            },
+            Block::ThematicBreak,
+            Block::Table(Box::new(make_table(2, 2, "v"))),
+            Block::Image {
+                url: "u".to_owned(),
+                alt: "a".to_owned(),
+            },
+        ];
+
+        for (i, block) in blocks.iter().enumerate() {
+            let h = estimate_block_height(block, 14.0, 0.0, &style);
+            assert!(
+                h.is_finite(),
+                "block {i} ({block:?}): wrap_width=0 produced non-finite h={h}"
+            );
+            assert!(
+                h > 0.0,
+                "block {i}: wrap_width=0 produced non-positive h={h}"
+            );
+        }
+    }
+
+    // ── Mixed document: total height consistency ───────────────────
+
+    #[test]
+    fn total_height_ge_sum_of_individual() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let blocks: Vec<Block> = vec![
+            Block::Heading {
+                level: 2,
+                text: plain("Section"),
+            },
+            Block::Paragraph(plain("Some body text here.")),
+            Block::Code {
+                language: "py".to_owned(),
+                code: "print('hi')\n".to_owned(),
+            },
+            Block::Quote(vec![Block::Paragraph(plain("quoted"))]),
+            Block::UnorderedList(vec![
+                ListItem {
+                    content: plain("a"),
+                    children: vec![],
+                    checked: None,
+                },
+                ListItem {
+                    content: plain("b"),
+                    children: vec![],
+                    checked: None,
+                },
+            ]),
+            Block::Table(Box::new(make_table(3, 4, "data"))),
+            Block::ThematicBreak,
+            Block::Image {
+                url: "img.png".to_owned(),
+                alt: "pic".to_owned(),
+            },
+        ];
+
+        let wrap_width = 600.0;
+        let body_size = 14.0;
+        let sum: f32 = blocks
+            .iter()
+            .map(|b| estimate_block_height(b, body_size, wrap_width, &style))
+            .sum();
+
+        // When put into a cache, total_height should equal the sum.
+        let mut cache = MarkdownCache::default();
+        cache.blocks = blocks;
+        cache.ensure_heights(body_size, wrap_width, &style);
+
+        assert!(
+            (cache.total_height - sum).abs() < 0.01,
+            "cache total ({}) should match sum of individual heights ({sum})",
+            cache.total_height,
+        );
+        assert_sane_height(cache.total_height, "mixed doc total");
+    }
+
+    // ── No NaN/Infinity across typical font sizes ──────────────────
+
+    #[test]
+    fn heights_finite_across_font_sizes() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let block = Block::Paragraph(plain(&"word ".repeat(50)));
+        for size in [1.0_f32, 8.0, 14.0, 24.0, 72.0, 200.0] {
+            let h = estimate_block_height(&block, size, 600.0, &style);
+            assert!(
+                h.is_finite() && h > 0.0,
+                "font_size={size}: height should be finite & positive, got {h}"
+            );
+        }
+    }
+
+    // ── Table column width floor with many columns ─────────────────
+
+    #[test]
+    fn table_col_width_floor_prevents_tiny_cols() {
+        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // 100 cols in 400px → raw col_width = 4px, but floor is 40px.
+        // Height should still be reasonable (not squeezed to 0).
+        let table = Block::Table(Box::new(make_table(100, 3, "cell data")));
+        let h = estimate_block_height(&table, 14.0, 400.0, &style);
+        assert_sane_height(h, "100-col table in 400px");
+    }
+
+    // ── bytecount_newlines ─────────────────────────────────────────
+
+    #[test]
+    fn bytecount_newlines_edge_cases() {
+        assert_eq!(bytecount_newlines(b""), 0);
+        assert_eq!(bytecount_newlines(b"no newlines"), 0);
+        assert_eq!(bytecount_newlines(b"\n"), 1);
+        assert_eq!(bytecount_newlines(b"\n\n\n"), 3);
+        assert_eq!(bytecount_newlines(b"a\nb\nc\n"), 3);
     }
 }
