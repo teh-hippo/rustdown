@@ -342,6 +342,8 @@ struct RustdownApp {
     /// Set to `true` when `resolve_nav_scroll_target` applies a target this
     /// frame; prevents `sync_side_by_side_scroll` from overriding it.
     nav_scroll_applied_this_frame: bool,
+    /// Target preview scroll Y for smooth `SideBySide` animation.
+    side_by_side_scroll_target: Option<f32>,
 
     disk: DiskSyncState,
 }
@@ -724,6 +726,7 @@ impl RustdownApp {
         // In SideBySide, sync the preview scroll to match the editor position.
         if self.mode == Mode::SideBySide {
             self.sync_side_by_side_scroll(ctx);
+            self.animate_side_by_side_scroll(ctx);
         }
     }
 
@@ -1150,6 +1153,7 @@ impl RustdownApp {
         // Clear stale sync state so the first SideBySide frame does not
         // override a nav-driven scroll target with a stale byte comparison.
         self.last_sync_editor_byte = None;
+        self.side_by_side_scroll_target = None;
 
         if mode == Mode::Preview {
             // Preview doesn't render the editor; drop any cached galley to reduce memory.
@@ -1559,8 +1563,31 @@ impl RustdownApp {
             self.doc.preview_cache.total_height,
         );
 
-        // Store as pending — show_preview will consume it via vertical_scroll_offset.
-        self.nav.pending_preview_scroll_y = Some(preview_y);
+        // Store as target — animate_side_by_side_scroll will lerp toward it.
+        self.side_by_side_scroll_target = Some(preview_y);
+        ctx.request_repaint();
+    }
+
+    /// Smoothly animate the preview pane toward `side_by_side_scroll_target`
+    /// instead of teleporting each frame.
+    fn animate_side_by_side_scroll(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.side_by_side_scroll_target else {
+            return;
+        };
+
+        let current = self.doc.preview_cache.last_scroll_y;
+        let diff = target - current;
+
+        // If close enough, snap to exact target and stop animating.
+        if diff.abs() < 1.0 {
+            self.nav.pending_preview_scroll_y = Some(target);
+            self.side_by_side_scroll_target = None;
+            return;
+        }
+
+        // Lerp: move 20% of remaining distance each frame for smooth feel.
+        let step = diff.mul_add(0.2, current);
+        self.nav.pending_preview_scroll_y = Some(step);
         ctx.request_repaint();
     }
 
