@@ -9,6 +9,9 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 ///
 /// Large variants (`Table`) are boxed to keep the enum compact (~56 bytes
 /// instead of ~72), improving cache locality during block iteration.
+///
+/// Immutable string fields use `Box<str>` to avoid the 8-byte capacity
+/// overhead of `String` — these values are never modified after construction.
 #[derive(Clone, Debug)]
 pub enum Block {
     Heading {
@@ -18,7 +21,7 @@ pub enum Block {
     Paragraph(StyledText),
     Code {
         /// Language tag from fenced code blocks (e.g. "rust", "python").
-        language: String,
+        language: Box<str>,
         code: String,
     },
     Quote(Vec<Self>),
@@ -30,8 +33,8 @@ pub enum Block {
     ThematicBreak,
     Table(Box<TableData>),
     Image {
-        url: String,
-        alt: String,
+        url: Box<str>,
+        alt: Box<str>,
     },
 }
 
@@ -233,9 +236,9 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt),
         Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
         Event::Start(Tag::CodeBlock(kind)) => {
-            let lang = match kind {
-                pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => l.as_ref().to_owned(),
-                _ => String::new(),
+            let lang: Box<str> = match kind {
+                pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => l.as_ref().into(),
+                _ => Box::from(""),
             };
             parse_code_block(events, lang, blocks)
         }
@@ -245,8 +248,8 @@ fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineSt
         Event::Start(Tag::Image { dest_url, .. }) => {
             let (alt, end) = collect_image_alt(events, 1);
             blocks.push(Block::Image {
-                url: dest_url.to_string(),
-                alt,
+                url: dest_url.as_ref().into(),
+                alt: alt.into_boxed_str(),
             });
             end
         }
@@ -330,8 +333,8 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
     if events.len() < 4 {
         return None;
     }
-    let dest_url = match &events[1] {
-        Event::Start(Tag::Image { dest_url, .. }) => dest_url.to_string(),
+    let dest_url: Box<str> = match &events[1] {
+        Event::Start(Tag::Image { dest_url, .. }) => dest_url.as_ref().into(),
         _ => return None,
     };
 
@@ -343,11 +346,14 @@ fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> 
         return None;
     }
 
-    blocks.push(Block::Image { url: dest_url, alt });
+    blocks.push(Block::Image {
+        url: dest_url,
+        alt: alt.into_boxed_str(),
+    });
     Some(end_idx + 1) // +1 to consume End(Paragraph)
 }
 
-fn parse_code_block(events: &[Event<'_>], language: String, blocks: &mut Vec<Block>) -> usize {
+fn parse_code_block(events: &[Event<'_>], language: Box<str>, blocks: &mut Vec<Block>) -> usize {
     let mut code = String::with_capacity(256);
     let mut consumed = 1;
     while consumed < events.len() {
@@ -814,7 +820,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Code { language, code } => {
-                assert_eq!(language, "rust");
+                assert_eq!(&**language, "rust");
                 assert!(code.contains("fn main()"));
             }
             other => panic!("expected code block, got {other:?}"),
@@ -1071,8 +1077,8 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Image { url, alt } => {
-                assert_eq!(url, "https://img.png");
-                assert_eq!(alt, "alt text");
+                assert_eq!(&**url, "https://img.png");
+                assert_eq!(&**alt, "alt text");
             }
             other => panic!("expected Image block, got {other:?}"),
         }
@@ -1084,7 +1090,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Image { url, alt } => {
-                assert_eq!(url, "image.png");
+                assert_eq!(&**url, "image.png");
                 assert!(alt.is_empty());
             }
             other => panic!("expected Image block, got {other:?}"),
@@ -1396,7 +1402,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Code { language, code } => {
-                assert_eq!(language, "rust");
+                assert_eq!(&**language, "rust");
                 assert!(code.contains("code"));
             }
             other => panic!("expected code block, got {other:?}"),
@@ -1597,7 +1603,7 @@ mod tests {
         let blocks = parse_markdown(md);
         match &blocks[0] {
             Block::Image { alt, .. } => {
-                assert_eq!(alt, "alt text", "alt text should come from brackets");
+                assert_eq!(&**alt, "alt text", "alt text should come from brackets");
             }
             other => panic!("expected Image, got {other:?}"),
         }
@@ -1938,7 +1944,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Image { alt, url } => {
-                assert_eq!(url, "img.png");
+                assert_eq!(&**url, "img.png");
                 assert!(alt.contains(&long_alt), "long alt text should be preserved");
                 assert!(alt.contains("bold"), "bold text should be in alt");
                 assert!(alt.contains("italic"), "italic text should be in alt");
@@ -2884,7 +2890,7 @@ mod tests {
         match &blocks[0] {
             Block::Image { url, alt } => {
                 assert!(url.is_empty());
-                assert_eq!(alt, "alt text");
+                assert_eq!(&**alt, "alt text");
             }
             other => panic!("expected Image, got {other:?}"),
         }

@@ -1400,7 +1400,7 @@ mod tests {
     fn estimate_height_code_block() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Code {
-            language: "rust".to_owned(),
+            language: Box::from("rust"),
             code: "fn main() {}\n".to_owned(),
         };
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
@@ -1463,8 +1463,8 @@ mod tests {
     fn estimate_height_image() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Image {
-            url: "https://img.png".to_owned(),
-            alt: "alt".to_owned(),
+            url: Box::from("https://img.png"),
+            alt: Box::from("alt"),
         };
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
         assert!(h > 0.0);
@@ -1639,8 +1639,8 @@ mod tests {
         assert_eq!(blocks.len(), 1, "expected 1 block for image");
         match &blocks[0] {
             Block::Image { url, alt } => {
-                assert_eq!(url, "image.png");
-                assert_eq!(alt, "Alt text");
+                assert_eq!(&**url, "image.png");
+                assert_eq!(&**alt, "Alt text");
             }
             other => panic!("expected Image block, got {other:?}"),
         }
@@ -1653,7 +1653,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             Block::Image { url, alt } => {
-                assert_eq!(url, "https://example.com/pic.jpg");
+                assert_eq!(&**url, "https://example.com/pic.jpg");
                 assert!(alt.is_empty());
             }
             other => panic!("expected Image block, got {other:?}"),
@@ -2075,7 +2075,7 @@ Normal paragraph.
         let (blocks, _) = headless_render(md);
         match &blocks[0] {
             Block::Code { language, code } => {
-                assert_eq!(language, "rust");
+                assert_eq!(&**language, "rust");
                 assert!(code.contains("fn main()"));
             }
             other => panic!("expected Code, got {other:?}"),
@@ -2682,7 +2682,7 @@ Normal paragraph.
         assert_eq!(cache.blocks.len(), 1);
         match &cache.blocks[0] {
             Block::Image { url, .. } => {
-                assert_eq!(url, "relative/pic.png");
+                assert_eq!(&**url, "relative/pic.png");
             }
             other => panic!("expected Image block, got {other:?}"),
         }
@@ -2738,11 +2738,11 @@ Normal paragraph.
     fn estimate_height_code_block_more_lines_taller() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let small = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "line1".to_owned(),
         };
         let large = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
                 .to_owned(),
         };
@@ -3014,7 +3014,7 @@ Normal paragraph.
             },
             Block::Paragraph(cell("p")),
             Block::Code {
-                language: String::new(),
+                language: Box::from(""),
                 code: "code".to_owned(),
             },
             Block::Quote(vec![Block::Paragraph(cell("q"))]),
@@ -3038,8 +3038,8 @@ Normal paragraph.
                 rows: vec![vec![cell("r")]],
             })),
             Block::Image {
-                url: "img.png".to_owned(),
-                alt: String::new(),
+                url: Box::from("img.png"),
+                alt: Box::from(""),
             },
         ];
         for block in &blocks {
@@ -3109,7 +3109,7 @@ Normal paragraph.
         let (blocks, _) = headless_render(md);
         match &blocks[0] {
             Block::Image { alt, .. } => {
-                assert_eq!(alt, "My Alt Text", "alt should come from brackets");
+                assert_eq!(&**alt, "My Alt Text", "alt should come from brackets");
             }
             other => panic!("expected Image, got {other:?}"),
         }
@@ -3177,11 +3177,11 @@ Normal paragraph.
     fn estimate_height_code_with_language_taller() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let no_lang = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "code".to_owned(),
         };
         let with_lang = Block::Code {
-            language: "rust".to_owned(),
+            language: Box::from("rust"),
             code: "code".to_owned(),
         };
         let h_no = estimate_block_height(&no_lang, 14.0, 400.0, &style);
@@ -3196,8 +3196,8 @@ Normal paragraph.
     fn image_height_estimate_scales_with_width() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Image {
-            url: "img.png".to_owned(),
-            alt: String::new(),
+            url: Box::from("img.png"),
+            alt: Box::from(""),
         };
         let h_narrow = estimate_block_height(&block, 14.0, 200.0, &style);
         let h_wide = estimate_block_height(&block, 14.0, 800.0, &style);
@@ -4352,7 +4352,7 @@ Normal paragraph.
     fn code_block_empty_content() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: String::new(),
         };
         let h = estimate_block_height(&block, 14.0, 600.0, &style);
@@ -4363,7 +4363,7 @@ Normal paragraph.
     fn code_block_single_line() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Code {
-            language: "rust".to_owned(),
+            language: Box::from("rust"),
             code: "let x = 1;".to_owned(),
         };
         let h = estimate_block_height(&block, 14.0, 600.0, &style);
@@ -4378,7 +4378,7 @@ Normal paragraph.
             writeln!(code, "line {i}").ok();
         }
         let block = Block::Code {
-            language: "text".to_owned(),
+            language: Box::from("text"),
             code,
         };
         let h = estimate_block_height(&block, 14.0, 600.0, &style);
@@ -4391,11 +4391,11 @@ Normal paragraph.
     fn code_block_scales_with_lines() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let small = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "a\nb\nc\n".to_owned(),
         };
         let large = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: (0..100)
                 .map(|i| format!("line {i}"))
                 .collect::<Vec<_>>()
@@ -4414,7 +4414,7 @@ Normal paragraph.
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let code = "x".repeat(10_000); // 10k chars, no newlines
         let block = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code,
         };
         let h = estimate_block_height(&block, 14.0, 600.0, &style);
@@ -4430,11 +4430,11 @@ Normal paragraph.
         // height estimate must do the same to avoid systematic over-counting.
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let with_trailing = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "line1\nline2\n".to_owned(),
         };
         let without_trailing = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "line1\nline2".to_owned(),
         };
         let h_with = estimate_block_height(&with_trailing, 14.0, 600.0, &style);
@@ -4450,11 +4450,11 @@ Normal paragraph.
         // A code block containing only newlines renders as a single NBSP line.
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let only_newlines = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "\n\n\n".to_owned(),
         };
         let empty = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: String::new(),
         };
         let h_nl = estimate_block_height(&only_newlines, 14.0, 600.0, &style);
@@ -4469,11 +4469,11 @@ Normal paragraph.
     fn code_block_with_language_taller_than_without() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let with_lang = Block::Code {
-            language: "python".to_owned(),
+            language: Box::from("python"),
             code: "pass".to_owned(),
         };
         let without_lang = Block::Code {
-            language: String::new(),
+            language: Box::from(""),
             code: "pass".to_owned(),
         };
         let h_with = estimate_block_height(&with_lang, 14.0, 600.0, &style);
@@ -4490,8 +4490,8 @@ Normal paragraph.
     fn image_height_narrow_wrap_widths() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Image {
-            url: "pic.png".to_owned(),
-            alt: "alt".to_owned(),
+            url: Box::from("pic.png"),
+            alt: Box::from("alt"),
         };
         for width in [1.0_f32, 10.0, 50.0] {
             let h = estimate_block_height(&block, 14.0, width, &style);
@@ -4503,8 +4503,8 @@ Normal paragraph.
     fn image_height_zero_wrap_width() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let block = Block::Image {
-            url: "pic.png".to_owned(),
-            alt: "alt".to_owned(),
+            url: Box::from("pic.png"),
+            alt: Box::from("alt"),
         };
         let h = estimate_block_height(&block, 14.0, 0.0, &style);
         // The .max(body_size * 8.0) floor should keep this positive.
@@ -4615,7 +4615,7 @@ Normal paragraph.
             },
             Block::Paragraph(plain("text")),
             Block::Code {
-                language: "rs".to_owned(),
+                language: Box::from("rs"),
                 code: "code".to_owned(),
             },
             Block::Quote(vec![Block::Paragraph(plain("q"))]),
@@ -4635,8 +4635,8 @@ Normal paragraph.
             Block::ThematicBreak,
             Block::Table(Box::new(make_table(2, 2, "v"))),
             Block::Image {
-                url: "u".to_owned(),
-                alt: "a".to_owned(),
+                url: Box::from("u"),
+                alt: Box::from("a"),
             },
         ];
 
@@ -4665,7 +4665,7 @@ Normal paragraph.
             },
             Block::Paragraph(plain("Some body text here.")),
             Block::Code {
-                language: "py".to_owned(),
+                language: Box::from("py"),
                 code: "print('hi')\n".to_owned(),
             },
             Block::Quote(vec![Block::Paragraph(plain("quoted"))]),
@@ -4684,8 +4684,8 @@ Normal paragraph.
             Block::Table(Box::new(make_table(3, 4, "data"))),
             Block::ThematicBreak,
             Block::Image {
-                url: "img.png".to_owned(),
-                alt: "pic".to_owned(),
+                url: Box::from("img.png"),
+                alt: Box::from("pic"),
             },
         ];
 
