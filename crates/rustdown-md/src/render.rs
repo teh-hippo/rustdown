@@ -406,15 +406,15 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
 
 fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
     // Resolve relative URLs against the configured base URI.
-    let resolved =
+    let resolved: std::borrow::Cow<'_, str> =
         if url.starts_with("//") || url.contains("://") || style.image_base_uri.is_empty() {
-            url.to_owned()
+            std::borrow::Cow::Borrowed(url)
         } else {
-            format!("{}{url}", style.image_base_uri)
+            std::borrow::Cow::Owned(format!("{}{url}", style.image_base_uri))
         };
 
     let max_width = ui.available_width();
-    let image = egui::Image::new(&resolved)
+    let image = egui::Image::new(resolved.as_ref())
         .max_width(max_width)
         .corner_radius(4.0);
 
@@ -861,6 +861,66 @@ fn render_ordered_list(
 
 // ── Table rendering ────────────────────────────────────────────────
 
+/// Compute normalised column widths for a table, balancing content-proportional
+/// sizing with a per-column minimum and a total budget.
+///
+/// Returns `(col_widths, min_col_w)`.
+#[allow(clippy::cast_precision_loss)] // UI math — column count is small
+fn compute_table_col_widths(
+    header: &[StyledText],
+    rows: &[Vec<StyledText>],
+    usable: f32,
+    avg_char_w: f32,
+    body_size: f32,
+) -> (Vec<f32>, f32) {
+    let num_cols = header.len().max(1);
+    let min_col_w = (body_size * 2.5).max(36.0);
+
+    // Initial estimates from content length (header + rows).
+    let mut widths: Vec<f32> = (0..num_cols)
+        .map(|ci| {
+            let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
+            let max_row_len = rows
+                .iter()
+                .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
+                .max()
+                .unwrap_or(0);
+            let char_len = hdr_len.max(max_row_len).max(3) as f32;
+            // Cap per-column estimate to avoid one column dominating.
+            (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
+        })
+        .collect();
+
+    // Normalise: scale to budget, clamp to minimum, redistribute overflow.
+    let total_est: f32 = widths.iter().sum();
+    if total_est > 0.0 {
+        let scale = usable / total_est;
+        let mut clamped_total = 0.0_f32;
+        let mut free_total = 0.0_f32;
+        for w in &mut widths {
+            let scaled = *w * scale;
+            if scaled < min_col_w {
+                *w = min_col_w;
+                clamped_total += min_col_w;
+            } else {
+                *w = scaled;
+                free_total += scaled;
+            }
+        }
+        let remaining = usable - clamped_total;
+        if remaining > 0.0 && free_total > 0.0 {
+            let redistribute = remaining / free_total;
+            for w in &mut widths {
+                if *w > min_col_w {
+                    *w *= redistribute;
+                }
+            }
+        }
+    }
+
+    (widths, min_col_w)
+}
+
 #[allow(clippy::cast_precision_loss)] // UI math — column count is small
 fn render_table(
     ui: &mut egui::Ui,
@@ -876,54 +936,8 @@ fn render_table(
     let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
     let usable = (available - spacing).max(0.0);
 
-    // Minimum per-column width — scales with body size but has a floor.
-    let min_col_w = (body_size * 2.5).max(36.0);
-
-    // Estimate per-column widths from content length (header + rows).
-    let mut col_widths: Vec<f32> = (0..num_cols)
-        .map(|ci| {
-            let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
-            let max_row_len = rows
-                .iter()
-                .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
-                .max()
-                .unwrap_or(0);
-            let char_len = hdr_len.max(max_row_len).max(3) as f32;
-            // Cap per-column estimate at usable / num_cols * 3 to avoid one column
-            // dominating.
-            (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
-        })
-        .collect();
-
-    // Normalise so total equals usable width, but enforce minimum per column.
-    // Two-pass: first scale down, then clamp; if clamping changes the total,
-    // redistribute the remaining space among non-clamped columns.
-    let total_est: f32 = col_widths.iter().sum();
-    if total_est > 0.0 {
-        let scale = usable / total_est;
-        let mut clamped_total = 0.0_f32;
-        let mut free_total = 0.0_f32;
-        for w in &mut col_widths {
-            let scaled = *w * scale;
-            if scaled < min_col_w {
-                *w = min_col_w;
-                clamped_total += min_col_w;
-            } else {
-                *w = scaled;
-                free_total += scaled;
-            }
-        }
-        // Redistribute: shrink free columns to absorb clamped overflow.
-        let remaining = usable - clamped_total;
-        if remaining > 0.0 && free_total > 0.0 {
-            let redistribute = remaining / free_total;
-            for w in &mut col_widths {
-                if *w > min_col_w {
-                    *w *= redistribute;
-                }
-            }
-        }
-    }
+    let (col_widths, min_col_w) =
+        compute_table_col_widths(header, rows, usable, avg_char_w, body_size);
 
     // Wrap in horizontal scroll when table is wider than available space.
     let total_width: f32 = col_widths.iter().sum::<f32>() + spacing;
@@ -2166,56 +2180,37 @@ Normal paragraph.
 
     // ── Table column width heuristic ───────────────────────────────
 
-    /// Exercise the column-width heuristic from `render_table` in isolation.
-    /// Returns normalised column widths for the given header/rows.
-    #[allow(clippy::cast_precision_loss)]
+    /// Thin wrapper that converts `&str` slices into `StyledText` and calls
+    /// the actual `compute_table_col_widths` function, avoiding logic duplication.
     fn compute_col_widths(header: &[&str], rows: &[Vec<&str>], available: f32) -> Vec<f32> {
         let body_size = 14.0_f32;
         let avg_char_w = body_size * 0.55;
         let num_cols = header.len().max(1);
-        let spacing = 8.0 * num_cols.saturating_sub(1) as f32; // default item_spacing.x ≈ 8
+        let spacing = 8.0 * num_cols.saturating_sub(1) as f32;
         let usable = (available - spacing).max(0.0);
-        let min_col_w = (body_size * 2.5).max(36.0);
 
-        let mut col_widths: Vec<f32> = (0..num_cols)
-            .map(|ci| {
-                let hdr_len = header.get(ci).map_or(0, |c| c.len());
-                let max_row_len = rows
-                    .iter()
-                    .map(|r| r.get(ci).map_or(0, |c| c.len()))
-                    .max()
-                    .unwrap_or(0);
-                let char_len = hdr_len.max(max_row_len).max(3) as f32;
-                (avg_char_w.mul_add(char_len, 12.0)).min(usable / num_cols as f32 * 3.0)
+        let hdr: Vec<StyledText> = header
+            .iter()
+            .map(|s| StyledText {
+                text: (*s).to_owned(),
+                spans: vec![],
+            })
+            .collect();
+        let row_data: Vec<Vec<StyledText>> = rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|s| StyledText {
+                        text: (*s).to_owned(),
+                        spans: vec![],
+                    })
+                    .collect()
             })
             .collect();
 
-        let total_est: f32 = col_widths.iter().sum();
-        if total_est > 0.0 {
-            let scale = usable / total_est;
-            let mut clamped_total = 0.0_f32;
-            let mut free_total = 0.0_f32;
-            for w in &mut col_widths {
-                let scaled = *w * scale;
-                if scaled < min_col_w {
-                    *w = min_col_w;
-                    clamped_total += min_col_w;
-                } else {
-                    *w = scaled;
-                    free_total += scaled;
-                }
-            }
-            let remaining = usable - clamped_total;
-            if remaining > 0.0 && free_total > 0.0 {
-                let redistribute = remaining / free_total;
-                for w in &mut col_widths {
-                    if *w > min_col_w {
-                        *w *= redistribute;
-                    }
-                }
-            }
-        }
-        col_widths
+        let (widths, _) =
+            compute_table_col_widths(&hdr, &row_data, usable, avg_char_w, body_size);
+        widths
     }
 
     #[test]
