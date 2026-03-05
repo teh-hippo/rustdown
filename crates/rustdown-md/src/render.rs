@@ -447,9 +447,6 @@ fn render_block(ui: &mut egui::Ui, block: &Block, style: &MarkdownStyle, indent:
         }
 
         Block::Paragraph(text) => {
-            if indent > 0 {
-                ui.add_space(16.0 * indent as f32);
-            }
             render_styled_text(ui, text, style);
             ui.add_space(body_size * 0.4);
         }
@@ -645,7 +642,7 @@ fn render_blockquote(
             egui::vec2((ui.available_width() - reserved).max(40.0), 0.0),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
-                ui.indent(salt, |ui| {
+                ui.push_id(salt, |ui| {
                     render_blocks(ui, inner, style, indent + 1);
                 });
             },
@@ -6843,5 +6840,22 @@ that we can observe the relationship between available width and estimated heigh
             h_ord >= h_unord * 0.9,
             "ordered {h_ord} should not be much shorter than unordered {h_unord}"
         );
+    }
+
+    #[test]
+    fn blockquote_nested_no_panic() {
+        let md = "> Level 1\n>> Level 2\n>>> Level 3\n>>>> Level 4\n>>>>> Level 5\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn paragraph_in_blockquote_no_extra_vertical_gap() {
+        // Paragraphs inside blockquotes should not have extra vertical gaps.
+        let md = "> First paragraph\n>\n> Second paragraph\n";
+        let (blocks, height) = headless_render(md);
+        assert!(!blocks.is_empty());
+        assert!(height > 0.0);
     }
 }

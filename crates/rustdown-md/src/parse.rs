@@ -425,28 +425,84 @@ fn parse_list(
                 let mut children = Vec::new();
                 fmt.clear();
                 let mut checked: Option<bool> = None;
+                // Track whether the first paragraph has been fully consumed.
+                // In loose lists, pulldown-cmark wraps each item's text in
+                // Paragraph start/end events; subsequent paragraphs become
+                // child blocks.
+                let mut first_para_done = false;
+                // Collect inline text for a secondary paragraph inside the
+                // item, to be flushed as `Block::Paragraph` into `children`.
+                let mut extra_para: Option<StyledText> = None;
                 while consumed < events.len() {
                     match &events[consumed] {
                         Event::End(TagEnd::Item) => {
+                            // Flush any trailing extra paragraph.
+                            if let Some(ep) = extra_para.take()
+                                && !ep.text.is_empty()
+                            {
+                                children.push(Block::Paragraph(ep));
+                            }
                             consumed += 1;
                             break;
                         }
                         Event::Start(Tag::Paragraph) => {
-                            consumed += 1; // skip paragraph open in list item
+                            consumed += 1;
+                            if first_para_done {
+                                // Start collecting a new paragraph into
+                                // `extra_para`; it will be flushed on
+                                // `End(Paragraph)` or `End(Item)`.
+                                extra_para = Some(StyledText::default());
+                                fmt.clear();
+                            }
                         }
                         Event::End(TagEnd::Paragraph) => {
-                            consumed += 1; // skip paragraph close in list item
+                            consumed += 1;
+                            if let Some(ep) = extra_para.take()
+                                && !ep.text.is_empty()
+                            {
+                                children.push(Block::Paragraph(ep));
+                            }
+                            first_para_done = true;
                         }
-                        Event::Start(Tag::List(_)) => {
+                        // Block-level children: delegate to `parse_block`.
+                        Event::Start(
+                            Tag::List(_)
+                            | Tag::CodeBlock(_)
+                            | Tag::BlockQuote(_)
+                            | Tag::Heading { .. }
+                            | Tag::Table(_)
+                            | Tag::HtmlBlock,
+                        ) => {
+                            // Flush any in-progress extra paragraph first.
+                            if let Some(ep) = extra_para.take()
+                                && !ep.text.is_empty()
+                            {
+                                children.push(Block::Paragraph(ep));
+                            }
                             let n = parse_block(&events[consumed..], &mut children, fmt);
                             consumed += n;
+                        }
+                        Event::Rule => {
+                            if let Some(ep) = extra_para.take()
+                                && !ep.text.is_empty()
+                            {
+                                children.push(Block::Paragraph(ep));
+                            }
+                            children.push(Block::ThematicBreak);
+                            consumed += 1;
                         }
                         Event::TaskListMarker(is_checked) => {
                             checked = Some(*is_checked);
                             consumed += 1;
                         }
                         ev => {
-                            consume_inline(ev, &mut item_text, fmt);
+                            // Inline content: route to current paragraph
+                            // target (extra_para if active, else item_text).
+                            if let Some(ref mut ep) = extra_para {
+                                consume_inline(ev, ep, fmt);
+                            } else {
+                                consume_inline(ev, &mut item_text, fmt);
+                            }
                             consumed += 1;
                         }
                     }
@@ -2739,5 +2795,56 @@ mod tests {
         assert!(span.style.emphasis());
         assert!(span.style.strikethrough());
         assert!(span.style.link.is_some());
+    }
+
+    #[test]
+    fn parse_list_with_code_block() {
+        let md = "- Item with code:\n\n  ```rust\n  fn main() {}\n  ```\n\n- Next item\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert!(!items.is_empty());
+                assert!(
+                    !items[0].children.is_empty(),
+                    "code block should be in children"
+                );
+                assert!(matches!(&items[0].children[0], Block::Code { .. }));
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_with_blockquote() {
+        let md = "- Item with quote:\n\n  > Quoted text\n\n- Next item\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert!(
+                    !items[0].children.is_empty(),
+                    "blockquote should be in children"
+                );
+                assert!(matches!(&items[0].children[0], Block::Quote(_)));
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_paragraph_list_item() {
+        let md = "- First paragraph\n\n  Second paragraph\n\n- Another item\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                // First item should have text in content and the second paragraph in children
+                assert!(!items[0].content.text.is_empty());
+                assert!(
+                    !items[0].children.is_empty(),
+                    "second paragraph should be in children"
+                );
+            }
+            other => panic!("expected UnorderedList, got {other:?}"),
+        }
     }
 }
