@@ -1062,4 +1062,36 @@ mod tests {
         // Should select the last heading within depth.
         assert!(state.active_index.is_some());
     }
+
+    #[test]
+    #[allow(clippy::cast_possible_wrap)]
+    fn preview_byte_scroll_round_trip_with_headings() {
+        // Build a document with 4 headings and content between them so that
+        // byte offsets are spread across a realistic range.
+        let md = format!(
+            "# A\n{}\n## B\n{}\n## C\n{}\n# D\n",
+            "x".repeat(96),
+            "y".repeat(396),
+            "z".repeat(476),
+        );
+        let outline = nav_outline::extract_headings(&md);
+        assert_eq!(outline.len(), 4, "expected 4 headings");
+        let total_height = 2000.0;
+
+        // Collect heading offsets and midpoints between consecutive headings.
+        let mut test_offsets: Vec<usize> = outline.iter().map(|h| h.byte_offset).collect();
+        for pair in outline.windows(2) {
+            test_offsets.push(usize::midpoint(pair[0].byte_offset, pair[1].byte_offset));
+        }
+
+        for &byte in &test_offsets {
+            let y = preview_byte_to_scroll_y(&outline, byte, total_height);
+            let back = preview_scroll_y_to_byte(&outline, y, total_height);
+            let delta = (back as i64 - byte as i64).unsigned_abs();
+            assert!(
+                delta < 2,
+                "round-trip drift at byte={byte}: got back={back}, y={y:.2}, delta={delta}"
+            );
+        }
+    }
 }

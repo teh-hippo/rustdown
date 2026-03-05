@@ -1497,6 +1497,9 @@ impl RustdownApp {
             Mode::SideBySide => {
                 self.nav.pending_editor_scroll_y = editor_target_y;
                 self.nav.pending_preview_scroll_y = preview_target_y;
+                // Cancel any in-flight animation so it doesn't override the
+                // precise nav-driven preview position on the next frame.
+                self.side_by_side_scroll_target = None;
                 // Pre-seed the sync byte so sync_side_by_side_scroll does
                 // not override the precise nav-driven preview position with
                 // a linearly-interpolated value on the next frame.
@@ -2622,6 +2625,27 @@ mod tests {
         app.resolve_nav_scroll_target(&ctx);
         assert_eq!(app.nav.pending_editor_scroll_y, Some(0.0));
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
+    }
+
+    #[test]
+    fn resolve_nav_scroll_clears_stale_animation_target() {
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp {
+            mode: Mode::SideBySide,
+            ..RustdownApp::default()
+        };
+        // Simulate an in-flight animation from a previous scroll.
+        app.side_by_side_scroll_target = Some(999.0);
+
+        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
+        app.resolve_nav_scroll_target(&ctx);
+
+        // The stale animation target must be cleared so it does not
+        // override the nav-driven position on the next frame.
+        assert!(
+            app.side_by_side_scroll_target.is_none(),
+            "nav scroll should cancel in-flight animation"
+        );
     }
 
     #[test]
