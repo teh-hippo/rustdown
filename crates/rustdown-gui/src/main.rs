@@ -216,7 +216,7 @@ fn x11_keyboard_lib_available() -> bool {
 }
 
 /// Attach to the parent process's console so that `println!` output is
-/// visible when the GUI-subsystem binary is invoked from PowerShell or cmd.
+/// visible when the GUI-subsystem binary is invoked from `PowerShell` or cmd.
 #[cfg(windows)]
 fn attach_parent_console() {
     const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
