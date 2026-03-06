@@ -1,11 +1,12 @@
 //! Height estimation for viewport culling — pure math, no UI dependency.
 
+#![allow(clippy::cast_precision_loss)] // UI math — counts/dimensions are small
+
 use crate::parse::{Block, ListItem, StyledText, TableData};
 use crate::style::MarkdownStyle;
 
 /// Estimate pixel height for a top-level block without actually laying it out.
 /// Errs on the side of *over*-estimating so that blocks are never clipped.
-#[allow(clippy::cast_precision_loss)] // UI math — counts are small
 pub(super) fn estimate_block_height(
     block: &Block,
     body_size: f32,
@@ -69,7 +70,6 @@ pub(super) fn estimate_quote_height(
     body_size.mul_add(0.3, inner_h)
 }
 
-#[allow(clippy::cast_precision_loss)] // digit_count math on small values
 pub(super) fn estimate_list_height(
     items: &[ListItem],
     body_size: f32,
@@ -108,7 +108,6 @@ pub(super) fn estimate_list_height(
     body_size.mul_add(0.2, item_h)
 }
 
-#[allow(clippy::cast_precision_loss)]
 pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> f32 {
     let num_cols = table.header.len().max(1);
     let col_width = (wrap_width / num_cols as f32).max(40.0);
@@ -133,14 +132,13 @@ pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_widt
 /// Rough text height estimate using byte-level newline counting.
 /// Avoids `.lines()` iteration for better throughput on large texts.
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss)] // UI math — counts are small
 pub(super) fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
     estimate_text_height_inner(text, font_size, wrap_width, None)
 }
 
 /// Like [`estimate_text_height`], but uses a pre-computed character count
 /// from [`StyledText::char_count`] to skip the O(n) UTF-8 scan for non-ASCII text.
-#[allow(clippy::cast_precision_loss)]
+#[inline]
 pub(super) fn estimate_styled_height(st: &StyledText, font_size: f32, wrap_width: f32) -> f32 {
     // Only use cached count when it was actually populated (> 0 for non-empty text).
     let hint = if st.char_count > 0 {
@@ -151,7 +149,6 @@ pub(super) fn estimate_styled_height(st: &StyledText, font_size: f32, wrap_width
     estimate_text_height_inner(&st.text, font_size, wrap_width, hint)
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn estimate_text_height_inner(
     text: &str,
     font_size: f32,
@@ -200,6 +197,7 @@ fn estimate_text_height_inner(
 }
 
 /// Fast newline counting via memchr.
+#[inline]
 #[must_use]
 pub fn bytecount_newlines(bytes: &[u8]) -> usize {
     memchr::memchr_iter(b'\n', bytes).count()

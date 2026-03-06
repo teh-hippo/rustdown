@@ -6,6 +6,7 @@ pub struct FenceState {
     marker_len: usize,
 }
 
+#[inline]
 pub fn consume_fence_delimiter(line: &str, state: &mut Option<FenceState>) -> bool {
     let Some((marker, marker_len, rest)) = parse_fence_marker(line) else {
         return false;

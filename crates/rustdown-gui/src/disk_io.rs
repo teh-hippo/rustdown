@@ -32,11 +32,31 @@ fn temp_file_suffix(attempt: u64) -> u64 {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
+    // Thread ID adds per-thread uniqueness.  Use the Debug representation
+    // hashed in-place (writing to a stack buffer avoids heap allocation).
     let tid = {
-        // Thread ID adds per-thread uniqueness.
+        use std::fmt::Write as _;
+        let mut buf = [0u8; 32];
         let id = std::thread::current().id();
-        let s = format!("{id:?}");
-        hash_bytes(s.as_bytes())
+        struct Wrapper<'a>(&'a mut [u8], usize);
+        impl std::fmt::Write for Wrapper<'_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                let end = (self.1 + s.len()).min(self.0.len());
+                self.0[self.1..end].copy_from_slice(&s.as_bytes()[..end - self.1]);
+                self.1 = end;
+                Ok(())
+            }
+        }
+        let mut w = Wrapper(&mut buf, 0);
+        let _ = write!(w, "{id:?}");
+        let len = w.1;
+        // Inline FNV-1a over the stack buffer.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in &buf[..len] {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
     };
     // Stack address provides ASLR-derived entropy on most platforms.
     let stack_entropy = std::ptr::from_ref(&attempt) as u64;
@@ -45,16 +65,6 @@ fn temp_file_suffix(attempt: u64) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for val in [pid, nanos, tid, seq, attempt, stack_entropy] {
         h ^= val;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    h
-}
-
-/// Simple FNV-1a hash of a byte slice.
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     h
@@ -196,12 +206,17 @@ pub fn next_merge_sidecar_path(original: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file stem"))?;
 
     let ext = original.extension();
+    // Reusable buffer for the numeric suffix to avoid per-iteration format! allocations.
+    let mut suffix_buf = String::new();
     for n in 1..=MERGE_SIDECAR_MAX_FILES {
         let mut name = OsString::new();
         name.push(stem);
         name.push(".rustdown-merge");
         if n > 1 {
-            name.push(format!("-{n}"));
+            use std::fmt::Write as _;
+            suffix_buf.clear();
+            let _ = write!(suffix_buf, "-{n}");
+            name.push(&suffix_buf);
         }
         if let Some(ext) = ext {
             name.push(".");

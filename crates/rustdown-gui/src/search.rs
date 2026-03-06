@@ -27,15 +27,15 @@ impl SearchState {
             return self.match_count;
         }
 
-        let count = find_match_count(haystack, self.query.as_str());
-        self.match_count_query.clear();
-        self.match_count_query.push_str(self.query.as_str());
+        let count = find_match_count(haystack, &self.query);
+        self.match_count_query.clone_from(&self.query);
         self.match_count_seq = haystack_seq;
         self.match_count = count;
         count
     }
 }
 
+#[inline]
 #[must_use]
 pub fn find_match_count(haystack: &str, needle: &str) -> usize {
     if needle.is_empty() {

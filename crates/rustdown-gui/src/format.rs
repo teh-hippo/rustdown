@@ -34,29 +34,32 @@ pub fn format_markdown(source: &str, options: FormatOptions) -> String {
     };
     let normalized = if memchr::memchr(b'\r', source.as_bytes()).is_some() {
         // Single-pass normalization: \r\n → \n, lone \r → \n.
-        // Copy contiguous byte ranges to preserve multi-byte UTF-8 sequences
-        // (a per-byte `as char` cast would corrupt non-ASCII characters).
+        // Uses memchr to find each CR quickly, then copies contiguous byte
+        // ranges to preserve multi-byte UTF-8 sequences.
         let mut result = String::with_capacity(source.len());
         let bytes = source.as_bytes();
-        let mut i = 0;
         let mut start = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\r' {
-                result.push_str(&source[start..i]);
-                result.push('\n');
-                if bytes.get(i + 1) == Some(&b'\n') {
-                    i += 1;
-                }
-                start = i + 1;
-            }
-            i += 1;
+        for cr_pos in memchr::memchr_iter(b'\r', bytes) {
+            result.push_str(&source[start..cr_pos]);
+            result.push('\n');
+            start = if bytes.get(cr_pos + 1) == Some(&b'\n') {
+                cr_pos + 2
+            } else {
+                cr_pos + 1
+            };
         }
         result.push_str(&source[start..]);
         Cow::Owned(result)
     } else {
         Cow::Borrowed(source)
     };
-    let mut out = String::with_capacity(normalized.len() + 2);
+    // Pre-allocate conservatively: CRLF output may grow by up to 1 byte per line.
+    let extra = if eol.len() > 1 {
+        normalized.len() / 40
+    } else {
+        2
+    };
+    let mut out = String::with_capacity(normalized.len() + extra);
     let mut in_fence: Option<FenceState> = None;
     let mut segments = normalized.split('\n').peekable();
     while let Some(line) = segments.next() {

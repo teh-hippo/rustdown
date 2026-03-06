@@ -236,9 +236,7 @@ impl RustdownApp {
         if self.disk.watcher.is_none() {
             next_wake = match (next_wake, self.disk.poll_at) {
                 (Some(existing), Some(poll)) => Some(existing.min(poll)),
-                (Some(existing), None) => Some(existing),
-                (None, Some(poll)) => Some(poll),
-                (None, None) => None,
+                (one, other) => one.or(other),
             };
         }
 

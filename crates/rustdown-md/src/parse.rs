@@ -102,11 +102,13 @@ impl SpanStyle {
         }
     }
 
+    #[inline]
     #[must_use]
     pub const fn has_link(self) -> bool {
         self.link_idx != NO_LINK
     }
 
+    #[inline]
     #[must_use]
     pub const fn strong(self) -> bool {
         self.flags & FLAG_STRONG != 0
@@ -117,6 +119,7 @@ impl SpanStyle {
         self.flags |= FLAG_STRONG;
     }
 
+    #[inline]
     #[must_use]
     pub const fn emphasis(self) -> bool {
         self.flags & FLAG_EMPHASIS != 0
@@ -127,6 +130,7 @@ impl SpanStyle {
         self.flags |= FLAG_EMPHASIS;
     }
 
+    #[inline]
     #[must_use]
     pub const fn strikethrough(self) -> bool {
         self.flags & FLAG_STRIKETHROUGH != 0
@@ -138,6 +142,7 @@ impl SpanStyle {
         self.flags |= FLAG_STRIKETHROUGH;
     }
 
+    #[inline]
     #[must_use]
     pub const fn code(self) -> bool {
         self.flags & FLAG_CODE != 0
@@ -161,11 +166,12 @@ pub struct Span {
 }
 
 impl StyledText {
+    #[inline]
     #[allow(clippy::cast_possible_truncation)] // Saturates at u32::MAX
     fn push_text(&mut self, s: &str, style: SpanStyle) {
-        let start = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
+        let start = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
         self.text.push_str(s);
-        let end = (self.text.len() as u64).min(u64::from(u32::MAX)) as u32;
+        let end = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
         let char_count = if s.is_ascii() {
             s.len()
         } else {
@@ -189,6 +195,7 @@ impl StyledText {
     }
 
     /// Look up a link URL by index, returning `None` for `NO_LINK`.
+    #[inline]
     #[must_use]
     pub fn link_url(&self, link_idx: u8) -> Option<&Rc<str>> {
         if link_idx == NO_LINK {
@@ -701,6 +708,7 @@ impl InlineState {
     }
 
     /// Compute the flags bitfield from counters — O(1).
+    #[inline]
     const fn flags(&self) -> u8 {
         let mut f = 0u8;
         if self.strong_count > 0 {
@@ -830,11 +838,9 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
                 flags: state.flags(),
                 link_idx,
             };
-            let mut ref_text = String::with_capacity(label.len() + 2);
-            ref_text.push('[');
-            ref_text.push_str(label);
-            ref_text.push(']');
-            styled.push_text(&ref_text, style);
+            styled.push_text("[", style);
+            styled.push_text(label, style);
+            styled.push_text("]", style);
         }
         // Render inline HTML as plain text.
         Event::InlineHtml(html) | Event::Html(html) => {
@@ -858,6 +864,7 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
     }
 }
 
+#[inline]
 #[must_use]
 pub const fn heading_level_to_u8(level: HeadingLevel) -> u8 {
     match level {

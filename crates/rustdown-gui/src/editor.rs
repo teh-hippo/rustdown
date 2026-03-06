@@ -30,6 +30,7 @@ pub fn build_row_byte_offsets(galley: &egui::Galley, text: &str) -> Vec<(f32, u3
 
 /// Map a byte offset to the Y coordinate of the row containing it.
 /// O(log n) binary search.
+#[inline]
 #[allow(clippy::cast_possible_truncation)] // byte offsets are < 4GB
 pub fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
     if rows.is_empty() {
@@ -44,6 +45,7 @@ pub fn row_byte_offset_to_y(rows: &[(f32, u32)], byte_offset: usize) -> f32 {
 
 /// Map a Y coordinate to the byte offset at the start of the row at that
 /// position.  O(log n) binary search.
+#[inline]
 pub fn row_y_to_byte_offset(rows: &[(f32, u32)], y: f32) -> usize {
     if rows.is_empty() || !y.is_finite() {
         return 0;

@@ -278,6 +278,7 @@ impl MarkdownViewer {
 /// pathologically nested markdown (e.g. 1000 nested blockquotes).
 const MAX_RENDER_DEPTH: usize = 128;
 
+#[inline]
 fn render_blocks(ui: &mut egui::Ui, blocks: &[Block], style: &MarkdownStyle, indent: usize) {
     if indent > MAX_RENDER_DEPTH {
         return;
@@ -391,6 +392,10 @@ fn resolve_image_url<'a>(url: &'a str, base_uri: &str) -> std::borrow::Cow<'a, s
 /// (`../foo`), in the middle (`foo/../bar`), or at the end (`foo/..`).
 /// Also checks backslash-separated paths for Windows.
 fn contains_dot_dot_segment(path: &str) -> bool {
+    // Quick check: if ".." doesn't appear anywhere, skip the split.
+    if memchr::memmem::find(path.as_bytes(), b"..").is_none() {
+        return false;
+    }
     for sep in ['/', '\\'] {
         for component in path.split(sep) {
             if component == ".." {
@@ -546,6 +551,7 @@ fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
     ui.add_space(body_size * 0.4);
 }
 
+#[inline]
 pub(crate) fn simple_hash(s: &str) -> u64 {
     // FNV-1a–inspired 64-bit hash, processing 8 bytes at a time for throughput.
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -557,10 +563,8 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
     let mut h: u64 = BASIS;
 
     for chunk in chunks {
-        // chunks_exact(8) guarantees exactly 8 bytes — direct conversion is safe.
-        let word = u64::from_le_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
+        // chunks_exact(8) guarantees exactly 8 bytes.
+        let word = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
         h ^= word;
         h = h.wrapping_mul(PRIME);
     }

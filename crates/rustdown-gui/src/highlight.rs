@@ -10,7 +10,6 @@ use crate::markdown_fence::{FenceState, consume_fence_delimiter};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FmtIdx {
     Base,
-    Weak,
     InlineCode,
     Heading(usize),
     Table,
@@ -29,26 +28,26 @@ pub fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) ->
     palette[level.saturating_sub(1).min(palette.len() - 1)]
 }
 
-/// Resolve a `FmtIdx` to a cloned `TextFormat`.
-fn resolve_format(
+/// Resolve a `FmtIdx` to a `TextFormat` reference from the pre-built arrays.
+#[inline]
+const fn resolve_format_ref<'a>(
     idx: FmtIdx,
-    base: &egui::TextFormat,
-    weak: &egui::TextFormat,
-    inline_code: &egui::TextFormat,
-    heading_formats: &[egui::TextFormat; 6],
-    table_format: &egui::TextFormat,
-) -> egui::TextFormat {
+    base: &'a egui::TextFormat,
+    inline_code: &'a egui::TextFormat,
+    heading_formats: &'a [egui::TextFormat; 6],
+    table_format: &'a egui::TextFormat,
+) -> &'a egui::TextFormat {
     match idx {
-        FmtIdx::Base => base.clone(),
-        FmtIdx::Weak => weak.clone(),
-        FmtIdx::InlineCode => inline_code.clone(),
-        FmtIdx::Heading(level) => heading_formats[level - 1].clone(),
-        FmtIdx::Table => table_format.clone(),
+        FmtIdx::Base => base,
+        FmtIdx::InlineCode => inline_code,
+        FmtIdx::Heading(level) => &heading_formats[level - 1],
+        FmtIdx::Table => table_format,
     }
 }
 
 /// Push a section directly into the job using pre-set byte ranges.
 /// Avoids the per-append string concatenation of `LayoutJob::append`.
+#[inline]
 fn push_section(
     job: &mut egui::text::LayoutJob,
     range: std::ops::Range<usize>,
@@ -110,15 +109,9 @@ pub fn markdown_layout_job(
     let flush =
         |job: &mut egui::text::LayoutJob, fmt: &Option<FmtIdx>, start: usize, end: usize| {
             if let Some(idx) = *fmt {
-                let format = resolve_format(
-                    idx,
-                    &base,
-                    &weak,
-                    &inline_code,
-                    &heading_formats,
-                    &table_format,
-                );
-                push_section(job, start..end, format);
+                let format =
+                    resolve_format_ref(idx, &base, &inline_code, &heading_formats, &table_format);
+                push_section(job, start..end, format.clone());
             }
         };
 
@@ -136,18 +129,7 @@ pub fn markdown_layout_job(
         if consume_fence_delimiter(line, &mut in_fence) {
             flush(&mut job, &pending_fmt, pending_start, pending_end);
             pending_fmt = None;
-            push_section(
-                &mut job,
-                line_start..line_end,
-                resolve_format(
-                    FmtIdx::Weak,
-                    &base,
-                    &weak,
-                    &inline_code,
-                    &heading_formats,
-                    &table_format,
-                ),
-            );
+            push_section(&mut job, line_start..line_end, weak.clone());
             continue;
         }
         if in_fence.is_some() {

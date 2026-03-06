@@ -5,17 +5,12 @@ use crate::style::MarkdownStyle;
 
 /// Snap `pos` to a valid UTF-8 char boundary in `text`, rounding down.
 /// If `pos` is already on a boundary (or at 0 / `text.len()`), returns it unchanged.
-#[allow(clippy::missing_const_for_fn)] // is_char_boundary is not const-stable
-fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
+#[inline]
+const fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
     if pos >= text.len() {
         return text.len();
     }
-    // Walk backwards until we hit a char boundary (at most 3 bytes for UTF-8).
-    let mut p = pos;
-    while p > 0 && !text.is_char_boundary(p) {
-        p -= 1;
-    }
-    p
+    text.floor_char_boundary(pos)
 }
 
 /// Inline formatting properties resolved from a composite `SpanStyle`.
@@ -31,6 +26,7 @@ pub(super) struct SpanFormat {
 }
 
 impl SpanFormat {
+    #[inline]
     fn resolve(
         span_style: SpanStyle,
         md_style: &MarkdownStyle,
@@ -239,6 +235,7 @@ pub(super) fn build_layout_job(
 /// egui has no bold font weight, so we visually distinguish strong text.
 /// On dark backgrounds (bright text) the colour is brightened;
 /// on light backgrounds (dark text) it is darkened.
+#[inline]
 pub(super) fn strengthen_color(color: egui::Color32) -> egui::Color32 {
     // Work in unmultiplied space so luma is correct for semi-transparent
     // colours and the output never violates the premultiplied invariant.

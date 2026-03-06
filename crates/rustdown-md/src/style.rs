@@ -25,7 +25,7 @@ pub const LIGHT_HEADING_COLORS: [egui::Color32; 6] = [
 ];
 
 /// Per-heading-level style: font scale relative to body and colour.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct HeadingStyle {
     /// Multiplier applied to body font size.
     pub font_scale: f32,
