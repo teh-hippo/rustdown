@@ -897,27 +897,14 @@ mod tests {
             compute_visible_headings(&state.outline, &state.expanded, state.max_depth, 1).len(),
             all.len()
         );
-    }
 
-    #[test]
-    fn stress_test_heading_labels_and_scroll_targets() {
-        let md = include_str!("../../../test-assets/stress-test.md");
-        let state = make_state(md);
+        // All heading labels non-empty and scroll targets in range
         let total_h = 10_000.0;
-
         for (i, h) in state.outline.iter().enumerate() {
             let label = h.label(md);
-            assert!(
-                !label.is_empty(),
-                "heading {i} at offset {} should have non-empty label",
-                h.byte_offset
-            );
+            assert!(!label.is_empty(), "heading {i} should have non-empty label");
             let y = preview_byte_to_scroll_y(&state.outline, h.byte_offset, total_h);
-            assert!(
-                y >= 0.0 && y <= total_h,
-                "scroll target for offset {} out of range: {y}",
-                h.byte_offset
-            );
+            assert!(y >= 0.0 && y <= total_h, "scroll target out of range: {y}");
         }
     }
 
@@ -970,18 +957,12 @@ mod tests {
                 "round-trip drift at byte={byte}: got back={back}, y={y:.2}, delta={delta}"
             );
         }
-    }
 
-    // ── preview_byte_to_scroll_y boundary tests ─────────────────────
-
-    #[test]
-    fn preview_scroll_boundary_cases() {
+        // Boundary cases
         let md = "text\n\n# A\n\nmore\n\n## B\n";
         let outline = nav_outline::extract_headings(md);
         let first = outline.first().map_or(0, |h| h.byte_offset);
         let last = outline.last().map_or(0, |h| h.byte_offset);
-
-        // byte_to_scroll_y boundaries.
         for (label, byte, total_h) in [
             ("zero", 0_usize, 1000.0_f32),
             ("at last heading", last, 1000.0),
@@ -990,30 +971,12 @@ mod tests {
             let y = preview_byte_to_scroll_y(&outline, byte, total_h);
             assert!((0.0..=total_h).contains(&y), "{label}: got {y}");
         }
-
-        // Single heading beyond max clamps.
         let outline2 = nav_outline::extract_headings("text\n\n# Only\n");
         assert!(preview_byte_to_scroll_y(&outline2, 999_999, 500.0) <= 500.0);
-
-        // scroll_y_to_byte boundaries.
-        assert_eq!(
-            preview_scroll_y_to_byte(&outline, 0.0, 1000.0),
-            first,
-            "y=0"
-        );
-        assert!(
-            preview_scroll_y_to_byte(&outline, 1000.0, 1000.0) >= last,
-            "y=total"
-        );
-        assert!(
-            preview_scroll_y_to_byte(&outline, 5000.0, 1000.0) <= last + 1000,
-            "y beyond"
-        );
-        assert_eq!(
-            preview_scroll_y_to_byte(&outline, -100.0, 1000.0),
-            first,
-            "neg y"
-        );
+        assert_eq!(preview_scroll_y_to_byte(&outline, 0.0, 1000.0), first);
+        assert!(preview_scroll_y_to_byte(&outline, 1000.0, 1000.0) >= last);
+        assert!(preview_scroll_y_to_byte(&outline, 5000.0, 1000.0) <= last + 1000);
+        assert_eq!(preview_scroll_y_to_byte(&outline, -100.0, 1000.0), first);
     }
 
     // ── compute_visible_headings additional tests ───────────────────

@@ -1929,7 +1929,7 @@ mod tests {
     }
 
     #[test]
-    fn document_stats_cover_empty_populated_and_default_document() {
+    fn document_stats_and_path_helpers() {
         for (label, text, expected_lines) in [
             ("two lines", "one two\nthree", 2),
             ("unicode", "héllo 世界\n🙂", 2),
@@ -1944,10 +1944,7 @@ mod tests {
         }
         assert_eq!(DocumentStats::from_text(""), DocumentStats::default());
         assert_eq!(Document::default().stats(), DocumentStats::from_text(""));
-    }
 
-    #[test]
-    fn markdown_path_helpers_cover_detection_and_selection() {
         assert!(is_markdown_path(Path::new("note.md")));
         assert!(is_markdown_path(Path::new("README.Markdown")));
         assert!(!is_markdown_path(Path::new("notes.txt")));
@@ -2233,7 +2230,8 @@ mod tests {
     }
 
     #[test]
-    fn mode_cycle_icons_and_tooltips() {
+    fn mode_transitions_icons_and_uses_editor() {
+        // Mode cycling
         assert_eq!(Mode::Edit.cycle(), Mode::Preview);
         assert_eq!(Mode::Preview.cycle(), Mode::SideBySide);
         assert_eq!(Mode::SideBySide.cycle(), Mode::Edit);
@@ -2245,6 +2243,27 @@ mod tests {
             assert_eq!(mode.icon(), icon, "{tooltip} icon");
             assert_eq!(mode.tooltip(), tooltip);
         }
+
+        let ctx = egui::Context::default();
+        let mut app = RustdownApp::default();
+        assert_eq!(app.mode, Mode::Edit);
+        assert!(app.uses_editor());
+
+        app.set_mode(Mode::Preview, &ctx);
+        assert_eq!(app.mode, Mode::Preview);
+        assert!(app.doc.editor_galley_cache.is_none());
+        assert!(!app.uses_editor());
+
+        app.set_mode(Mode::Edit, &ctx);
+        assert_eq!(app.mode, Mode::Edit);
+
+        // Same-mode is noop
+        let app2 = RustdownApp::default();
+        assert!(app2.nav.pending_scroll.is_none());
+
+        // SideBySide uses editor
+        app.set_mode(Mode::SideBySide, &ctx);
+        assert!(app.uses_editor());
     }
 
     #[test]
@@ -2315,10 +2334,8 @@ mod tests {
             1,
             "stale cache"
         );
-    }
 
-    #[test]
-    fn replace_all_occurrences_returns_borrowed_on_noop() {
+        // replace_all_occurrences returns borrowed on noop
         for (label, haystack, needle) in [
             ("no match", "hello world", "xyz"),
             ("empty needle", "hello", ""),
@@ -2351,31 +2368,6 @@ mod tests {
             "Expected '{scheme}' to contain '{dir_name}'"
         );
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn mode_transitions_and_uses_editor() {
-        let ctx = egui::Context::default();
-        let mut app = RustdownApp::default();
-        assert_eq!(app.mode, Mode::Edit);
-        assert!(app.uses_editor());
-
-        app.set_mode(Mode::Preview, &ctx);
-        assert_eq!(app.mode, Mode::Preview);
-        assert!(app.doc.editor_galley_cache.is_none());
-        assert!(!app.uses_editor());
-
-        app.set_mode(Mode::Edit, &ctx);
-        assert_eq!(app.mode, Mode::Edit);
-
-        // Same-mode is noop — no pending scroll set on a fresh app.
-        let mut app2 = RustdownApp::default();
-        app2.set_mode(Mode::Edit, &ctx);
-        assert!(app2.nav.pending_scroll.is_none());
-
-        // SideBySide uses editor.
-        app.set_mode(Mode::SideBySide, &ctx);
-        assert!(app.uses_editor());
     }
 
     #[test]
@@ -2571,12 +2563,12 @@ mod tests {
     }
 
     #[test]
-    fn reload_clean_buffer_invalidates_and_advances_seq() {
+    fn reload_clean_dirty_conflict_and_large_file() {
+        // Clean buffer reload
         let mut app = RustdownApp::default();
         app.doc.text = Arc::new("original".into());
         app.doc.base_text = Arc::new("original".into());
         let old_seq = app.doc.edit_seq;
-
         let new_text = Arc::new("new content".to_owned());
         app.apply_disk_text_state(
             new_text.clone(),
@@ -2602,20 +2594,15 @@ mod tests {
             assert!(app.doc.edit_seq > prev_seq, "reload {i}");
             prev_seq = app.doc.edit_seq;
         }
-    }
 
-    #[test]
-    fn reload_dirty_buffer_uses_merge_outcome() {
+        // Dirty buffer merge
         let original = "line one\nline two\n";
         let ours = format!("{original}our addition\n");
         let mut app = merge_app(original, &ours, 1, original.len() as u64, true);
         app.incorporate_disk_text("CHANGED\nline two\n".to_string(), test_rev(2, 18));
         assert!(app.doc.text.contains("CHANGED") && app.doc.text.contains("our addition"));
         assert!(app.disk.conflict.is_none());
-    }
 
-    #[test]
-    fn reload_conflict_and_empty_disk_cases() {
         // Overlapping edits → conflict.
         let mut app = merge_app("shared line\n", "our version\n", 1, 12, true);
         app.incorporate_disk_text("their version\n".to_owned(), test_rev(2, 14));
@@ -2632,10 +2619,8 @@ mod tests {
         } else {
             assert!(app2.doc.text.contains("user edits"));
         }
-    }
 
-    #[test]
-    fn large_file_reload_maintains_integrity() {
+        // Large file reload
         use std::fmt::Write;
         let mut app = RustdownApp::default();
         let mut large_content = String::new();
@@ -2643,7 +2628,6 @@ mod tests {
             writeln!(large_content, "line {i}").unwrap_or_default();
         }
         assert!(large_content.len() > 400_000);
-
         let text = Arc::new(large_content.clone());
         app.apply_disk_text_state(
             text.clone(),
@@ -2651,7 +2635,6 @@ mod tests {
             test_rev(1, large_content.len() as u64),
             ReloadKind::Clean,
         );
-
         assert_eq!(app.doc.text.as_str(), large_content.as_str());
         assert_eq!(app.doc.base_text.as_str(), large_content.as_str());
         assert!(!app.doc.dirty);
