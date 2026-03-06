@@ -31,6 +31,7 @@ mod live_merge;
 mod markdown_fence;
 mod nav_outline;
 mod nav_panel;
+mod preferences;
 mod search;
 mod ui_style;
 
@@ -219,9 +220,30 @@ fn x11_keyboard_lib_available() -> bool {
     result.is_ok()
 }
 
+/// Attach to the parent process's console so that `println!` output is
+/// visible when the GUI-subsystem binary is invoked from PowerShell or cmd.
+#[cfg(windows)]
+fn attach_parent_console() {
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // SAFETY: `AttachConsole` is a well-documented Win32 API.  Calling it
+    // with ATTACH_PARENT_PROCESS is harmless even if there is no parent
+    // console — it simply returns FALSE.
+    #[allow(unsafe_code)]
+    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
     if launch_options.print_version {
+        // On Windows, GUI-subsystem binaries have no console by default.
+        // Attach to the parent console so the output is visible in
+        // PowerShell / cmd.
+        #[cfg(windows)]
+        attach_parent_console();
+
         println!("{}", app_version());
         return Ok(());
     }
@@ -399,6 +421,22 @@ impl Mode {
 enum PendingAction {
     NewBlank,
     Open(PathBuf),
+    OpenBundled(BundledDoc),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BundledDoc {
+    Demo,
+    Verification,
+}
+
+impl BundledDoc {
+    const fn content(self) -> &'static str {
+        match self {
+            Self::Demo => include_str!("bundled/demo.md"),
+            Self::Verification => include_str!("bundled/verification.md"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,6 +516,8 @@ impl RustdownApp {
             zoom_delta,
             escape,
             toggle_nav,
+            open_demo,
+            open_verification,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
@@ -499,6 +539,8 @@ impl RustdownApp {
                 i.zoom_delta(),
                 i.key_pressed(egui::Key::Escape),
                 cmd && i.modifiers.shift && i.key_pressed(egui::Key::T),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F11),
+                cmd && i.modifiers.shift && i.key_pressed(egui::Key::F12),
             )
         });
 
@@ -541,6 +583,13 @@ impl RustdownApp {
             }
             if toggle_nav {
                 self.nav.visible = !self.nav.visible;
+                self.save_preferences();
+            }
+            if open_demo {
+                self.request_action(PendingAction::OpenBundled(BundledDoc::Demo));
+            }
+            if open_verification {
+                self.request_action(PendingAction::OpenBundled(BundledDoc::Verification));
             }
         }
     }
@@ -577,6 +626,7 @@ impl RustdownApp {
                 {
                     self.doc.editor_galley_cache = None;
                     self.doc.preview_cache.clear();
+                    self.save_preferences();
                 }
                 ui.separator();
                 if ui
@@ -586,8 +636,13 @@ impl RustdownApp {
                 {
                     self.format_document();
                 }
-                ui.toggle_value(&mut self.nav.visible, tb("Nav"))
-                    .on_hover_text("Navigation");
+                if ui
+                    .toggle_value(&mut self.nav.visible, tb("Nav"))
+                    .on_hover_text("Navigation")
+                    .changed()
+                {
+                    self.save_preferences();
+                }
             });
         });
     }
@@ -765,14 +820,19 @@ impl RustdownApp {
     }
 
     fn from_launch_options(options: LaunchOptions) -> Self {
+        let prefs = preferences::UserPreferences::load();
         let mut app = Self {
             mode: options.mode,
-            heading_color_mode: true,
+            heading_color_mode: prefs.heading_color_mode,
             ..Self::default()
         };
+        app.nav.visible = prefs.nav_visible;
+        app.nav.heading_color_mode = prefs.heading_color_mode;
         if let Some(path) = options.path {
             app.open_path(path);
         }
+        // Auto-show nav in preview modes if heading count exceeds threshold.
+        app.maybe_auto_show_nav();
         app
     }
 
@@ -802,6 +862,9 @@ impl RustdownApp {
             self.doc.last_edit_at = None;
         }
 
+        // Auto-show nav in preview modes if heading count exceeds threshold.
+        self.maybe_auto_show_nav();
+
         // Request a scroll to the same position in the new mode.
         if let Some(byte_offset) = scroll_byte {
             self.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(byte_offset));
@@ -811,6 +874,26 @@ impl RustdownApp {
     /// Returns `true` when the current mode renders the code editor.
     const fn uses_editor(&self) -> bool {
         matches!(self.mode, Mode::Edit | Mode::SideBySide)
+    }
+
+    /// Auto-show the nav panel in Preview/SideBySide when the document has
+    /// enough headings to benefit from a table of contents.
+    #[allow(clippy::missing_const_for_fn)] // Vec::len() in const context is unstable
+    fn maybe_auto_show_nav(&mut self) {
+        if matches!(self.mode, Mode::Preview | Mode::SideBySide)
+            && self.nav.outline.len() >= preferences::AUTO_NAV_MIN_HEADINGS
+        {
+            self.nav.visible = true;
+        }
+    }
+
+    /// Persist the current nav/colour preferences to disk.
+    fn save_preferences(&self) {
+        let prefs = preferences::UserPreferences {
+            nav_visible: self.nav.visible,
+            heading_color_mode: self.heading_color_mode,
+        };
+        prefs.save();
     }
 
     /// Convert a heading byte offset to a preview scroll-y value.
@@ -1334,6 +1417,34 @@ impl RustdownApp {
         self.nav.invalidate_outline();
     }
 
+    /// Load a bundled (compile-time embedded) markdown document.
+    /// The document has no file path, so Save will trigger Save As.
+    fn load_bundled(&mut self, bundled: BundledDoc) {
+        let content = bundled.content().to_owned();
+        let text = Arc::new(content);
+        let base_text = text.clone();
+        let next_seq = self.doc.edit_seq.wrapping_add(1);
+        self.doc = Document {
+            path: None,
+            image_uri_scheme: String::new(),
+            stats: DocumentStats::from_text(text.as_str()),
+            text,
+            base_text,
+            disk_rev: None,
+            stats_dirty: false,
+            preview_dirty: false,
+            dirty: false,
+            preview_cache: rustdown_md::MarkdownCache::default(),
+            last_edit_at: None,
+            edit_seq: next_seq,
+            editor_galley_cache: None,
+        };
+        self.error = None;
+        self.disk.merge_sidecar_path = None;
+        self.reset_disk_sync_state();
+        self.nav.invalidate_outline();
+    }
+
     fn apply_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewBlank => {
@@ -1346,6 +1457,7 @@ impl RustdownApp {
                 self.nav.invalidate_outline();
             }
             PendingAction::Open(path) => self.open_path(path),
+            PendingAction::OpenBundled(bundled) => self.load_bundled(bundled),
         }
     }
 
@@ -2560,6 +2672,71 @@ mod tests {
         assert!(
             app.doc.stats.lines > 49_000,
             "stats should reflect large file"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Bundled document tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn bundled_demo_is_non_empty_and_parseable() {
+        let content = BundledDoc::Demo.content();
+        assert!(
+            content.len() > 500,
+            "demo.md should be a substantial document"
+        );
+        assert!(content.contains("# "), "demo.md should contain headings");
+        // Parsing through pulldown-cmark must not panic.
+        let parser = pulldown_cmark::Parser::new(content);
+        let event_count: usize = parser.count();
+        assert!(event_count > 50, "demo should have many markdown events");
+    }
+
+    #[test]
+    fn bundled_verification_is_non_empty_and_parseable() {
+        let content = BundledDoc::Verification.content();
+        assert!(
+            content.len() > 10_000,
+            "verification.md should be a large document"
+        );
+        assert!(
+            content.contains("# 1 "),
+            "verification.md should contain numbered top-level headings"
+        );
+        let parser = pulldown_cmark::Parser::new(content);
+        let event_count: usize = parser.count();
+        assert!(
+            event_count > 500,
+            "verification should have many markdown events"
+        );
+    }
+
+    #[test]
+    fn load_bundled_creates_pathless_clean_document() {
+        let mut app = RustdownApp::default();
+        app.load_bundled(BundledDoc::Demo);
+        assert!(app.doc.path.is_none(), "bundled doc should have no path");
+        assert!(!app.doc.dirty, "bundled doc should not be dirty");
+        assert!(
+            app.doc.text.len() > 500,
+            "bundled doc text should be loaded"
+        );
+        assert_eq!(
+            app.doc.text.as_str(),
+            app.doc.base_text.as_str(),
+            "text and base_text should match"
+        );
+    }
+
+    #[test]
+    fn load_bundled_advances_edit_seq() {
+        let mut app = RustdownApp::default();
+        let seq_before = app.doc.edit_seq;
+        app.load_bundled(BundledDoc::Verification);
+        assert!(
+            app.doc.edit_seq > seq_before,
+            "edit_seq should advance on bundled load"
         );
     }
 }
