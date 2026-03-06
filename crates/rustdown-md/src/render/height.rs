@@ -84,14 +84,8 @@ pub(super) fn estimate_list_height(
     // Match the bullet/number column width used in the actual renderers.
     let bullet_col = match ordered_start {
         Some(start) => {
-            let max_num = start.saturating_add(items.len().saturating_sub(1) as u64);
-            let digit_count = if max_num == 0 {
-                1
-            } else {
-                (max_num as f64).log10().floor() as u32 + 1
-            };
-            // Mirrors render_ordered_list: 0.6 em per digit + 1.0 em + 4px gap.
-            body_size.mul_add(0.6_f32.mul_add(digit_count as f32, 1.0), 4.0)
+            // Mirrors render_ordered_list: num_width + 4px gap.
+            super::lists::ordered_num_width(start, items.len(), body_size) + 4.0
         }
         None => body_size.mul_add(1.5, 2.0),
     };

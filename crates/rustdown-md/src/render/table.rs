@@ -57,14 +57,8 @@ pub(super) fn compute_table_col_widths(
             let redistribute = remaining / free_total;
             for w in &mut widths {
                 if *w > min_col_w {
-                    *w *= redistribute;
+                    *w = (*w * redistribute).max(min_col_w);
                 }
-            }
-        }
-        // Ensure no column fell below minimum after redistribution.
-        for w in &mut widths {
-            if *w < min_col_w {
-                *w = min_col_w;
             }
         }
     }

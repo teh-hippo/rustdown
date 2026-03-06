@@ -28,44 +28,36 @@ pub(super) struct SpanFormat {
 impl SpanFormat {
     #[inline]
     fn resolve(
-        span_style: SpanStyle,
+        ss: SpanStyle,
         md_style: &MarkdownStyle,
         base_color: egui::Color32,
         ui: &egui::Ui,
     ) -> Self {
-        let mut sf = Self {
-            font_family: egui::FontFamily::Proportional,
-            color: base_color,
-            background: egui::Color32::TRANSPARENT,
-            underline: false,
-            strikethrough: false,
-            italics: false,
-            strong: false,
-        };
-
-        if span_style.strong() {
-            sf.strong = true;
+        Self {
+            font_family: if ss.code() {
+                egui::FontFamily::Monospace
+            } else {
+                egui::FontFamily::Proportional
+            },
+            color: if ss.has_link() {
+                md_style
+                    .link_color
+                    .unwrap_or_else(|| ui.visuals().hyperlink_color)
+            } else {
+                base_color
+            },
+            background: if ss.code() {
+                md_style
+                    .code_bg
+                    .unwrap_or_else(|| ui.visuals().faint_bg_color)
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            underline: ss.has_link(),
+            strikethrough: ss.strikethrough(),
+            italics: ss.emphasis(),
+            strong: ss.strong(),
         }
-        if span_style.emphasis() {
-            sf.italics = true;
-        }
-        if span_style.strikethrough() {
-            sf.strikethrough = true;
-        }
-        if span_style.code() {
-            sf.font_family = egui::FontFamily::Monospace;
-            sf.background = md_style
-                .code_bg
-                .unwrap_or_else(|| ui.visuals().faint_bg_color);
-        }
-        if span_style.has_link() {
-            sf.color = md_style
-                .link_color
-                .unwrap_or_else(|| ui.visuals().hyperlink_color);
-            sf.underline = true;
-        }
-
-        sf
     }
 }
 
@@ -129,8 +121,6 @@ pub(super) fn render_text_with_links(
         .unwrap_or_else(|| ui.visuals().text_color());
 
     ui.horizontal_wrapped(|ui| {
-        // Use zero horizontal spacing between inline spans so link and text
-        // widgets flow together without extra gaps.
         ui.spacing_mut().item_spacing.x = 0.0;
         for span in &st.spans {
             let start = snap_to_char_boundary(&st.text, (span.start as usize).min(st.text.len()));
@@ -139,12 +129,13 @@ pub(super) fn render_text_with_links(
                 continue;
             }
             let text = &st.text[start..end];
-            let font_family = if span.style.code() {
+            let is_code = span.style.code();
+            let span_size = if is_code { size * 0.9 } else { size };
+            let font_family = if is_code {
                 egui::FontFamily::Monospace
             } else {
                 egui::FontFamily::Proportional
             };
-            let span_size = if span.style.code() { size * 0.9 } else { size };
             let mut rt = egui::RichText::new(text).font(egui::FontId::new(span_size, font_family));
 
             if span.style.emphasis() {
@@ -153,32 +144,22 @@ pub(super) fn render_text_with_links(
             if span.style.strikethrough() {
                 rt = rt.strikethrough();
             }
+            if is_code {
+                rt = rt
+                    .background_color(style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color));
+            }
 
             if let Some(url) = st.link_url(span.style.link_idx) {
                 if span.style.strong() {
                     rt = rt.strong();
                 }
-                // Preserve code background on link spans so monospace
-                // code text remains visually distinct even inside links.
-                if span.style.code() {
-                    rt = rt.background_color(
-                        style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
-                    );
-                }
                 ui.hyperlink_to(rt, url.as_ref());
             } else {
-                let color = if span.style.strong() {
+                rt = rt.color(if span.style.strong() {
                     strengthen_color(base_color)
                 } else {
                     base_color
-                };
-                rt = rt.color(color);
-
-                if span.style.code() {
-                    rt = rt.background_color(
-                        style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
-                    );
-                }
+                });
                 ui.label(rt);
             }
         }
@@ -213,29 +194,30 @@ pub(super) fn build_layout_job(
         }
         let sf = SpanFormat::resolve(span.style, style, base_color, ui);
         let span_size = if span.style.code() { size * 0.9 } else { size };
-        let mut format = egui::TextFormat {
-            font_id: egui::FontId::new(span_size, sf.font_family),
-            color: sf.color,
-            background: sf.background,
-            italics: sf.italics,
-            ..Default::default()
+        let color = if sf.strong {
+            strengthen_color(sf.color)
+        } else {
+            sf.color
         };
-        if sf.strong {
-            format.color = strengthen_color(sf.color);
-        }
-        // Set stroke colours *after* the strong override so they match
-        // the final text colour rather than the pre-strengthened base.
-        let stroke_color = format.color;
-        if sf.underline {
-            format.underline = egui::Stroke::new(1.0, stroke_color);
-        }
-        if sf.strikethrough {
-            format.strikethrough = egui::Stroke::new(1.0, stroke_color);
-        }
+        let stroke = |active: bool| {
+            if active {
+                egui::Stroke::new(1.0, color)
+            } else {
+                egui::Stroke::NONE
+            }
+        };
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,
             byte_range: start..end,
-            format,
+            format: egui::TextFormat {
+                font_id: egui::FontId::new(span_size, sf.font_family),
+                color,
+                background: sf.background,
+                italics: sf.italics,
+                underline: stroke(sf.underline),
+                strikethrough: stroke(sf.strikethrough),
+                ..Default::default()
+            },
         });
     }
     job

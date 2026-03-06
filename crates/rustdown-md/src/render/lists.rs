@@ -6,6 +6,22 @@ use super::{render_blocks, text::render_styled_text};
 use crate::parse::ListItem;
 use crate::style::MarkdownStyle;
 
+/// Compute the number column width for an ordered list.
+///
+/// Returns the width in pixels for the number column, based on the
+/// widest number that will appear.  Shared between the renderer and
+/// the height estimator for consistency.
+#[inline]
+pub(super) fn ordered_num_width(start: u64, item_count: usize, body_size: f32) -> f32 {
+    let max_num = start.saturating_add(item_count.saturating_sub(1) as u64);
+    let digit_count = if max_num == 0 {
+        1u32
+    } else {
+        (max_num as f64).log10().floor() as u32 + 1
+    };
+    body_size * 0.6f32.mul_add(digit_count as f32, 1.0)
+}
+
 pub(super) fn render_unordered_list(
     ui: &mut egui::Ui,
     items: &[ListItem],
@@ -57,16 +73,7 @@ pub(super) fn render_ordered_list(
     let indent_px = 16.0 * indent as f32;
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
     let mut num_buf = String::with_capacity(8);
-
-    // Compute column width based on the widest number that will appear.
-    let max_num = start.saturating_add(items.len().saturating_sub(1) as u64);
-    let digit_count = if max_num == 0 {
-        1
-    } else {
-        (max_num as f64).log10().floor() as u32 + 1
-    };
-    // Each digit ≈ 0.6 em, plus the dot, plus a little padding.
-    let num_width = body_size * 0.6f32.mul_add(digit_count as f32, 1.0);
+    let num_width = ordered_num_width(start, items.len(), body_size);
 
     for (i, item) in items.iter().enumerate() {
         let num = start.saturating_add(i as u64);

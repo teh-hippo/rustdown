@@ -774,46 +774,35 @@ impl InlineState {
 }
 
 fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut InlineState) {
-    /// Resolve the link index for the current inline context.
-    fn resolve_link(state: &InlineState, styled: &mut StyledText) -> u8 {
-        match state.cached_link.as_ref() {
+    /// Build the current `SpanStyle` with optional extra flags.
+    #[inline]
+    fn current_style(state: &InlineState, styled: &mut StyledText, extra: u8) -> SpanStyle {
+        let link_idx = match state.cached_link.as_ref() {
             Some(url) => styled.intern_link(Rc::clone(url)),
             None => NO_LINK,
+        };
+        SpanStyle {
+            flags: state.flags() | extra,
+            link_idx,
         }
     }
 
     match event {
         Event::Text(t) => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags(),
-                link_idx,
-            };
-            styled.push_text(t, style);
+            let s = current_style(state, styled, 0);
+            styled.push_text(t, s);
         }
         Event::Code(c) => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags() | FLAG_CODE,
-                link_idx,
-            };
-            styled.push_text(c, style);
+            let s = current_style(state, styled, FLAG_CODE);
+            styled.push_text(c, s);
         }
         Event::SoftBreak => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags(),
-                link_idx,
-            };
-            styled.push_text(" ", style);
+            let s = current_style(state, styled, 0);
+            styled.push_text(" ", s);
         }
         Event::HardBreak => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags(),
-                link_idx,
-            };
-            styled.push_text("\n", style);
+            let s = current_style(state, styled, 0);
+            styled.push_text("\n", s);
         }
         Event::Start(Tag::Strong) => state.push(InlineFlag::Strong),
         Event::End(TagEnd::Strong) => state.pop(&InlineFlag::Strong),
@@ -825,34 +814,19 @@ fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut Inline
             state.push(InlineFlag::Link(Rc::from(dest_url.as_ref())));
         }
         Event::End(TagEnd::Link) => state.pop_link(),
-        // Render footnote references as bracketed text.
         Event::FootnoteReference(label) => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags(),
-                link_idx,
-            };
-            styled.push_text("[", style);
-            styled.push_text(label, style);
-            styled.push_text("]", style);
+            let s = current_style(state, styled, 0);
+            styled.push_text("[", s);
+            styled.push_text(label, s);
+            styled.push_text("]", s);
         }
-        // Render inline HTML as plain text.
         Event::InlineHtml(html) | Event::Html(html) => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags() | FLAG_CODE,
-                link_idx,
-            };
-            styled.push_text(html, style);
+            let s = current_style(state, styled, FLAG_CODE);
+            styled.push_text(html, s);
         }
-        // Math events (not enabled by default, but handle gracefully).
         Event::InlineMath(math) | Event::DisplayMath(math) => {
-            let link_idx = resolve_link(state, styled);
-            let style = SpanStyle {
-                flags: state.flags() | FLAG_CODE,
-                link_idx,
-            };
-            styled.push_text(math, style);
+            let s = current_style(state, styled, FLAG_CODE);
+            styled.push_text(math, s);
         }
         _ => {}
     }
