@@ -158,6 +158,13 @@ pub(super) fn render_text_with_links(
                 if span.style.strong() {
                     rt = rt.strong();
                 }
+                // Preserve code background on link spans so monospace
+                // code text remains visually distinct even inside links.
+                if span.style.code() {
+                    rt = rt.background_color(
+                        style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color),
+                    );
+                }
                 ui.hyperlink_to(rt, url.as_ref());
             } else {
                 let color = if span.style.strong() {
@@ -213,14 +220,17 @@ pub(super) fn build_layout_job(
             italics: sf.italics,
             ..Default::default()
         };
-        if sf.underline {
-            format.underline = egui::Stroke::new(1.0, sf.color);
-        }
-        if sf.strikethrough {
-            format.strikethrough = egui::Stroke::new(1.0, sf.color);
-        }
         if sf.strong {
             format.color = strengthen_color(sf.color);
+        }
+        // Set stroke colours *after* the strong override so they match
+        // the final text colour rather than the pre-strengthened base.
+        let stroke_color = format.color;
+        if sf.underline {
+            format.underline = egui::Stroke::new(1.0, stroke_color);
+        }
+        if sf.strikethrough {
+            format.strikethrough = egui::Stroke::new(1.0, stroke_color);
         }
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,

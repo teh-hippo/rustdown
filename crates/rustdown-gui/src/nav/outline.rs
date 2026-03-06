@@ -3,8 +3,11 @@ use rustdown_md::heading_level_to_u8;
 
 /// A single heading extracted from a Markdown document.
 ///
-/// Labels are stored as byte ranges into the source text to avoid per-heading
-/// heap allocations.  Use [`HeadingEntry::label`] to resolve to `&str`.
+/// For simple headings (text and inline code only), the label is stored
+/// as a byte range into the source text, avoiding per-heading heap
+/// allocations.  For headings that contain links or other inline markup
+/// whose raw syntax would leak into the byte range, a separate
+/// plain-text label is built from the event content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadingEntry {
     /// Heading depth (1 = H1, 2 = H2, … 6 = H6).
@@ -15,12 +18,19 @@ pub struct HeadingEntry {
     label_start: u32,
     /// Length of the plain-text label in bytes.
     label_len: u16,
+    /// If the heading contains links, the label is built from event
+    /// content and stored here (source byte ranges would include URLs).
+    label_owned: Option<Box<str>>,
 }
 
 impl HeadingEntry {
-    /// Resolve the heading label from the source text.
+    /// Resolve the heading label, preferring the owned plain-text label
+    /// (for headings with links) and falling back to a source byte range.
     #[inline]
-    pub fn label<'a>(&self, source: &'a str) -> &'a str {
+    pub fn label<'a>(&'a self, source: &'a str) -> &'a str {
+        if let Some(ref owned) = self.label_owned {
+            return owned;
+        }
         let start = self.label_start as usize;
         let end = start + self.label_len as usize;
         source.get(start..end).unwrap_or("")
@@ -43,6 +53,11 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
     let mut label_start: usize = 0;
     let mut label_end: usize = 0;
     let mut label_has_content = false;
+    // Track whether the heading contains links (whose raw markdown
+    // syntax would leak into a source byte-range label).
+    let mut has_link = false;
+    // Collected plain text fragments for headings with links.
+    let mut label_buf = String::new();
 
     for (event, range) in parser.into_offset_iter() {
         match event {
@@ -52,31 +67,74 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
                 label_start = 0;
                 label_end = 0;
                 label_has_content = false;
+                has_link = false;
+                label_buf.clear();
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some((level, byte_offset)) = in_heading.take()
                     && label_has_content
                 {
-                    let slice = source.get(label_start..label_end).unwrap_or("");
-                    let trimmed = slice.trim();
-                    if !trimmed.is_empty() {
-                        let trim_off = label_start + (slice.len() - slice.trim_start().len());
-                        let trim_len = trimmed.len();
-                        entries.push(HeadingEntry {
-                            level,
-                            byte_offset,
-                            label_start: trim_off as u32,
-                            label_len: trim_len.min(u16::MAX as usize) as u16,
-                        });
+                    if has_link {
+                        // Build label from collected text fragments.
+                        let trimmed = label_buf.trim();
+                        if !trimmed.is_empty() {
+                            entries.push(HeadingEntry {
+                                level,
+                                byte_offset,
+                                label_start: 0,
+                                label_len: 0,
+                                label_owned: Some(trimmed.into()),
+                            });
+                        }
+                    } else {
+                        // No links — use the efficient source byte range.
+                        let slice = source.get(label_start..label_end).unwrap_or("");
+                        let trimmed = slice.trim();
+                        if !trimmed.is_empty() {
+                            let trim_off = label_start + (slice.len() - slice.trim_start().len());
+                            let trim_len = trimmed.len();
+                            entries.push(HeadingEntry {
+                                level,
+                                byte_offset,
+                                label_start: trim_off as u32,
+                                label_len: trim_len.min(u16::MAX as usize) as u16,
+                                label_owned: None,
+                            });
+                        }
                     }
                 }
             }
-            Event::Text(_) | Event::Code(_) if in_heading.is_some() => {
+            Event::Text(t) if in_heading.is_some() => {
                 if !label_has_content {
                     label_start = range.start;
                     label_has_content = true;
                 }
                 label_end = range.end;
+                if has_link {
+                    label_buf.push_str(&t);
+                }
+            }
+            Event::Code(c) if in_heading.is_some() => {
+                if !label_has_content {
+                    label_start = range.start;
+                    label_has_content = true;
+                }
+                label_end = range.end;
+                if has_link {
+                    label_buf.push('`');
+                    label_buf.push_str(&c);
+                    label_buf.push('`');
+                }
+            }
+            Event::Start(Tag::Link { .. }) if in_heading.is_some() => {
+                if !has_link {
+                    // Retroactively fill label_buf with text collected so far.
+                    has_link = true;
+                    if label_has_content {
+                        let prior = source.get(label_start..label_end).unwrap_or("");
+                        label_buf.push_str(prior);
+                    }
+                }
             }
             _ => {}
         }
@@ -175,7 +233,7 @@ mod tests {
         assert_eq!(headings[3].label(md), "🦀 Rust");
 
         // HeadingEntry is compact.
-        assert!(std::mem::size_of::<HeadingEntry>() <= 24);
+        assert!(std::mem::size_of::<HeadingEntry>() <= 40);
     }
 
     #[test]
@@ -305,6 +363,39 @@ mod tests {
             }
             last_idx = idx;
         }
+    }
+
+    /// Heading labels with links should show only the visible text, not
+    /// the raw markdown URL syntax.  The label should be something like
+    /// "Visit Rustdown on GitHub" — never including `[...](...url...)`.
+    #[test]
+    fn heading_label_with_link_excludes_url() {
+        let md = "### Visit [Rustdown](https://github.com/teh-hippo/rustdown) on GitHub\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        assert!(
+            !label.contains("https://"),
+            "nav label should not contain URL, got: {label:?}"
+        );
+        assert!(
+            !label.contains("]("),
+            "nav label should not contain markdown link syntax, got: {label:?}"
+        );
+    }
+
+    /// Heading labels with adjacent links should capture all visible text
+    /// fragments without including URLs.
+    #[test]
+    fn heading_label_with_multiple_links_excludes_urls() {
+        let md = "## [Alpha](https://a.com) and [Beta](https://b.com)\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        assert!(
+            !label.contains("https://"),
+            "multi-link heading label should not contain URLs, got: {label:?}"
+        );
     }
 
     // ── Cross-module: nav_outline ↔ render heading_y ordinal alignment ──
