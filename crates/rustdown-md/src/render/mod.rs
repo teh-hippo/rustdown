@@ -396,14 +396,8 @@ fn contains_dot_dot_segment(path: &str) -> bool {
     if memchr::memmem::find(path.as_bytes(), b"..").is_none() {
         return false;
     }
-    for sep in ['/', '\\'] {
-        for component in path.split(sep) {
-            if component == ".." {
-                return true;
-            }
-        }
-    }
-    false
+    // Single pass: split on both '/' and '\' simultaneously.
+    path.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
@@ -423,6 +417,19 @@ fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, 
     ui.add_space(body_size * 0.4);
 }
 
+/// Draw a full-width horizontal rule at the current cursor position.
+fn draw_horizontal_rule(ui: &egui::Ui, style: &MarkdownStyle) {
+    let rect = ui.available_rect_before_wrap();
+    let y = rect.min.y;
+    let color = style
+        .hr_color
+        .unwrap_or_else(|| ui.visuals().weak_text_color());
+    ui.painter().line_segment(
+        [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+        egui::Stroke::new(1.5, color),
+    );
+}
+
 fn render_heading(
     ui: &mut egui::Ui,
     level: u8,
@@ -439,15 +446,7 @@ fn render_heading(
     ui.add_space(size * 0.15);
 
     if level <= 2 {
-        let rect = ui.available_rect_before_wrap();
-        let y = rect.min.y;
-        let color = style
-            .hr_color
-            .unwrap_or_else(|| ui.visuals().weak_text_color());
-        ui.painter().line_segment(
-            [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(1.5, color),
-        );
+        draw_horizontal_rule(ui, style);
         ui.add_space(4.0);
     }
 }
@@ -539,15 +538,7 @@ fn render_blockquote(
 
 fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
     ui.add_space(body_size * 0.4);
-    let rect = ui.available_rect_before_wrap();
-    let y = rect.min.y;
-    let color = style
-        .hr_color
-        .unwrap_or_else(|| ui.visuals().weak_text_color());
-    ui.painter().line_segment(
-        [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-        egui::Stroke::new(1.5, color),
-    );
+    draw_horizontal_rule(ui, style);
     ui.add_space(body_size * 0.4);
 }
 

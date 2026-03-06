@@ -77,6 +77,14 @@ enum DiagnosticsMode {
     NavPipeline,
 }
 
+/// Parse a `--long-name=VALUE` or `--short-name=VALUE` positive integer argument.
+fn parse_kv_usize(arg: &OsString, long: &str, short: &str) -> Option<usize> {
+    arg.to_str()
+        .and_then(|s| s.strip_prefix(short).or_else(|| s.strip_prefix(long)))
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+}
+
 #[must_use]
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
 where
@@ -119,30 +127,13 @@ where
                 diagnostics = DiagnosticsMode::NavPipeline;
                 continue;
             }
-            if let Some(value) = arg
-                .to_str()
-                .and_then(|value| {
-                    value
-                        .strip_prefix("--diag-iterations=")
-                        .or_else(|| value.strip_prefix("--diagnostics-iterations="))
-                })
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|value| *value > 0)
+            if let Some(v) = parse_kv_usize(&arg, "--diagnostics-iterations=", "--diag-iterations=")
             {
-                diagnostics_iterations = value;
+                diagnostics_iterations = v;
                 continue;
             }
-            if let Some(value) = arg
-                .to_str()
-                .and_then(|value| {
-                    value
-                        .strip_prefix("--diag-runs=")
-                        .or_else(|| value.strip_prefix("--diagnostics-runs="))
-                })
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|value| *value > 0)
-            {
-                diagnostics_runs = value;
+            if let Some(v) = parse_kv_usize(&arg, "--diagnostics-runs=", "--diag-runs=") {
+                diagnostics_runs = v;
                 continue;
             }
             if arg.to_str().is_some_and(|value| value.starts_with('-')) {
@@ -535,14 +526,22 @@ impl RustdownApp {
     /// so that shortcuts do not fire behind modal windows.
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let dialog_open = self.pending_action.is_some() || self.disk.conflict.is_some();
+
+        let dropped_path = ctx.input(|i| {
+            first_markdown_path(
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|file| file.path.as_deref()),
+            )
+        });
         let (
-            dropped_path,
             open,
             save_trigger,
             new_doc,
             cycle_mode,
             search,
-            replace_all_mode,
+            replace_all,
             format_doc,
             zoom_in,
             zoom_out,
@@ -554,12 +553,6 @@ impl RustdownApp {
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command;
             (
-                first_markdown_path(
-                    i.raw
-                        .dropped_files
-                        .iter()
-                        .filter_map(|file| file.path.as_deref()),
-                ),
                 cmd && i.key_pressed(egui::Key::O),
                 save_trigger_from_shortcut(cmd, i.modifiers.shift, i.key_pressed(egui::Key::S)),
                 cmd && i.key_pressed(egui::Key::N),
@@ -577,53 +570,54 @@ impl RustdownApp {
             )
         });
 
-        if !dialog_open {
-            if let Some(path) = dropped_path {
-                self.request_action(PendingAction::Open(path));
-            }
-            if open {
-                self.open_file();
-            }
-            if let Some(save_trigger) = save_trigger {
-                let _ = self.save_doc(matches!(save_trigger, SaveTrigger::SaveAs));
-            }
-            if new_doc {
-                self.request_action(PendingAction::NewBlank);
-            }
-            if cycle_mode {
-                self.set_mode(self.mode.cycle(), ctx);
-            }
-            if search {
-                self.open_search(false);
-            }
-            if replace_all_mode {
-                self.open_search(true);
-            }
-            if format_doc {
-                self.format_document();
-            }
-            if zoom_in {
-                self.adjust_zoom(ctx, ZOOM_STEP);
-            }
-            if zoom_out {
-                self.adjust_zoom(ctx, -ZOOM_STEP);
-            }
-            if (zoom_delta - 1.0).abs() > f32::EPSILON {
-                self.adjust_zoom_factor(ctx, zoom_delta);
-            }
-            if escape && self.search.visible {
-                self.close_search();
-            }
-            if toggle_nav {
-                self.nav.visible = !self.nav.visible;
-                self.save_preferences();
-            }
-            if open_demo {
-                self.request_action(PendingAction::OpenBundled(BundledDoc::Demo));
-            }
-            if open_verification {
-                self.request_action(PendingAction::OpenBundled(BundledDoc::Verification));
-            }
+        if dialog_open {
+            return;
+        }
+        if let Some(path) = dropped_path {
+            self.request_action(PendingAction::Open(path));
+        }
+        if open {
+            self.open_file();
+        }
+        if let Some(trigger) = save_trigger {
+            let _ = self.save_doc(matches!(trigger, SaveTrigger::SaveAs));
+        }
+        if new_doc {
+            self.request_action(PendingAction::NewBlank);
+        }
+        if cycle_mode {
+            self.set_mode(self.mode.cycle(), ctx);
+        }
+        if search {
+            self.open_search(false);
+        }
+        if replace_all {
+            self.open_search(true);
+        }
+        if format_doc {
+            self.format_document();
+        }
+        if zoom_in {
+            self.adjust_zoom(ctx, ZOOM_STEP);
+        }
+        if zoom_out {
+            self.adjust_zoom(ctx, -ZOOM_STEP);
+        }
+        if (zoom_delta - 1.0).abs() > f32::EPSILON {
+            self.adjust_zoom_factor(ctx, zoom_delta);
+        }
+        if escape && self.search.visible {
+            self.close_search();
+        }
+        if toggle_nav {
+            self.nav.visible = !self.nav.visible;
+            self.save_preferences();
+        }
+        if open_demo {
+            self.request_action(PendingAction::OpenBundled(BundledDoc::Demo));
+        }
+        if open_verification {
+            self.request_action(PendingAction::OpenBundled(BundledDoc::Verification));
         }
     }
 
@@ -759,13 +753,7 @@ impl RustdownApp {
 
                 ui.separator();
                 ui.label(
-                    egui::RichText::new(format!("{} lines", stats.lines))
-                        .font(toolbar_font.clone()),
-                );
-
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("{} words", stats.words))
+                    egui::RichText::new(format!("{} lines · {} words", stats.lines, stats.words))
                         .font(toolbar_font.clone()),
                 );
 
@@ -1449,16 +1437,21 @@ impl RustdownApp {
         }
     }
 
-    fn load_document(&mut self, path: PathBuf, text: String, disk_rev: Option<DiskRevision>) {
+    /// Common initialisation for loading a new document (file-based or bundled).
+    fn init_document(
+        &mut self,
+        path: Option<PathBuf>,
+        text: String,
+        disk_rev: Option<DiskRevision>,
+    ) {
         let text = Arc::new(text);
         let base_text = text.clone();
-        let image_uri_scheme = default_image_uri_scheme(Some(path.as_path()));
-        // Monotonically advance edit_seq so caches keyed on it (search match
-        // count, nav outline, editor galley) are always invalidated when the
-        // underlying document identity changes.
+        let image_uri_scheme = path
+            .as_deref()
+            .map_or_else(String::new, |p| default_image_uri_scheme(Some(p)));
         let next_seq = self.doc.edit_seq.wrapping_add(1);
         self.doc = Document {
-            path: Some(path),
+            path,
             image_uri_scheme,
             stats: DocumentStats::from_text(text.as_str()),
             text,
@@ -1472,39 +1465,20 @@ impl RustdownApp {
             edit_seq: next_seq,
             editor_galley_cache: None,
         };
-        // The merge sidecar belongs to the previous document; clear it so the
-        // status bar does not show a stale reference.
         self.disk.merge_sidecar_path = None;
-        // Force nav outline refresh on next frame.
         self.nav.invalidate_outline();
+    }
+
+    fn load_document(&mut self, path: PathBuf, text: String, disk_rev: Option<DiskRevision>) {
+        self.init_document(Some(path), text, disk_rev);
     }
 
     /// Load a bundled (compile-time embedded) markdown document.
     /// The document has no file path, so Save will trigger Save As.
     fn load_bundled(&mut self, bundled: BundledDoc) {
-        let content = bundled.content().to_owned();
-        let text = Arc::new(content);
-        let base_text = text.clone();
-        let next_seq = self.doc.edit_seq.wrapping_add(1);
-        self.doc = Document {
-            path: None,
-            image_uri_scheme: String::new(),
-            stats: DocumentStats::from_text(text.as_str()),
-            text,
-            base_text,
-            disk_rev: None,
-            stats_dirty: false,
-            preview_dirty: false,
-            dirty: false,
-            preview_cache: rustdown_md::MarkdownCache::default(),
-            last_edit_at: None,
-            edit_seq: next_seq,
-            editor_galley_cache: None,
-        };
+        self.init_document(None, bundled.content().to_owned(), None);
         self.error = None;
-        self.disk.merge_sidecar_path = None;
         self.reset_disk_sync_state();
-        self.nav.invalidate_outline();
     }
 
     fn apply_action(&mut self, action: PendingAction) {
@@ -1657,24 +1631,26 @@ impl RustdownApp {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Open conflict merge").clicked() {
-                        self.apply_conflict_choice(ConflictChoice::OpenConflictMerge);
-                    }
-                    if ui.button("Keep mine (+ merge file)").clicked() {
-                        self.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
+                    for (label, choice) in [
+                        ("Open conflict merge", ConflictChoice::OpenConflictMerge),
+                        ("Keep mine (+ merge file)", ConflictChoice::KeepMineWriteSidecar),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.apply_conflict_choice(choice);
+                        }
                     }
                 });
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save As…").clicked() {
-                        self.apply_conflict_choice(ConflictChoice::SaveAs);
-                    }
-                    if ui.button("Reload disk").clicked() {
-                        self.apply_conflict_choice(ConflictChoice::ReloadDisk);
-                    }
-                    if ui.button("Overwrite disk").clicked() {
-                        self.apply_conflict_choice(ConflictChoice::OverwriteDisk);
+                    for (label, choice) in [
+                        ("Save As…", ConflictChoice::SaveAs),
+                        ("Reload disk", ConflictChoice::ReloadDisk),
+                        ("Overwrite disk", ConflictChoice::OverwriteDisk),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.apply_conflict_choice(choice);
+                        }
                     }
                 });
 

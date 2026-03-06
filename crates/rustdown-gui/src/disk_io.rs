@@ -32,14 +32,12 @@ fn temp_file_suffix(attempt: u64) -> u64 {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    // Thread ID adds per-thread uniqueness.  Use the Debug representation
-    // hashed in-place (writing to a stack buffer avoids heap allocation).
+    // Thread ID adds per-thread uniqueness.  Hash its Debug repr
+    // into a stack buffer to avoid heap allocation.
     let tid = {
         use std::fmt::Write as _;
-        let mut buf = [0u8; 32];
-        let id = std::thread::current().id();
-        struct Wrapper<'a>(&'a mut [u8], usize);
-        impl std::fmt::Write for Wrapper<'_> {
+        struct BufWriter([u8; 32], usize);
+        impl std::fmt::Write for BufWriter {
             fn write_str(&mut self, s: &str) -> std::fmt::Result {
                 let end = (self.1 + s.len()).min(self.0.len());
                 self.0[self.1..end].copy_from_slice(&s.as_bytes()[..end - self.1]);
@@ -47,12 +45,10 @@ fn temp_file_suffix(attempt: u64) -> u64 {
                 Ok(())
             }
         }
-        let mut w = Wrapper(&mut buf, 0);
-        let _ = write!(w, "{id:?}");
-        let len = w.1;
-        // Inline FNV-1a over the stack buffer.
+        let mut w = BufWriter([0u8; 32], 0);
+        let _ = write!(w, "{:?}", std::thread::current().id());
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in &buf[..len] {
+        for &b in &w.0[..w.1] {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0100_0000_01b3);
         }

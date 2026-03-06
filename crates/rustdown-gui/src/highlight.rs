@@ -115,6 +115,18 @@ pub fn markdown_layout_job(
             }
         };
 
+    // Extend the pending run with the current line, or flush and start a new run.
+    macro_rules! extend_run {
+        ($kind:expr, $ls:expr, $le:expr) => {
+            if pending_fmt != Some($kind) {
+                flush(&mut job, &pending_fmt, pending_start, pending_end);
+                pending_fmt = Some($kind);
+                pending_start = $ls;
+            }
+            pending_end = $le;
+        };
+    }
+
     let mut in_fence: Option<FenceState> = None;
     let bytes = source.as_bytes();
     let mut offset = 0usize;
@@ -133,13 +145,7 @@ pub fn markdown_layout_job(
             continue;
         }
         if in_fence.is_some() {
-            let kind = FmtIdx::InlineCode;
-            if pending_fmt != Some(kind) {
-                flush(&mut job, &pending_fmt, pending_start, pending_end);
-                pending_fmt = Some(kind);
-                pending_start = line_start;
-            }
-            pending_end = line_end;
+            extend_run!(FmtIdx::InlineCode, line_start, line_end);
             continue;
         }
 
@@ -150,37 +156,19 @@ pub fn markdown_layout_job(
         if indent_ok && trimmed.as_bytes().first() == Some(&b'#') {
             let level = trimmed.bytes().take_while(|b| *b == b'#').count();
             if (1..=6).contains(&level) && trimmed.as_bytes().get(level) == Some(&b' ') {
-                let kind = FmtIdx::Heading(level);
-                if pending_fmt != Some(kind) {
-                    flush(&mut job, &pending_fmt, pending_start, pending_end);
-                    pending_fmt = Some(kind);
-                    pending_start = line_start;
-                }
-                pending_end = line_end;
+                extend_run!(FmtIdx::Heading(level), line_start, line_end);
                 continue;
             }
         }
 
         // Table rows: lines starting with `|` (pipe-delimited).
         if trimmed.as_bytes().first() == Some(&b'|') {
-            let kind = FmtIdx::Table;
-            if pending_fmt != Some(kind) {
-                flush(&mut job, &pending_fmt, pending_start, pending_end);
-                pending_fmt = Some(kind);
-                pending_start = line_start;
-            }
-            pending_end = line_end;
+            extend_run!(FmtIdx::Table, line_start, line_end);
             continue;
         }
 
         if memchr::memchr(b'`', line.as_bytes()).is_none() {
-            let kind = FmtIdx::Base;
-            if pending_fmt != Some(kind) {
-                flush(&mut job, &pending_fmt, pending_start, pending_end);
-                pending_fmt = Some(kind);
-                pending_start = line_start;
-            }
-            pending_end = line_end;
+            extend_run!(FmtIdx::Base, line_start, line_end);
             continue;
         }
 

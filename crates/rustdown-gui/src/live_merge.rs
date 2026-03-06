@@ -16,6 +16,14 @@ struct Edit<'a> {
     replacement: Vec<&'a str>,
 }
 
+/// Push the same tokens to two output buffers (used for non-conflicting regions).
+fn push_both(a: &mut String, b: &mut String, tokens: &[&str]) {
+    for tok in tokens {
+        a.push_str(tok);
+        b.push_str(tok);
+    }
+}
+
 #[allow(clippy::too_many_lines)] // merge logic — linear flow with multiple phases
 pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
     if ours == theirs {
@@ -77,10 +85,11 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         .min(base_len);
 
         if pos < next_start {
-            for tok in &base_lines[pos..next_start] {
-                ours_wins.push_str(tok);
-                conflict_marked.push_str(tok);
-            }
+            push_both(
+                &mut ours_wins,
+                &mut conflict_marked,
+                &base_lines[pos..next_start],
+            );
             pos = next_start;
         }
 
@@ -88,19 +97,13 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         let next_theirs = theirs_edits.get(i_theirs);
         let (Some(oe), Some(te)) = (next_ours, next_theirs) else {
             if let Some(oe) = next_ours {
-                for tok in &oe.replacement {
-                    ours_wins.push_str(tok);
-                    conflict_marked.push_str(tok);
-                }
+                push_both(&mut ours_wins, &mut conflict_marked, &oe.replacement);
                 pos = oe.base_end;
                 i_ours += 1;
                 continue;
             }
             if let Some(te) = next_theirs {
-                for tok in &te.replacement {
-                    ours_wins.push_str(tok);
-                    conflict_marked.push_str(tok);
-                }
+                push_both(&mut ours_wins, &mut conflict_marked, &te.replacement);
                 pos = te.base_end;
                 i_theirs += 1;
                 continue;
@@ -109,10 +112,7 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         };
 
         if oe.base_start == pos && te.base_start == pos && edits_identical(oe, te) {
-            for tok in &oe.replacement {
-                ours_wins.push_str(tok);
-                conflict_marked.push_str(tok);
-            }
+            push_both(&mut ours_wins, &mut conflict_marked, &oe.replacement);
             pos = oe.base_end;
             i_ours += 1;
             i_theirs += 1;
@@ -122,17 +122,11 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         if !edits_overlap(oe, te) {
             // Apply whichever edit starts first.
             if oe.base_start < te.base_start {
-                for tok in &oe.replacement {
-                    ours_wins.push_str(tok);
-                    conflict_marked.push_str(tok);
-                }
+                push_both(&mut ours_wins, &mut conflict_marked, &oe.replacement);
                 pos = oe.base_end;
                 i_ours += 1;
             } else {
-                for tok in &te.replacement {
-                    ours_wins.push_str(tok);
-                    conflict_marked.push_str(tok);
-                }
+                push_both(&mut ours_wins, &mut conflict_marked, &te.replacement);
                 pos = te.base_end;
                 i_theirs += 1;
             }
@@ -190,8 +184,7 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
         );
 
         if ours_chunk == theirs_chunk {
-            ours_wins.push_str(&ours_chunk);
-            conflict_marked.push_str(&ours_chunk);
+            push_both(&mut ours_wins, &mut conflict_marked, &[&ours_chunk]);
         } else {
             has_conflicts = true;
             ours_wins.push_str(&ours_chunk);
