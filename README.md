@@ -30,6 +30,7 @@
 👁️ **Live preview** — full GFM rendering with tables, task lists, strikethrough, and images\
 ⚡ **Fast** — native GPU-accelerated UI, instant startup, zero Electron\
 🔄 **Live reload** — detects external file changes with 3-way merge for dirty buffers\
+💾 **Remembers your preferences** — zoom, mode, nav panel, and heading colours persist across sessions\
 🖱️ **Drag & drop** — open `.md` files by dropping them in
 
 <br>
@@ -84,6 +85,8 @@ rustdown -p                 # start in Preview mode
 | `Ctrl+Enter` | Cycle mode |
 | `Ctrl+Shift+T` | Toggle nav panel |
 | `Ctrl+Plus/Minus` | Zoom |
+| `Ctrl+Shift+F11` | Open demo document |
+| `Ctrl+Shift+F12` | Open verification document |
 
 ## 🖥️ Platforms
 

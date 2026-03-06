@@ -114,6 +114,7 @@ impl Document {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DocumentStats {
     pub lines: usize,
+    pub words: usize,
 }
 
 impl DocumentStats {
@@ -124,13 +125,14 @@ impl DocumentStats {
         } else {
             1 + bytecount_newlines(text)
         };
-        Self { lines }
+        let words = text.split_whitespace().count();
+        Self { lines, words }
     }
 }
 
 impl Default for DocumentStats {
     fn default() -> Self {
-        Self { lines: 1 }
+        Self { lines: 1, words: 0 }
     }
 }
 

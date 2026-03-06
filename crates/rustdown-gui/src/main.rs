@@ -59,6 +59,8 @@ const DIAGNOSTICS_DEFAULT_RUNS: usize = 1;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LaunchOptions {
     mode: Mode,
+    /// `true` when the user explicitly chose a mode via CLI flag (`-p`, `-s`).
+    mode_explicit: bool,
     path: Option<PathBuf>,
     print_version: bool,
     diagnostics: DiagnosticsMode,
@@ -153,6 +155,7 @@ where
         }
     }
 
+    let mode_explicit = mode.is_some();
     let mode = mode.unwrap_or_else(|| {
         if path.is_some() {
             Mode::Preview
@@ -163,6 +166,7 @@ where
 
     LaunchOptions {
         mode,
+        mode_explicit,
         path,
         print_version,
         diagnostics,
@@ -225,14 +229,16 @@ fn x11_keyboard_lib_available() -> bool {
 #[cfg(windows)]
 fn attach_parent_console() {
     const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
-    extern "system" {
-        fn AttachConsole(process_id: u32) -> i32;
-    }
     // SAFETY: `AttachConsole` is a well-documented Win32 API.  Calling it
     // with ATTACH_PARENT_PROCESS is harmless even if there is no parent
     // console — it simply returns FALSE.
     #[allow(unsafe_code)]
-    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    unsafe {
+        extern "system" {
+            safe fn AttachConsole(process_id: u32) -> i32;
+        }
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }
 
 fn main() -> eframe::Result {
@@ -365,6 +371,9 @@ struct RustdownApp {
     focus_search: bool,
     heading_color_mode: bool,
 
+    /// Zoom factor loaded from preferences, applied on first frame.
+    persisted_zoom: f32,
+
     /// Last editor scroll byte offset used for `SideBySide` sync.
     /// Prevents feedback loops by only syncing when the source changes.
     last_sync_editor_byte: Option<usize>,
@@ -413,6 +422,25 @@ impl Mode {
             Self::Edit => "Edit",
             Self::Preview => "Preview",
             Self::SideBySide => "Side-by-Side",
+        }
+    }
+
+    #[must_use]
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Preview => "preview",
+            Self::SideBySide => "sidebyside",
+        }
+    }
+
+    #[must_use]
+    fn from_str_lossy(s: &str) -> Option<Self> {
+        match s {
+            "edit" => Some(Self::Edit),
+            "preview" => Some(Self::Preview),
+            "sidebyside" => Some(Self::SideBySide),
+            _ => None,
         }
     }
 }
@@ -481,6 +509,11 @@ fn zoom_with_factor(current_zoom: f32, factor: f32) -> f32 {
 
 impl eframe::App for RustdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply persisted zoom on the first frame (needs ctx to be available).
+        if self.persisted_zoom != 0.0 {
+            ctx.set_zoom_factor(clamped_zoom_factor(self.persisted_zoom));
+            self.persisted_zoom = 0.0;
+        }
         self.tick_disk_sync(ctx);
         self.refresh_stats_if_due(ctx);
         self.handle_keyboard_shortcuts(ctx);
@@ -730,6 +763,12 @@ impl RustdownApp {
                         .font(toolbar_font.clone()),
                 );
 
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("{} words", stats.words))
+                        .font(toolbar_font.clone()),
+                );
+
                 if self.doc.dirty {
                     ui.separator();
                     ui.colored_label(ui.visuals().warn_fg_color, tb("Modified"));
@@ -821,9 +860,19 @@ impl RustdownApp {
 
     fn from_launch_options(options: LaunchOptions) -> Self {
         let prefs = preferences::UserPreferences::load();
+
+        // Apply persisted mode only when no file is opened and no explicit
+        // CLI flag was given (e.g. `rustdown` with no args).
+        let mode = if !options.mode_explicit && options.path.is_none() {
+            Mode::from_str_lossy(&prefs.mode).unwrap_or(options.mode)
+        } else {
+            options.mode
+        };
+
         let mut app = Self {
-            mode: options.mode,
+            mode,
             heading_color_mode: prefs.heading_color_mode,
+            persisted_zoom: prefs.zoom_factor,
             ..Self::default()
         };
         app.nav.visible = prefs.nav_visible;
@@ -869,6 +918,8 @@ impl RustdownApp {
         if let Some(byte_offset) = scroll_byte {
             self.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(byte_offset));
         }
+
+        self.save_preferences_with_zoom(ctx.zoom_factor());
     }
 
     /// Returns `true` when the current mode renders the code editor.
@@ -887,11 +938,18 @@ impl RustdownApp {
         }
     }
 
-    /// Persist the current nav/colour preferences to disk.
+    /// Persist the current nav/colour/zoom/mode preferences to disk.
     fn save_preferences(&self) {
+        self.save_preferences_with_zoom(1.0);
+    }
+
+    /// Persist preferences including a specific zoom factor.
+    fn save_preferences_with_zoom(&self, zoom: f32) {
         let prefs = preferences::UserPreferences {
             nav_visible: self.nav.visible,
             heading_color_mode: self.heading_color_mode,
+            zoom_factor: zoom,
+            mode: self.mode.as_str().to_owned(),
         };
         prefs.save();
     }
@@ -935,12 +993,16 @@ impl RustdownApp {
 
     #[allow(clippy::unused_self)]
     fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
-        ctx.set_zoom_factor(zoom_with_step(ctx.zoom_factor(), delta));
+        let z = zoom_with_step(ctx.zoom_factor(), delta);
+        ctx.set_zoom_factor(z);
+        self.save_preferences_with_zoom(z);
     }
 
     #[allow(clippy::unused_self)]
     fn adjust_zoom_factor(&self, ctx: &egui::Context, factor: f32) {
-        ctx.set_zoom_factor(zoom_with_factor(ctx.zoom_factor(), factor));
+        let z = zoom_with_factor(ctx.zoom_factor(), factor);
+        ctx.set_zoom_factor(z);
+        self.save_preferences_with_zoom(z);
     }
 
     fn update_viewport_title(&mut self, ctx: &egui::Context) {
@@ -2489,6 +2551,7 @@ mod tests {
         // Launch options.
         let opts = LaunchOptions {
             mode: Mode::Preview,
+            mode_explicit: true,
             path: None,
             print_version: false,
             diagnostics: DiagnosticsMode::Off,

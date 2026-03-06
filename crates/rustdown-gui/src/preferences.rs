@@ -11,6 +11,8 @@ pub const AUTO_NAV_MIN_HEADINGS: usize = 5;
 pub struct UserPreferences {
     pub nav_visible: bool,
     pub heading_color_mode: bool,
+    pub zoom_factor: f32,
+    pub mode: String,
 }
 
 impl Default for UserPreferences {
@@ -18,6 +20,8 @@ impl Default for UserPreferences {
         Self {
             nav_visible: false,
             heading_color_mode: true,
+            zoom_factor: 1.0,
+            mode: String::new(),
         }
     }
 }
@@ -77,6 +81,8 @@ mod tests {
         let prefs = UserPreferences {
             nav_visible: true,
             heading_color_mode: false,
+            zoom_factor: 1.5,
+            mode: "preview".to_owned(),
         };
         let serialized = toml::to_string_pretty(&prefs).unwrap_or_default();
         assert!(!serialized.is_empty(), "serialize should produce output");
@@ -134,6 +140,8 @@ mod tests {
         let prefs = UserPreferences {
             nav_visible: true,
             heading_color_mode: false,
+            zoom_factor: 1.5,
+            mode: "preview".to_owned(),
         };
         if let Ok(contents) = toml::to_string_pretty(&prefs) {
             let _ = fs::write(&path, &contents);
