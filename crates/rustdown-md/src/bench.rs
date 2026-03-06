@@ -297,28 +297,14 @@ mod tests {
 
     #[test]
     fn throughput_summary() {
-        let doc_100 = stress::large_mixed_doc(100);
-        let doc_100u = stress::unicode_stress_doc(100);
-        let iters: u32 = 50;
-        let start = Instant::now();
-        for _ in 0..iters {
-            std::hint::black_box(parse_markdown(&doc_100));
-        }
-        let ea = start.elapsed();
-        let start = Instant::now();
-        for _ in 0..iters {
-            std::hint::black_box(parse_markdown(&doc_100u));
-        }
-        let eu = start.elapsed();
-        eprintln!("=== Throughput ===");
-        eprintln!(
-            "ASCII: {:.1} MB/s",
-            (doc_100.len() as f64 * f64::from(iters)) / (ea.as_secs_f64() * 1024.0 * 1024.0)
-        );
-        eprintln!(
-            "Unicode: {:.1} MB/s",
-            (doc_100u.len() as f64 * f64::from(iters)) / (eu.as_secs_f64() * 1024.0 * 1024.0)
-        );
+        let doc_ascii = stress::large_mixed_doc(100);
+        let doc_uni = stress::unicode_stress_doc(100);
+        bench("throughput_ascii_100kb", 50, || {
+            std::hint::black_box(parse_markdown(&doc_ascii));
+        });
+        bench("throughput_unicode_100kb", 50, || {
+            std::hint::black_box(parse_markdown(&doc_uni));
+        });
     }
 
     // ── Roundtrip / stability ────────────────────────────────────

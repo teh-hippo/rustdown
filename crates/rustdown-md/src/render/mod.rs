@@ -740,20 +740,15 @@ mod tests {
 
         // All block types
         let style = dark_style();
-        let cell = |s: &str| StyledText {
-            text: s.to_owned(),
-            spans: vec![],
-            ..StyledText::default()
-        };
         let blocks: Vec<(&str, Block)> = vec![
             (
                 "heading",
                 Block::Heading {
                     level: 1,
-                    text: cell("h"),
+                    text: plain("h"),
                 },
             ),
-            ("paragraph", Block::Paragraph(cell("Hello world"))),
+            ("paragraph", Block::Paragraph(plain("Hello world"))),
             (
                 "code",
                 Block::Code {
@@ -763,40 +758,25 @@ mod tests {
             ),
             (
                 "blockquote",
-                Block::Quote(vec![Block::Paragraph(cell("quoted"))]),
+                Block::Quote(vec![Block::Paragraph(plain("quoted"))]),
             ),
             (
                 "unordered_list",
-                Block::UnorderedList(vec![ListItem {
-                    content: cell("item"),
-                    children: vec![],
-                    checked: None,
-                }]),
+                Block::UnorderedList(vec![plain_item("item")]),
             ),
             (
                 "ordered_list",
                 Block::OrderedList {
                     start: 1,
-                    items: vec![ListItem {
-                        content: cell("first"),
-                        children: vec![],
-                        checked: None,
-                    }],
+                    items: vec![plain_item("first")],
                 },
             ),
             ("thematic_break", Block::ThematicBreak),
-            (
-                "table",
-                Block::Table(Box::new(TableData {
-                    header: vec![cell("Col")],
-                    alignments: vec![Alignment::None],
-                    rows: vec![vec![cell("val")]],
-                })),
-            ),
+            ("table", Block::Table(Box::new(make_table(1, 1, "val")))),
             (
                 "table_header_only",
                 Block::Table(Box::new(TableData {
-                    header: vec![cell("Header")],
+                    header: vec![plain("Header")],
                     alignments: vec![Alignment::None],
                     rows: vec![],
                 })),
@@ -812,12 +792,12 @@ mod tests {
                 "task_list",
                 Block::UnorderedList(vec![
                     ListItem {
-                        content: cell("checked"),
+                        content: plain("checked"),
                         children: vec![],
                         checked: Some(true),
                     },
                     ListItem {
-                        content: cell("unchecked"),
+                        content: plain("unchecked"),
                         children: vec![],
                         checked: Some(false),
                     },
@@ -1137,33 +1117,18 @@ mod tests {
 
         // Heading height: H1 > H3 and H2 > H3
         let style = dark_style();
-        let h1 = estimate_block_height(
-            &Block::Heading {
-                level: 1,
-                text: plain("Title"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
-        let h2 = estimate_block_height(
-            &Block::Heading {
-                level: 2,
-                text: plain("Heading"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
-        let h3 = estimate_block_height(
-            &Block::Heading {
-                level: 3,
-                text: plain("Title"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
+        let heading_h = |level| {
+            estimate_block_height(
+                &Block::Heading {
+                    level,
+                    text: plain("Title"),
+                },
+                14.0,
+                400.0,
+                &style,
+            )
+        };
+        let (h1, h2, h3) = (heading_h(1), heading_h(2), heading_h(3));
         assert!(h1 > h3, "H1 ({h1}) > H3 ({h3})");
         assert!(h2 > h3, "H2 ({h2}) > H3 ({h3})");
     }
@@ -1261,14 +1226,7 @@ mod tests {
     // ── Table column width unit tests ─────────────────────────────
 
     fn make_cells(texts: &[&str]) -> Vec<StyledText> {
-        texts
-            .iter()
-            .map(|t| StyledText {
-                text: t.to_string(),
-                spans: vec![],
-                ..StyledText::default()
-            })
-            .collect()
+        texts.iter().map(|t| plain(t)).collect()
     }
 
     // ── Lists ──────────────────────────────────────────────────────
@@ -1301,7 +1259,6 @@ mod tests {
         // Ordered list double digits
         let mut md = String::new();
         for i in 1..=11 {
-            use std::fmt::Write;
             writeln!(md, "{i}. Item {i}").ok();
         }
         let (blocks, _) = headless_render(&md);
@@ -1348,7 +1305,6 @@ mod tests {
         // Large code block
         let mut code_lines = String::from("```python\n");
         for i in 0..200 {
-            use std::fmt::Write;
             writeln!(code_lines, "line_{i} = {i} * 2").ok();
         }
         code_lines.push_str("```\n");
@@ -1384,7 +1340,6 @@ mod tests {
         // With scroll offset
         let mut doc = String::with_capacity(10_000);
         for i in 0..50 {
-            use std::fmt::Write;
             write!(doc, "## Section {i}\n\nContent for section {i}.\n\n").ok();
         }
         let (_, total_height) = headless_render_scrollable(&doc, None);
@@ -1408,7 +1363,6 @@ mod tests {
                         let prefix = "> ".repeat(depth + 1);
                         let mut s = format!("{prefix}Level {} paragraph\n\n", depth + 1);
                         if depth % 2 == 0 {
-                            use std::fmt::Write;
                             write!(
                                 s,
                                 "{prefix}| A | B |\n{prefix}|---|---|\n{prefix}| x | y |\n\n"
@@ -1472,7 +1426,6 @@ mod tests {
         // Culling: two caches of same doc agree
         let mut doc = String::with_capacity(5_000);
         for i in 0..20 {
-            use std::fmt::Write;
             write!(
                 doc,
                 "## Section {i}\n\nParagraph content for section {i}.\n\n"
@@ -1955,52 +1908,45 @@ mod tests {
 
     #[test]
     fn strengthen_color_cases() {
-        // Black → stays black (already darkest)
-        let out = strengthen_color(egui::Color32::from_rgb(0, 0, 0));
-        let [r, g, b, _] = out.to_array();
-        assert_eq!((r, g, b), (0, 0, 0), "black cannot get darker");
+        let rgb = |r, g, b| egui::Color32::from_rgb(r, g, b);
+        let rgb_of = |c: egui::Color32| {
+            let [r, g, b, _] = c.to_array();
+            (r, g, b)
+        };
 
-        // White → stays white (already brightest)
-        let out = strengthen_color(egui::Color32::from_rgb(255, 255, 255));
-        let [r, g, b, _] = out.to_array();
-        assert_eq!((r, g, b), (255, 255, 255));
+        // Black stays black, white stays white
+        assert_eq!(
+            rgb_of(strengthen_color(rgb(0, 0, 0))),
+            (0, 0, 0),
+            "black cannot get darker"
+        );
+        assert_eq!(
+            rgb_of(strengthen_color(rgb(255, 255, 255))),
+            (255, 255, 255)
+        );
 
         // Dark text (luma < 127) → darken
-        let src = egui::Color32::from_rgb(80, 80, 80);
-        let out = strengthen_color(src);
-        let [sr, sg, sb, _] = src.to_array();
-        let [dr, dg, db, _] = out.to_array();
-        assert!(
-            dr < sr && dg < sg && db < sb,
-            "dark text should darken: {src:?} -> {out:?}"
-        );
+        let (sr, sg, sb) = (80, 80, 80);
+        let (dr, dg, db) = rgb_of(strengthen_color(rgb(sr, sg, sb)));
+        assert!(dr < sr && dg < sg && db < sb, "dark text should darken");
 
         // Bright text (luma > 127) → brighten
-        let src = egui::Color32::from_rgb(200, 200, 200);
-        let out = strengthen_color(src);
-        let [sr, sg, sb, _] = src.to_array();
-        let [dr, dg, db, _] = out.to_array();
-        assert!(
-            dr > sr && dg > sg && db > sb,
-            "bright text should brighten: {src:?} -> {out:?}"
-        );
+        let (sr, sg, sb) = (200, 200, 200);
+        let (dr, dg, db) = rgb_of(strengthen_color(rgb(sr, sg, sb)));
+        assert!(dr > sr && dg > sg && db > sb, "bright text should brighten");
 
         // Alpha preservation
         let out = strengthen_color(egui::Color32::from_rgba_premultiplied(100, 100, 100, 42));
         assert_eq!(out.to_array()[3], 42, "alpha must be preserved");
 
         // Near threshold: 128 → brighten, 126 → darken
-        let light = strengthen_color(egui::Color32::from_rgb(128, 128, 128));
-        let [lr, lg, lb, _] = light.to_array();
+        let (lr, lg, lb) = rgb_of(strengthen_color(rgb(128, 128, 128)));
         assert!(lr > 128 && lg > 128 && lb > 128, "128 should brighten");
-
-        let dark = strengthen_color(egui::Color32::from_rgb(126, 126, 126));
-        let [dr, dg, db, _] = dark.to_array();
+        let (dr, dg, db) = rgb_of(strengthen_color(rgb(126, 126, 126)));
         assert!(dr < 126 && dg < 126 && db < 126, "126 should darken");
 
         // Semi-transparent: premultiplied channels must not exceed alpha
-        let semi = egui::Color32::from_rgba_unmultiplied(200, 200, 200, 100);
-        let result = strengthen_color(semi);
+        let result = strengthen_color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 100));
         let [rr, rg, rb, ra] = result.to_array();
         assert!(
             rr <= ra && rg <= ra && rb <= ra,
@@ -2008,10 +1954,9 @@ mod tests {
         );
 
         // Produces visible difference
-        let mid = egui::Color32::from_rgb(128, 128, 128);
+        let mid = rgb(128, 128, 128);
         let [mr, mg, mb, _] = mid.to_srgba_unmultiplied();
-        let boosted = strengthen_color(mid);
-        let [br, bg, bb, _] = boosted.to_srgba_unmultiplied();
+        let [br, bg, bb, _] = strengthen_color(mid).to_srgba_unmultiplied();
         let max_delta = (mr.abs_diff(br)).max(mg.abs_diff(bg)).max(mb.abs_diff(bb));
         assert!(
             max_delta >= 30,
@@ -2074,11 +2019,7 @@ mod tests {
         );
 
         // Deeply nested list
-        let mut list = Block::UnorderedList(vec![ListItem {
-            content: plain("leaf"),
-            children: vec![],
-            checked: None,
-        }]);
+        let mut list = Block::UnorderedList(vec![plain_item("leaf")]);
         for depth in 0..10 {
             list = Block::UnorderedList(vec![ListItem {
                 content: plain(&format!("level {depth}")),
@@ -2090,38 +2031,22 @@ mod tests {
             estimate_block_height(&list, 14.0, 600.0, &style),
             "10-level nested list",
         );
-        let flat = Block::UnorderedList(vec![ListItem {
-            content: plain("single"),
-            children: vec![],
-            checked: None,
-        }]);
+        let flat = Block::UnorderedList(vec![plain_item("single")]);
         assert!(
             estimate_block_height(&list, 14.0, 400.0, &style)
                 > estimate_block_height(&flat, 14.0, 400.0, &style)
         );
 
         // Long vs short list item text
-        let long = Block::UnorderedList(vec![ListItem {
-            content: plain(&"word ".repeat(500)),
-            children: vec![],
-            checked: None,
-        }]);
-        let short = Block::UnorderedList(vec![ListItem {
-            content: plain("hi"),
-            children: vec![],
-            checked: None,
-        }]);
+        let long = Block::UnorderedList(vec![plain_item(&"word ".repeat(500))]);
+        let short = Block::UnorderedList(vec![plain_item("hi")]);
         assert!(
             estimate_block_height(&long, 14.0, 600.0, &style)
                 > estimate_block_height(&short, 14.0, 600.0, &style)
         );
 
         // Narrow wrap width
-        let narrow_list = Block::UnorderedList(vec![ListItem {
-            content: plain("some item text here"),
-            children: vec![],
-            checked: None,
-        }]);
+        let narrow_list = Block::UnorderedList(vec![plain_item("some item text here")]);
         assert_sane_height(
             estimate_block_height(&narrow_list, 14.0, 10.0, &style),
             "list at 10px wrap",
@@ -2557,46 +2482,23 @@ mod tests {
         assert_sane_height(h, "long cell table");
 
         // Empty header, empty rows, zero everything
+        let mk_td = |h: Vec<StyledText>, r: Vec<Vec<StyledText>>| TableData {
+            alignments: vec![Alignment::None; h.len()],
+            header: h,
+            rows: r,
+        };
         for (label, table) in [
-            (
-                "empty_header",
-                TableData {
-                    header: vec![],
-                    alignments: vec![],
-                    rows: vec![vec![plain("x")]],
-                },
-            ),
-            (
-                "empty_rows",
-                TableData {
-                    header: vec![plain("H")],
-                    alignments: vec![Alignment::None],
-                    rows: vec![],
-                },
-            ),
-            (
-                "zero_all",
-                TableData {
-                    header: vec![],
-                    alignments: vec![],
-                    rows: vec![],
-                },
-            ),
+            ("empty_header", mk_td(vec![], vec![vec![plain("x")]])),
+            ("empty_rows", mk_td(vec![plain("H")], vec![])),
+            ("zero_all", mk_td(vec![], vec![])),
         ] {
             let h = estimate_block_height(&Block::Table(Box::new(table)), 14.0, 600.0, &style);
             assert!(h >= 0.0, "{label}: height should be non-negative, got {h}");
         }
 
         // estimate_table_height directly: empty header, many rows, narrow
-        let h_empty_hdr = estimate_table_height(
-            &TableData {
-                header: vec![],
-                alignments: vec![],
-                rows: vec![vec![plain("x")]],
-            },
-            14.0,
-            400.0,
-        );
+        let h_empty_hdr =
+            estimate_table_height(&mk_td(vec![], vec![vec![plain("x")]]), 14.0, 400.0);
         assert!(
             h_empty_hdr > 0.0,
             "empty header table should have height from rows"
@@ -2632,13 +2534,13 @@ mod tests {
         );
 
         // Empty table (no header, no rows)
-        let empty = Block::Table(Box::new(TableData {
-            header: vec![],
-            alignments: vec![],
-            rows: vec![],
-        }));
         assert!(
-            estimate_block_height(&empty, 14.0, 400.0, &style) > 0.0,
+            estimate_block_height(
+                &Block::Table(Box::new(mk_td(vec![], vec![]))),
+                14.0,
+                400.0,
+                &style
+            ) > 0.0,
             "empty table positive height"
         );
 
@@ -2745,18 +2647,10 @@ mod tests {
                 code: "code".into(),
             },
             Block::Quote(vec![Block::Paragraph(plain("q"))]),
-            Block::UnorderedList(vec![ListItem {
-                content: plain("item"),
-                children: vec![],
-                checked: None,
-            }]),
+            Block::UnorderedList(vec![plain_item("item")]),
             Block::OrderedList {
                 start: 1,
-                items: vec![ListItem {
-                    content: plain("item"),
-                    children: vec![],
-                    checked: None,
-                }],
+                items: vec![plain_item("item")],
             },
             Block::ThematicBreak,
             Block::Table(Box::new(make_table(2, 2, "v"))),
@@ -2789,18 +2683,7 @@ mod tests {
                 code: "print('hi')\n".into(),
             },
             Block::Quote(vec![Block::Paragraph(plain("quoted"))]),
-            Block::UnorderedList(vec![
-                ListItem {
-                    content: plain("a"),
-                    children: vec![],
-                    checked: None,
-                },
-                ListItem {
-                    content: plain("b"),
-                    children: vec![],
-                    checked: None,
-                },
-            ]),
+            Block::UnorderedList(vec![plain_item("a"), plain_item("b")]),
             Block::Table(Box::new(make_table(3, 4, "data"))),
             Block::ThematicBreak,
             Block::Image {
@@ -2827,18 +2710,13 @@ mod tests {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
         let style = dark_colored_style();
-        let mk = |text: &str| ListItem {
-            content: StyledText {
-                text: text.to_owned(),
-                spans: vec![],
-                ..StyledText::default()
-            },
-            children: vec![],
-            checked: None,
-        };
         cache.blocks = vec![Block::OrderedList {
             start: u64::MAX - 1,
-            items: vec![mk("first"), mk("second"), mk("third")],
+            items: vec![
+                plain_item("first"),
+                plain_item("second"),
+                plain_item("third"),
+            ],
         }];
 
         // Render must not panic — previous code used `start + i` which overflows.
@@ -3077,14 +2955,9 @@ mod tests {
         cache.total_height
     }
 
-    /// Build a plain `ListItem` with no children and no checkbox.
     fn plain_item(text: &str) -> ListItem {
         ListItem {
-            content: StyledText {
-                text: text.to_owned(),
-                spans: vec![],
-                ..StyledText::default()
-            },
+            content: plain(text),
             children: vec![],
             checked: None,
         }
@@ -3296,118 +3169,78 @@ mod tests {
         let ctx = headless_ctx();
         let style = dark_colored_style();
 
+        let run_job = |st: &StyledText| -> egui::text::LayoutJob {
+            let mut result = None;
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let base_color = ui.visuals().text_color();
+                    result = Some(build_layout_job(
+                        st, &st.spans, &style, base_color, 14.0, 900.0, ui,
+                    ));
+                });
+            });
+            result.expect("layout job")
+        };
+
+        let mk_span = |start, end, style| Span { start, end, style };
+
         // Sections cover all bytes
+        let mut bold = SpanStyle::plain();
+        bold.set_strong();
         let st = StyledText {
             text: "Hello **world** end".to_owned(),
             spans: vec![
-                Span {
-                    start: 0,
-                    end: 6,
-                    style: SpanStyle::plain(),
-                },
-                Span {
-                    start: 6,
-                    end: 15,
-                    style: {
-                        let mut s = SpanStyle::plain();
-                        s.set_strong();
-                        s
-                    },
-                },
-                Span {
-                    start: 15,
-                    end: 19,
-                    style: SpanStyle::plain(),
-                },
+                mk_span(0, 6, SpanStyle::plain()),
+                mk_span(6, 15, bold),
+                mk_span(15, 19, SpanStyle::plain()),
             ],
             ..StyledText::default()
         };
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let base_color = ui.visuals().text_color();
-                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
-                let mut covered = 0;
-                for sec in &job.sections {
-                    assert_eq!(sec.byte_range.start, covered, "gap in byte coverage");
-                    covered = sec.byte_range.end;
-                }
-                assert_eq!(covered, job.text.len(), "sections must cover all bytes");
-            });
-        });
+        let job = run_job(&st);
+        let mut covered = 0;
+        for sec in &job.sections {
+            assert_eq!(sec.byte_range.start, covered, "gap in byte coverage");
+            covered = sec.byte_range.end;
+        }
+        assert_eq!(covered, job.text.len(), "sections must cover all bytes");
 
         // Single style single section
         let st = StyledText {
             text: "all plain text".to_owned(),
-            spans: vec![Span {
-                start: 0,
-                end: 14,
-                style: SpanStyle::plain(),
-            }],
+            spans: vec![mk_span(0, 14, SpanStyle::plain())],
             ..StyledText::default()
         };
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let base_color = ui.visuals().text_color();
-                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
-                assert_eq!(job.sections.len(), 1);
-                assert_eq!(job.sections[0].byte_range, 0..14);
-            });
-        });
+        let job = run_job(&st);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].byte_range, 0..14);
 
         // Formatting flags (bold/italic)
-        let mut bold_style = SpanStyle::plain();
-        bold_style.set_strong();
-        let mut italic_style = SpanStyle::plain();
-        italic_style.set_emphasis();
+        let mut italic = SpanStyle::plain();
+        italic.set_emphasis();
         let st = StyledText {
             text: "AB".to_owned(),
-            spans: vec![
-                Span {
-                    start: 0,
-                    end: 1,
-                    style: bold_style,
-                },
-                Span {
-                    start: 1,
-                    end: 2,
-                    style: italic_style,
-                },
-            ],
+            spans: vec![mk_span(0, 1, bold), mk_span(1, 2, italic)],
             ..StyledText::default()
         };
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let base_color = ui.visuals().text_color();
-                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
-                assert_eq!(job.sections.len(), 2);
-                assert!(!job.sections[0].format.italics);
-                assert!(job.sections[1].format.italics);
-            });
-        });
+        let job = run_job(&st);
+        assert_eq!(job.sections.len(), 2);
+        assert!(!job.sections[0].format.italics);
+        assert!(job.sections[1].format.italics);
 
         // Code uses monospace
-        let mut code_style = SpanStyle::plain();
-        code_style.set_code();
+        let mut code = SpanStyle::plain();
+        code.set_code();
         let st = StyledText {
             text: "fn main()".to_owned(),
-            spans: vec![Span {
-                start: 0,
-                end: 9,
-                style: code_style,
-            }],
+            spans: vec![mk_span(0, 9, code)],
             ..StyledText::default()
         };
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let base_color = ui.visuals().text_color();
-                let job = build_layout_job(&st, &st.spans, &style, base_color, 14.0, 900.0, ui);
-                assert_eq!(job.sections.len(), 1);
-                assert_eq!(
-                    job.sections[0].format.font_id.family,
-                    egui::FontFamily::Monospace
-                );
-            });
-        });
+        let job = run_job(&st);
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(
+            job.sections[0].format.font_id.family,
+            egui::FontFamily::Monospace
+        );
     }
     // ── Blockquote/heading/HR height-estimation consistency ────────
 
@@ -3796,12 +3629,16 @@ mod tests {
 
         // Empty table height estimation
         let style = dark_style();
-        let block = Block::Table(Box::new(crate::parse::TableData {
-            header: vec![],
-            alignments: vec![],
-            rows: vec![],
-        }));
-        let h = estimate_block_height(&block, 14.0, 400.0, &style);
+        let h = estimate_block_height(
+            &Block::Table(Box::new(TableData {
+                header: vec![],
+                alignments: vec![],
+                rows: vec![],
+            })),
+            14.0,
+            400.0,
+            &style,
+        );
         assert!(h.is_finite() && h >= 0.0, "empty table height: {h}");
 
         // NaN scroll offset should not crash.
@@ -3843,17 +3680,21 @@ mod tests {
         let style = dark_colored_style();
         let viewer = MarkdownViewer::new("reload_stress");
 
+        let render = |cache: &mut MarkdownCache, md: &str, scroll: Option<f32>| {
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, cache, &style, md, scroll);
+                });
+            });
+        };
+
         // Content-change viewport preservation
         {
             let mut cache = MarkdownCache::default();
             let md1: String = (0..100)
                 .map(|i| format!("## Heading {i}\n\nParagraph {i}.\n\n"))
                 .collect();
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, &md1, None);
-                });
-            });
+            render(&mut cache, &md1, None);
             let original_height = cache.total_height;
             let original_blocks = cache.blocks.len();
             assert!(original_height > 0.0 && original_blocks > 0);
@@ -3861,25 +3702,11 @@ mod tests {
             let md2: String = (0..50)
                 .map(|i| format!("## New Heading {i}\n\nNew paragraph {i}.\n\n"))
                 .collect();
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(
-                        ui,
-                        &mut cache,
-                        &style,
-                        &md2,
-                        Some(original_height / 2.0),
-                    );
-                });
-            });
+            render(&mut cache, &md2, Some(original_height / 2.0));
             assert!(cache.blocks.len() < original_blocks);
             assert!(cache.total_height < original_height && cache.total_height > 0.0);
 
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, "", None);
-                });
-            });
+            render(&mut cache, "", None);
             assert!(cache.blocks.is_empty());
             assert!(cache.total_height.abs() < f32::EPSILON);
         }
@@ -3888,45 +3715,25 @@ mod tests {
         {
             let mut cache = MarkdownCache::default();
             let long_md: String = (0..500).map(|i| format!("Line {i}\n")).collect();
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, &long_md, None);
-                });
-            });
+            render(&mut cache, &long_md, None);
             let long_height = cache.total_height;
-            let short_md = "# Just one heading\n\nAnd a paragraph.\n";
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, short_md, Some(long_height));
-                });
-            });
+            render(
+                &mut cache,
+                "# Just one heading\n\nAnd a paragraph.\n",
+                Some(long_height),
+            );
             assert!(cache.total_height >= 0.0);
         }
 
         // Content grows at various scroll positions
         for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let mut cache = MarkdownCache::default();
-            let short_md = "# Short\n\nJust a few lines.\n";
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, short_md, None);
-                });
-            });
+            render(&mut cache, "# Short\n\nJust a few lines.\n", None);
             let short_height = cache.total_height;
             let long_md: String = (0..200)
                 .map(|i| format!("## Section {i}\n\nContent for section {i}.\n\n"))
                 .collect();
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(
-                        ui,
-                        &mut cache,
-                        &style,
-                        &long_md,
-                        Some(short_height * frac),
-                    );
-                });
-            });
+            render(&mut cache, &long_md, Some(short_height * frac));
             assert!(
                 cache.total_height > short_height,
                 "frac={frac}: long content should be taller"
@@ -3953,11 +3760,7 @@ mod tests {
                 } else {
                     None
                 };
-                let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        viewer.show_scrollable(ui, &mut cache, &style, md, scroll_y);
-                    });
-                });
+                render(&mut cache, md, scroll_y);
                 assert!(!cache.blocks.is_empty(), "iter {i}: blocks should exist");
                 assert!(
                     cache.total_height > 0.0 && cache.total_height.is_finite(),
