@@ -224,8 +224,8 @@ fn attach_parent_console() {
     // with ATTACH_PARENT_PROCESS is harmless even if there is no parent
     // console — it simply returns FALSE.
     #[allow(unsafe_code)]
-    unsafe {
-        extern "system" {
+    {
+        unsafe extern "system" {
             safe fn AttachConsole(process_id: u32) -> i32;
         }
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
