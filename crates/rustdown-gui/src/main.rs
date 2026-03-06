@@ -2404,7 +2404,7 @@ mod tests {
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
         assert!(
             app.side_by_side_scroll_target.is_none(),
-            "nav scroll should cancel in-flight animation"
+            "nav scroll should cancel animation"
         );
 
         // Preview with heading anchor uses heading_y.

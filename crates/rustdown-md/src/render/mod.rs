@@ -1275,10 +1275,11 @@ mod tests {
         assert!(total >= 150.0, "tight space total: {total}");
 
         // 12 cols respect minimum
-        let header: Vec<&str> = (0..12).map(|_| "H").collect();
-        let row: Vec<&str> = (0..12).map(|_| "v").collect();
-        let widths = compute_col_widths(&header, &[row], 800.0);
-        let min_col_w = (14.0_f32 * 2.5).max(36.0);
+        let header = make_cells(&["H", "H", "H", "H", "H", "H", "H", "H", "H", "H", "H", "H"]);
+        let rows = vec![make_cells(&[
+            "v", "v", "v", "v", "v", "v", "v", "v", "v", "v", "v", "v",
+        ])];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 800.0, 7.7, 14.0);
         for (i, w) in widths.iter().enumerate() {
             assert!(
                 *w >= min_col_w - 0.01,
@@ -1416,34 +1417,31 @@ mod tests {
 
         // Edge cases: various unusual documents
         let edge_cases: Vec<(&str, String)> = vec![
-            ("1000_thematic_breaks", {
-                let mut d = String::new();
-                for _ in 0..1000 {
-                    d.push_str("---\n\n");
-                }
-                d
-            }),
+            ("1000_thematic_breaks", "---\n\n".repeat(1000)),
             ("deeply_nested_blockquotes_with_tables", {
-                let mut d = String::new();
-                for depth in 0..8 {
-                    let prefix = "> ".repeat(depth + 1);
-                    let _ = writeln!(d, "{prefix}Level {} paragraph\n", depth + 1);
-                    if depth % 2 == 0 {
-                        let _ = writeln!(d, "{prefix}| A | B |");
-                        let _ = writeln!(d, "{prefix}|---|---|");
-                        let _ = writeln!(d, "{prefix}| x | y |");
-                        d.push('\n');
-                    }
-                }
-                d
+                (0..8)
+                    .map(|depth| {
+                        let prefix = "> ".repeat(depth + 1);
+                        let mut s = format!("{prefix}Level {} paragraph\n\n", depth + 1);
+                        if depth % 2 == 0 {
+                            use std::fmt::Write;
+                            write!(
+                                s,
+                                "{prefix}| A | B |\n{prefix}|---|---|\n{prefix}| x | y |\n\n"
+                            )
+                            .ok();
+                        }
+                        s
+                    })
+                    .collect()
             }),
             ("deeply_nested_blockquotes_scrollable", {
-                let mut d = String::new();
-                for depth in 0..10 {
-                    let prefix = "> ".repeat(depth + 1);
-                    let _ = writeln!(d, "{prefix}Nested level {}", depth + 1);
-                }
-                d
+                (0..10)
+                    .map(|d| {
+                        let p = "> ".repeat(d + 1);
+                        format!("{p}Nested level {}\n", d + 1)
+                    })
+                    .collect()
             }),
         ];
         for (label, md) in &edge_cases {
@@ -1457,25 +1455,6 @@ mod tests {
 
     #[test]
     fn render_stress_docs_no_panic() {
-        let cases: Vec<(&str, String)> = vec![
-            ("large_mixed", crate::stress::large_mixed_doc(100)),
-            ("unicode", crate::stress::unicode_stress_doc(50)),
-            ("table_heavy", crate::stress::table_heavy_doc(50)),
-            ("emoji", crate::stress::emoji_heavy_doc(50)),
-            ("task_list", crate::stress::task_list_doc(50)),
-            ("pathological", crate::stress::pathological_doc(50)),
-        ];
-        for (label, doc) in &cases {
-            let (blocks, height) = headless_render(doc);
-            assert!(!blocks.is_empty(), "{label}: should have blocks");
-            assert!(height > 0.0, "{label}: should have positive height");
-        }
-        // minimal edge cases
-        for (label, doc) in crate::stress::minimal_docs() {
-            let (_, height) = headless_render(&doc);
-            assert!(height >= 0.0, "minimal doc '{label}' should render");
-        }
-        // 1KB generators all valid and parseable
         let generators: Vec<(&str, fn(usize) -> String)> = vec![
             ("large_mixed", crate::stress::large_mixed_doc),
             ("unicode", crate::stress::unicode_stress_doc),
@@ -1485,12 +1464,21 @@ mod tests {
             ("pathological", crate::stress::pathological_doc),
         ];
         for (label, generator) in &generators {
-            let doc = generator(1);
-            assert!(!doc.is_empty(), "{label}: 1KB doc should be non-empty");
-            let blocks = crate::parse::parse_markdown(&doc);
-            assert!(!blocks.is_empty(), "{label}: should produce blocks");
+            // Full-size render
+            let doc = generator(100);
+            let (blocks, height) = headless_render(&doc);
+            assert!(!blocks.is_empty(), "{label}: should have blocks");
+            assert!(height > 0.0, "{label}: should have positive height");
+            // 1KB doc parseable
+            let doc1 = generator(1);
+            assert!(!doc1.is_empty(), "{label}: 1KB doc should be non-empty");
+            let parsed = crate::parse::parse_markdown(&doc1);
+            assert!(!parsed.is_empty(), "{label}: should produce blocks");
         }
+        // minimal edge cases
         for (label, doc) in crate::stress::minimal_docs() {
+            let (_, height) = headless_render(&doc);
+            assert!(height >= 0.0, "minimal doc '{label}' should render");
             let blocks = crate::parse::parse_markdown(&doc);
             assert!(
                 !doc.is_empty() || blocks.is_empty(),
@@ -1628,144 +1616,105 @@ mod tests {
     }
     // ── Table column width heuristic ───────────────────────────────
 
-    /// Thin wrapper that converts `&str` slices into `StyledText` and calls
-    /// the actual `compute_table_col_widths` function, avoiding logic duplication.
-    fn compute_col_widths(header: &[&str], rows: &[Vec<&str>], available: f32) -> Vec<f32> {
-        let body_size = 14.0_f32;
-        let avg_char_w = body_size * 0.55;
-        let num_cols = header.len().max(1);
-        let spacing = 8.0 * num_cols.saturating_sub(1) as f32;
-        let usable = (available - spacing).max(0.0);
-
-        let hdr: Vec<StyledText> = header
-            .iter()
-            .map(|s| StyledText {
-                text: (*s).to_owned(),
-                spans: vec![],
-                ..StyledText::default()
-            })
-            .collect();
-        let row_data: Vec<Vec<StyledText>> = rows
-            .iter()
-            .map(|r| {
-                r.iter()
-                    .map(|s| StyledText {
-                        text: (*s).to_owned(),
-                        spans: vec![],
-                        ..StyledText::default()
-                    })
-                    .collect()
-            })
-            .collect();
-
-        let (widths, _) = compute_table_col_widths(&hdr, &row_data, usable, avg_char_w, body_size);
-        widths
-    }
-
     #[test]
     fn table_col_widths_via_helper() {
-        let cases: Vec<(&str, Vec<&str>, Vec<Vec<&str>>, f32, Box<dyn Fn(&[f32])>)> = vec![
-            (
-                "equal_length",
-                vec!["Name", "City"],
-                vec![vec!["Alice", "Tokyo"]],
-                800.0,
-                Box::new(|w: &[f32]| {
-                    assert_eq!(w.len(), 2);
-                    assert!((w[0] - w[1]).abs() < 1.0, "equal columns: {w:?}");
-                }),
-            ),
-            (
-                "one_long",
-                vec!["A", "B", "Description"],
-                vec![vec![
-                    "x",
-                    "y",
-                    "This is a much longer description column than the others",
-                ]],
-                800.0,
-                Box::new(|w: &[f32]| {
-                    assert_eq!(w.len(), 3);
-                    assert!(w[2] > w[0], "long col wider: {w:?}");
-                    assert!(w[2] > w[1], "long col wider: {w:?}");
-                }),
-            ),
-            (
-                "single_col",
-                vec!["Only"],
-                vec![vec!["data"]],
-                600.0,
-                Box::new(|w: &[f32]| {
-                    assert_eq!(w.len(), 1);
-                    assert!(w[0] > 100.0, "single col wide: {w:?}");
-                }),
-            ),
-            (
-                "empty_cells",
-                vec!["A", "B", "C"],
-                vec![vec!["", "", ""], vec!["x", "", ""]],
-                800.0,
-                Box::new(|w: &[f32]| {
-                    assert_eq!(w.len(), 3);
-                    for (i, ww) in w.iter().enumerate() {
-                        assert!(*ww >= 40.0, "col {i} >= 40px: {ww}");
-                    }
-                }),
-            ),
-            (
-                "sum_to_usable",
-                vec!["A", "B", "C"],
-                vec![vec!["foo", "bar", "baz"]],
-                800.0,
-                Box::new(|w: &[f32]| {
-                    let total: f32 = w.iter().sum();
-                    let usable = 800.0 - 8.0 * 2.0;
-                    assert!(total >= usable - 1.0, "total {total} >= usable {usable}");
-                }),
-            ),
-        ];
-        for (label, header, rows, avail, check) in &cases {
-            let widths = compute_col_widths(header, rows, *avail);
-            check(&widths);
-            let _ = label; // used by assertion messages inside check closures
+        // Equal-length columns → roughly equal
+        let (widths, _) = compute_table_col_widths(
+            &make_cells(&["Name", "City"]),
+            &[make_cells(&["Alice", "Tokyo"])],
+            800.0,
+            7.7,
+            14.0,
+        );
+        assert_eq!(widths.len(), 2);
+        assert!(
+            (widths[0] - widths[1]).abs() < 1.0,
+            "equal columns: {widths:?}"
+        );
+
+        // One long column → gets more space
+        let (widths, _) = compute_table_col_widths(
+            &make_cells(&["A", "B", "Description"]),
+            &[make_cells(&[
+                "x",
+                "y",
+                "This is a much longer description column than the others",
+            ])],
+            800.0,
+            7.7,
+            14.0,
+        );
+        assert!(
+            widths[2] > widths[0] && widths[2] > widths[1],
+            "long col wider: {widths:?}"
+        );
+
+        // Single column
+        let (widths, _) = compute_table_col_widths(
+            &make_cells(&["Only"]),
+            &[make_cells(&["data"])],
+            600.0,
+            7.7,
+            14.0,
+        );
+        assert_eq!(widths.len(), 1);
+        assert!(widths[0] > 100.0, "single col wide: {widths:?}");
+
+        // Empty cells → all above minimum
+        let (widths, min_col_w) = compute_table_col_widths(
+            &make_cells(&["A", "B", "C"]),
+            &[make_cells(&["", "", ""]), make_cells(&["x", "", ""])],
+            800.0,
+            7.7,
+            14.0,
+        );
+        for (i, w) in widths.iter().enumerate() {
+            assert!(*w >= min_col_w - 0.01, "col {i} >= min: {w}");
         }
 
         // Edge cases: zero usable space
-        let header = vec![plain("A"), plain("B")];
-        let rows = vec![vec![plain("x"), plain("y")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
+        let (widths, _) = compute_table_col_widths(
+            &[plain("A"), plain("B")],
+            &[vec![plain("x"), plain("y")]],
+            0.0,
+            7.0,
+            14.0,
+        );
         assert_eq!(widths.len(), 2);
         for w in &widths {
             assert!(*w >= 0.0, "width should be non-negative, got {w}");
         }
 
         // Very small usable → clamped to min_col_w
-        let header = vec![plain("A"), plain("B"), plain("C")];
-        let rows = vec![vec![plain("x"), plain("y"), plain("z")]];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 10.0, 7.0, 14.0);
+        let (widths, min_col_w) = compute_table_col_widths(
+            &[plain("A"), plain("B"), plain("C")],
+            &[vec![plain("x"), plain("y"), plain("z")]],
+            10.0,
+            7.0,
+            14.0,
+        );
         for w in &widths {
             assert!(*w >= min_col_w - 0.01, "width {w} >= min {min_col_w}");
         }
 
-        // Equal-length columns → roughly equal widths
-        let header = vec![plain("ABCD"), plain("EFGH"), plain("IJKL")];
-        let rows = vec![vec![plain("1234"), plain("5678"), plain("9012")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
-        let avg = widths.iter().sum::<f32>() / widths.len() as f32;
-        for w in &widths {
-            assert!((*w - avg).abs() < avg * 0.2, "roughly equal: {widths:?}");
-        }
-
         // One much longer column → gets more space
-        let header = vec![plain("A"), plain(&"X".repeat(300))];
-        let rows = vec![vec![plain("a"), plain(&"Y".repeat(300))]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
+        let (widths, _) = compute_table_col_widths(
+            &[plain("A"), plain(&"X".repeat(300))],
+            &[vec![plain("a"), plain(&"Y".repeat(300))]],
+            600.0,
+            7.0,
+            14.0,
+        );
         assert!(widths[1] > widths[0], "longer column wider: {widths:?}");
 
         // body_size = 0 → min_col_w = 36
-        let header = vec![plain("A"), plain("B")];
-        let rows = vec![vec![plain("x"), plain("y")]];
-        let (_, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
+        let (_, min_col_w) = compute_table_col_widths(
+            &[plain("A"), plain("B")],
+            &[vec![plain("x"), plain("y")]],
+            200.0,
+            7.0,
+            0.0,
+        );
         assert!((min_col_w - 36.0).abs() < 0.01, "min_col_w={min_col_w}");
     }
 
@@ -1844,26 +1793,20 @@ mod tests {
     #[test]
     fn estimate_height_larger_inputs_taller() {
         let style = dark_style();
-        let cell = |s: &str| StyledText {
-            text: s.to_owned(),
-            spans: vec![],
-            ..StyledText::default()
-        };
-        let make_item = |text: &str| ListItem {
-            content: cell(text),
-            children: vec![],
-            checked: None,
-        };
 
         // Heading: H1 should be tallest, scaling down to H6
-        let text = cell("Heading");
+        let text = plain("Heading");
         let mut prev_h = f32::MAX;
         for level in 1..=6u8 {
-            let block = Block::Heading {
-                level,
-                text: text.clone(),
-            };
-            let h = estimate_block_height(&block, 14.0, 400.0, &style);
+            let h = estimate_block_height(
+                &Block::Heading {
+                    level,
+                    text: text.clone(),
+                },
+                14.0,
+                400.0,
+                &style,
+            );
             assert!(h > 0.0, "H{level} height > 0");
             assert!(
                 h <= prev_h + 0.01,
@@ -1874,9 +1817,9 @@ mod tests {
         }
 
         // Paragraph: longer text → taller
-        let h_short = estimate_block_height(&Block::Paragraph(cell("Hi")), 14.0, 400.0, &style);
+        let h_short = estimate_block_height(&Block::Paragraph(plain("Hi")), 14.0, 400.0, &style);
         let h_long = estimate_block_height(
-            &Block::Paragraph(cell(&"A".repeat(500))),
+            &Block::Paragraph(plain(&"A".repeat(500))),
             14.0,
             400.0,
             &style,
@@ -1896,14 +1839,11 @@ mod tests {
             400.0,
             &style,
         );
+        let code_10: String = (1..=10).map(|i| format!("line{i}\n")).collect();
         let h_large = estimate_block_height(
             &Block::Code {
                 language: Box::from(""),
-                code: (1..=10)
-                    .map(|i| format!("line{i}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .into_boxed_str(),
+                code: code_10.into_boxed_str(),
             },
             14.0,
             400.0,
@@ -1915,35 +1855,35 @@ mod tests {
         );
 
         // Blockquote: nested > simple
-        let simple_q = Block::Quote(vec![Block::Paragraph(cell("one"))]);
+        let simple_q = Block::Quote(vec![Block::Paragraph(plain("one"))]);
         let nested_q = Block::Quote(vec![
-            Block::Paragraph(cell("one")),
-            Block::Quote(vec![Block::Paragraph(cell("two"))]),
+            Block::Paragraph(plain("one")),
+            Block::Quote(vec![Block::Paragraph(plain("two"))]),
         ]);
         let h_sq = estimate_block_height(&simple_q, 14.0, 400.0, &style);
         let h_nq = estimate_block_height(&nested_q, 14.0, 400.0, &style);
         assert!(h_nq > h_sq, "nested quote ({h_nq}) > simple ({h_sq})");
 
         // List: more items → taller
-        let short_list = Block::UnorderedList(vec![make_item("a")]);
-        let long_list = Block::UnorderedList((0..5).map(|c| make_item(&format!("{c}"))).collect());
+        let short_list = Block::UnorderedList(vec![plain_item("a")]);
+        let long_list = Block::UnorderedList((0..5).map(|c| plain_item(&format!("{c}"))).collect());
         let h_sl = estimate_block_height(&short_list, 14.0, 400.0, &style);
         let h_ll = estimate_block_height(&long_list, 14.0, 400.0, &style);
         assert!(h_ll > h_sl, "5-item list ({h_ll}) > 1-item ({h_sl})");
 
         // Table: more rows → taller
-        let small_t = Block::Table(Box::new(TableData {
-            header: vec![cell("H")],
-            alignments: vec![Alignment::None],
-            rows: vec![vec![cell("r1")]],
-        }));
-        let large_t = Block::Table(Box::new(TableData {
-            header: vec![cell("H")],
-            alignments: vec![Alignment::None],
-            rows: (0..20).map(|i| vec![cell(&format!("row {i}"))]).collect(),
-        }));
-        let h_st = estimate_block_height(&small_t, 14.0, 400.0, &style);
-        let h_lt = estimate_block_height(&large_t, 14.0, 400.0, &style);
+        let h_st = estimate_block_height(
+            &Block::Table(Box::new(make_table(1, 1, "r1"))),
+            14.0,
+            400.0,
+            &style,
+        );
+        let h_lt = estimate_block_height(
+            &Block::Table(Box::new(make_table(1, 20, "row"))),
+            14.0,
+            400.0,
+            &style,
+        );
         assert!(h_lt > h_st, "20-row table ({h_lt}) > 1-row ({h_st})");
 
         // CJK not overestimated
@@ -1952,17 +1892,7 @@ mod tests {
         assert!(cjk_h < latin_h * 3.0, "CJK {cjk_h} vs Latin {latin_h}");
 
         // Ordered list wider numbers — similar height to unordered
-        let items: Vec<ListItem> = (0..100)
-            .map(|i| ListItem {
-                content: StyledText {
-                    text: format!("item {i}"),
-                    spans: vec![],
-                    ..StyledText::default()
-                },
-                children: vec![],
-                checked: None,
-            })
-            .collect();
+        let items: Vec<ListItem> = (0..100).map(|i| plain_item(&format!("item {i}"))).collect();
         let h_ord = estimate_block_height(
             &Block::OrderedList {
                 start: 1,
@@ -1975,7 +1905,7 @@ mod tests {
         let h_unord = estimate_block_height(&Block::UnorderedList(items), 14.0, 400.0, &style);
         assert!(
             h_ord >= h_unord * 0.9,
-            "ordered {h_ord} not much shorter than unordered {h_unord}"
+            "ordered {h_ord} vs unordered {h_unord}"
         );
     }
 
@@ -2411,51 +2341,40 @@ mod tests {
             );
         }
 
-        // cum_y monotonically increases across doc types
-        for (label, doc) in [
+        // Structural invariants across doc types
+        let test_docs: Vec<(&str, String)> = vec![
             ("uniform_10k", uniform_paragraph_doc(10_500)),
             ("mixed", crate::stress::large_mixed_doc(200)),
-        ] {
-            let cache = build_cache(&doc);
-            assert!(cache.cum_y.len() >= 100, "{label}");
-            for i in 1..cache.cum_y.len() {
-                assert!(
-                    cache.cum_y[i] >= cache.cum_y[i - 1],
-                    "{label}: cum_y not monotonic at {i}: {} < {}",
-                    cache.cum_y[i],
-                    cache.cum_y[i - 1]
-                );
-            }
-        }
-
-        // total_height equals sum of individual heights
-        for (label, doc) in [
-            ("mixed", crate::stress::large_mixed_doc(100)),
-            ("uniform", uniform_paragraph_doc(1_000)),
-        ] {
-            let cache = build_cache(&doc);
-            let sum: f32 = cache.heights.iter().sum();
-            assert!(
-                (cache.total_height - sum).abs() < 1.0,
-                "{label}: total_height={} but sum={}",
-                cache.total_height,
-                sum
-            );
-        }
-
-        // cum_y[0] == 0 always
-        for (label, doc) in [
             ("single", "# H\n".to_owned()),
             ("many", uniform_paragraph_doc(500)),
-            ("mixed", crate::stress::large_mixed_doc(50)),
-        ] {
-            let cache = build_cache(&doc);
+            ("pathological", crate::stress::pathological_doc(50)),
+        ];
+        for (label, doc) in &test_docs {
+            let cache = build_cache(doc);
             assert!(!cache.cum_y.is_empty(), "{label}");
+            // cum_y[0] == 0
             assert!(
                 (cache.cum_y[0]).abs() < f32::EPSILON,
                 "{label}: cum_y[0]={}",
                 cache.cum_y[0]
             );
+            // cum_y monotonically increases
+            for i in 1..cache.cum_y.len() {
+                assert!(
+                    cache.cum_y[i] >= cache.cum_y[i - 1],
+                    "{label}: cum_y not monotonic at {i}"
+                );
+            }
+            // total_height == sum of heights
+            let sum: f32 = cache.heights.iter().sum();
+            assert!(
+                (cache.total_height - sum).abs() < 1.0,
+                "{label}: total_height={} but sum={sum}",
+                cache.total_height,
+            );
+            // Array lengths match
+            assert_eq!(cache.blocks.len(), cache.heights.len(), "{label}");
+            assert_eq!(cache.blocks.len(), cache.cum_y.len(), "{label}");
         }
 
         // Last block boundary = total_height
@@ -2469,22 +2388,8 @@ mod tests {
             cache.total_height
         );
 
-        // Array lengths match
-        let doc = crate::stress::large_mixed_doc(100);
-        let cache = build_cache(&doc);
-        assert_eq!(cache.blocks.len(), cache.heights.len());
-        assert_eq!(cache.blocks.len(), cache.cum_y.len());
-
-        // Pathological doc invariants
-        let doc = crate::stress::pathological_doc(50);
-        let cache = build_cache(&doc);
-        assert!(!cache.cum_y.is_empty());
-        assert!((cache.cum_y[0]).abs() < f32::EPSILON);
-        for i in 1..cache.cum_y.len() {
-            assert!(cache.cum_y[i] >= cache.cum_y[i - 1]);
-        }
-        let sum: f32 = cache.heights.iter().sum();
-        assert!((cache.total_height - sum).abs() < 1.0);
+        // Pathological doc viewport sweep
+        let cache = build_cache(&crate::stress::pathological_doc(50));
         let step = cache.total_height / 100.0;
         for i in 0..=110 {
             let vis_top = step * i as f32;
@@ -2847,119 +2752,50 @@ mod tests {
     #[test]
     fn code_block_height_estimation_cases() {
         let style = dark_style();
+        let code_block = |lang: &str, code: &str| Block::Code {
+            language: Box::from(lang),
+            code: code.into(),
+        };
 
         let cases: Vec<(&str, Block)> = vec![
-            (
-                "empty",
-                Block::Code {
-                    language: Box::from(""),
-                    code: Box::from(""),
-                },
-            ),
-            (
-                "single_line",
-                Block::Code {
-                    language: Box::from("rust"),
-                    code: "let x = 1;".into(),
-                },
-            ),
-            (
-                "long_single_line",
-                Block::Code {
-                    language: Box::from(""),
-                    code: "x".repeat(10_000).into_boxed_str(),
-                },
-            ),
+            ("empty", code_block("", "")),
+            ("single_line", code_block("rust", "let x = 1;")),
+            ("long_single_line", code_block("", &"x".repeat(10_000))),
         ];
         for (label, block) in &cases {
-            let h = estimate_block_height(block, 14.0, 600.0, &style);
-            assert_sane_height(h, label);
+            assert_sane_height(estimate_block_height(block, 14.0, 600.0, &style), label);
         }
 
         // Thousands of lines
-        let mut big_code = String::with_capacity(30_000);
-        for i in 0..3000 {
-            writeln!(big_code, "line {i}").ok();
-        }
-        let h_big = estimate_block_height(
-            &Block::Code {
-                language: Box::from("text"),
-                code: big_code.into_boxed_str(),
-            },
-            14.0,
-            600.0,
-            &style,
-        );
+        let big_code: String = (0..3000).map(|i| format!("line {i}\n")).collect();
+        let h_big = estimate_block_height(&code_block("text", &big_code), 14.0, 600.0, &style);
         assert!(h_big > 1000.0, "3000 lines should be > 1000px, got {h_big}");
 
         // Scales with lines
-        let h_3 = estimate_block_height(
-            &Block::Code {
-                language: Box::from(""),
-                code: "a\nb\nc\n".into(),
-            },
-            14.0,
-            600.0,
-            &style,
-        );
-        let h_100 = estimate_block_height(
-            &Block::Code {
-                language: Box::from(""),
-                code: (0..100)
-                    .map(|i| format!("line {i}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .into_boxed_str(),
-            },
-            14.0,
-            600.0,
-            &style,
-        );
+        let h_3 = estimate_block_height(&code_block("", "a\nb\nc\n"), 14.0, 600.0, &style);
+        let code_100: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let h_100 = estimate_block_height(&code_block("", &code_100), 14.0, 600.0, &style);
         assert!(h_100 > h_3, "100-line ({h_100}) > 3-line ({h_3})");
 
         // Trailing newlines not overcounted
-        let with_trailing = Block::Code {
-            language: Box::from(""),
-            code: "line1\nline2\n".into(),
-        };
-        let without_trailing = Block::Code {
-            language: Box::from(""),
-            code: "line1\nline2".into(),
-        };
-        let h_wt = estimate_block_height(&with_trailing, 14.0, 600.0, &style);
-        let h_wot = estimate_block_height(&without_trailing, 14.0, 600.0, &style);
+        let h_wt = estimate_block_height(&code_block("", "line1\nline2\n"), 14.0, 600.0, &style);
+        let h_wot = estimate_block_height(&code_block("", "line1\nline2"), 14.0, 600.0, &style);
         assert!(
             (h_wt - h_wot).abs() < f32::EPSILON,
-            "trailing newline should not increase height: {h_wt} vs {h_wot}"
+            "trailing \\n: {h_wt} vs {h_wot}"
         );
 
         // Only newlines ≈ empty
-        let only_nl = Block::Code {
-            language: Box::from(""),
-            code: "\n\n\n".into(),
-        };
-        let empty = Block::Code {
-            language: Box::from(""),
-            code: Box::from(""),
-        };
-        let h_nl = estimate_block_height(&only_nl, 14.0, 600.0, &style);
-        let h_empty = estimate_block_height(&empty, 14.0, 600.0, &style);
+        let h_nl = estimate_block_height(&code_block("", "\n\n\n"), 14.0, 600.0, &style);
+        let h_empty = estimate_block_height(&code_block("", ""), 14.0, 600.0, &style);
         assert!(
             (h_nl - h_empty).abs() < f32::EPSILON,
             "only-newlines ({h_nl}) ≈ empty ({h_empty})"
         );
 
         // Language label adds height
-        let with_lang = Block::Code {
-            language: Box::from("python"),
-            code: "pass".into(),
-        };
-        let no_lang = Block::Code {
-            language: Box::from(""),
-            code: "pass".into(),
-        };
-        let h_wl = estimate_block_height(&with_lang, 14.0, 600.0, &style);
-        let h_nl2 = estimate_block_height(&no_lang, 14.0, 600.0, &style);
+        let h_wl = estimate_block_height(&code_block("python", "pass"), 14.0, 600.0, &style);
+        let h_nl2 = estimate_block_height(&code_block("", "pass"), 14.0, 600.0, &style);
         assert!(h_wl > h_nl2, "with language ({h_wl}) > without ({h_nl2})");
     }
 
@@ -3058,11 +2894,9 @@ mod tests {
 
     #[test]
     fn ordered_list_huge_start_no_overflow() {
-        // start near u64::MAX must not panic via integer overflow.
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
         let style = dark_colored_style();
-
         let mk = |text: &str| ListItem {
             content: StyledText {
                 text: text.to_owned(),
@@ -3072,7 +2906,6 @@ mod tests {
             children: vec![],
             checked: None,
         };
-
         cache.blocks = vec![Block::OrderedList {
             start: u64::MAX - 1,
             items: vec![mk("first"), mk("second"), mk("third")],
@@ -3520,38 +3353,20 @@ mod tests {
 
     #[test]
     fn stress_task_list_states() {
-        // All checked
-        let mut md = String::new();
-        for i in 0..20 {
-            writeln!(md, "- [x] Task {i} done").ok();
-        }
-        let (blocks, _) = headless_render(&md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 20);
-                assert!(
-                    items.iter().all(|it| it.checked == Some(true)),
-                    "all checked"
-                );
+        // All checked and all unchecked
+        for (checked, marker) in [(true, "[x]"), (false, "[ ]")] {
+            let md: String = (0..20).map(|i| format!("- {marker} Task {i}\n")).collect();
+            let (blocks, _) = headless_render(&md);
+            match &blocks[0] {
+                Block::UnorderedList(items) => {
+                    assert_eq!(items.len(), 20);
+                    assert!(
+                        items.iter().all(|it| it.checked == Some(checked)),
+                        "all {marker}"
+                    );
+                }
+                other => panic!("expected UnorderedList, got {other:?}"),
             }
-            other => panic!("expected UnorderedList, got {other:?}"),
-        }
-
-        // All unchecked
-        let mut md = String::new();
-        for i in 0..20 {
-            writeln!(md, "- [ ] Task {i} todo").ok();
-        }
-        let (blocks, _) = headless_render(&md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 20);
-                assert!(
-                    items.iter().all(|it| it.checked == Some(false)),
-                    "all unchecked"
-                );
-            }
-            other => panic!("expected UnorderedList, got {other:?}"),
         }
 
         // Mixed
@@ -3875,127 +3690,67 @@ mod tests {
     #[test]
     fn pure_block_type_documents() {
         let style = dark_style();
-        let cases: Vec<(&str, String, usize, Box<dyn Fn(&MarkdownCache)>)> = vec![
+        let check_type =
+            |cache: &MarkdownCache, variant: fn(&Block) -> bool, expected: usize, label: &str| {
+                let count = cache.blocks.iter().filter(|b| variant(b)).count();
+                assert_eq!(count, expected, "{label}: expected {expected}, got {count}");
+            };
+        let cases: Vec<(&str, String, Box<dyn Fn(&MarkdownCache)>)> = vec![
             (
                 "paragraphs_1000",
                 {
-                    let mut d = String::with_capacity(100_000);
-                    for i in 0..1000 {
-                        let _ = writeln!(d, "Paragraph number {i} with some filler text.\n");
-                    }
-                    d
+                    (0..1000)
+                        .map(|i| format!("Paragraph number {i} with some filler text.\n\n"))
+                        .collect()
                 },
-                1000,
-                Box::new(|c: &MarkdownCache| {
-                    assert!(c.blocks.len() >= 1000);
-                }),
+                Box::new(|c| assert!(c.blocks.len() >= 1000)),
             ),
             (
                 "code_blocks_500",
                 {
-                    let mut d = String::with_capacity(100_000);
-                    for i in 0..500 {
-                        let _ = writeln!(d, "```\ncode block {i}\nline 2\nline 3\n```\n");
-                    }
-                    d
+                    (0..500)
+                        .map(|i| format!("```\ncode block {i}\nline 2\nline 3\n```\n\n"))
+                        .collect()
                 },
-                500,
-                Box::new(|c: &MarkdownCache| {
-                    let count = c
-                        .blocks
-                        .iter()
-                        .filter(|b| matches!(b, Block::Code { .. }))
-                        .count();
-                    assert_eq!(count, 500, "expected 500 code blocks, got {count}");
+                Box::new(|c| {
+                    check_type(c, |b| matches!(b, Block::Code { .. }), 500, "code_blocks");
                 }),
             ),
             (
                 "tables_200",
                 {
-                    let mut d = String::with_capacity(200_000);
-                    for i in 0..200 {
-                        let _ = writeln!(d, "| A{i} | B{i} |\n|---|---|\n| c | d |\n");
-                    }
-                    d
+                    (0..200)
+                        .map(|i| format!("| A{i} | B{i} |\n|---|---|\n| c | d |\n\n"))
+                        .collect()
                 },
-                200,
-                Box::new(|c: &MarkdownCache| {
-                    let count = c
-                        .blocks
-                        .iter()
-                        .filter(|b| matches!(b, Block::Table(_)))
-                        .count();
-                    assert_eq!(count, 200, "expected 200 tables, got {count}");
-                }),
+                Box::new(|c| check_type(c, |b| matches!(b, Block::Table(_)), 200, "tables")),
             ),
             (
                 "lists_300",
-                {
-                    let mut d = String::with_capacity(30_000);
-                    for i in 0..300 {
-                        let _ = writeln!(d, "- List item {i}\n");
-                    }
-                    d
-                },
-                1,
-                Box::new(|c: &MarkdownCache| {
-                    assert!(!c.blocks.is_empty());
-                }),
+                { (0..300).map(|i| format!("- List item {i}\n\n")).collect() },
+                Box::new(|c| assert!(!c.blocks.is_empty())),
             ),
             (
                 "blockquotes_100",
-                {
-                    let mut d = String::with_capacity(10_000);
-                    for i in 0..100 {
-                        let _ = writeln!(d, "> Blockquote {i}\n");
-                    }
-                    d
-                },
-                1,
-                Box::new(|c: &MarkdownCache| {
-                    assert!(!c.blocks.is_empty());
-                }),
+                { (0..100).map(|i| format!("> Blockquote {i}\n\n")).collect() },
+                Box::new(|c| assert!(!c.blocks.is_empty())),
             ),
             (
                 "thematic_breaks_500",
-                {
-                    let mut d = String::with_capacity(10_000);
-                    for _ in 0..500 {
-                        d.push_str("---\n\n");
-                    }
-                    d
-                },
-                500,
-                Box::new(|c: &MarkdownCache| {
-                    let count = c
-                        .blocks
-                        .iter()
-                        .filter(|b| matches!(b, Block::ThematicBreak))
-                        .count();
-                    assert_eq!(count, 500, "expected 500 thematic breaks, got {count}");
-                }),
+                { "---\n\n".repeat(500) },
+                Box::new(|c| check_type(c, |b| matches!(b, Block::ThematicBreak), 500, "breaks")),
             ),
             (
                 "images_200",
                 {
-                    let mut d = String::with_capacity(20_000);
-                    for i in 0..200 {
-                        let _ = writeln!(d, "![img{i}](https://example.com/{i}.png)\n");
-                    }
-                    d
+                    (0..200)
+                        .map(|i| format!("![img{i}](https://example.com/{i}.png)\n\n"))
+                        .collect()
                 },
-                200,
-                Box::new(|c: &MarkdownCache| {
-                    let count = c
-                        .blocks
-                        .iter()
-                        .filter(|b| matches!(b, Block::Image { .. }))
-                        .count();
-                    assert_eq!(count, 200, "expected 200 images, got {count}");
-                }),
+                Box::new(|c| check_type(c, |b| matches!(b, Block::Image { .. }), 200, "images")),
             ),
         ];
-        for (label, doc, _min_blocks, check) in &cases {
+        for (label, doc, check) in &cases {
             let mut cache = MarkdownCache::default();
             cache.ensure_parsed(doc);
             cache.ensure_heights(14.0, 400.0, &style);

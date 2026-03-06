@@ -600,25 +600,44 @@ mod tests {
         let state = NavState::default();
         assert_eq!(state.max_depth, 4);
 
+        // Clamp at minimum
         let mut state = NavState {
             max_depth: 1,
             ..NavState::default()
         };
         state.decrease_depth();
         assert_eq!(state.max_depth, 1, "clamp at 1");
+        for _ in 0..11 {
+            state.decrease_depth();
+        }
+        assert_eq!(state.max_depth, 1, "stays at 1 after repeated decrease");
 
+        // Clamp at maximum
         let mut state = NavState {
             max_depth: 6,
             ..NavState::default()
         };
         state.increase_depth();
         assert_eq!(state.max_depth, 6, "clamp at 6");
+        for _ in 0..11 {
+            state.increase_depth();
+        }
+        assert_eq!(state.max_depth, 6, "stays at 6 after repeated increase");
 
+        // Round-trip
         let mut state = NavState::default();
         state.decrease_depth();
         assert_eq!(state.max_depth, 3);
         state.increase_depth();
         assert_eq!(state.max_depth, 4);
+
+        // DEPTH_LABELS index clamp.
+        const DEPTH_LABELS: [&str; 7] = [
+            "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
+        ];
+        for depth in [0u8, 1, 6, 7, 100, 255] {
+            let _ = DEPTH_LABELS[(depth as usize).min(6)];
+        }
     }
 
     #[test]
@@ -650,22 +669,16 @@ mod tests {
     #[test]
     fn preview_scroll_edge_cases_and_variants() {
         // Scroll target variants.
-        assert_eq!(
-            (NavState {
-                pending_scroll: Some(NavScrollTarget::Top),
-                ..NavState::default()
-            })
-            .pending_scroll,
-            Some(NavScrollTarget::Top)
-        );
-        assert_eq!(
-            (NavState {
-                pending_scroll: Some(NavScrollTarget::ByteOffset(42)),
-                ..NavState::default()
-            })
-            .pending_scroll,
-            Some(NavScrollTarget::ByteOffset(42))
-        );
+        let s1 = NavState {
+            pending_scroll: Some(NavScrollTarget::Top),
+            ..NavState::default()
+        };
+        assert_eq!(s1.pending_scroll, Some(NavScrollTarget::Top));
+        let s2 = NavState {
+            pending_scroll: Some(NavScrollTarget::ByteOffset(42)),
+            ..NavState::default()
+        };
+        assert_eq!(s2.pending_scroll, Some(NavScrollTarget::ByteOffset(42)));
 
         // Empty outline.
         assert_eq!(preview_byte_to_scroll_y(&[], 100, 1000.0), 0.0);
@@ -768,25 +781,15 @@ mod tests {
         let md = "# A\n## B\n### C\n#### D\n";
         let outline = nav_outline::extract_headings(md);
         let mut exp = vec![false; outline.len()];
-        assert_eq!(
-            indices(&compute_visible_headings(&outline, &exp, 4, 1)),
-            vec![0]
-        );
-        exp[0] = true;
-        assert_eq!(
-            indices(&compute_visible_headings(&outline, &exp, 4, 1)),
-            vec![0, 1]
-        );
-        exp[1] = true;
-        assert_eq!(
-            indices(&compute_visible_headings(&outline, &exp, 4, 1)),
-            vec![0, 1, 2]
-        );
-        exp[2] = true;
-        assert_eq!(
-            indices(&compute_visible_headings(&outline, &exp, 4, 1)),
-            vec![0, 1, 2, 3]
-        );
+        for expected_len in 1..=outline.len() {
+            assert_eq!(
+                indices(&compute_visible_headings(&outline, &exp, 4, 1)),
+                (0..expected_len).collect::<Vec<_>>()
+            );
+            if expected_len < outline.len() {
+                exp[expected_len - 1] = true;
+            }
+        }
 
         // Skipped levels: H1 → H3 → H2.
         let md = "# A\n### C\n## B\n";
@@ -989,8 +992,7 @@ mod tests {
         }
 
         // Single heading beyond max clamps.
-        let md2 = "text\n\n# Only\n";
-        let outline2 = nav_outline::extract_headings(md2);
+        let outline2 = nav_outline::extract_headings("text\n\n# Only\n");
         assert!(preview_byte_to_scroll_y(&outline2, 999_999, 500.0) <= 500.0);
 
         // scroll_y_to_byte boundaries.
@@ -1005,12 +1007,12 @@ mod tests {
         );
         assert!(
             preview_scroll_y_to_byte(&outline, 5000.0, 1000.0) <= last + 1000,
-            "y beyond total"
+            "y beyond"
         );
         assert_eq!(
             preview_scroll_y_to_byte(&outline, -100.0, 1000.0),
             first,
-            "negative y"
+            "neg y"
         );
     }
 
@@ -1042,36 +1044,6 @@ mod tests {
         assert_eq!(visible.len(), 4);
         for &(_, hc) in &visible {
             assert!(!hc, "all H1s — none should have children");
-        }
-    }
-
-    // ── Chaos tests ──────────────────────────────────────────────────
-
-    #[test]
-    fn depth_clamp_and_labels_edge_cases() {
-        // Decrease at minimum stays at 1.
-        let mut state = NavState {
-            max_depth: 1,
-            ..NavState::default()
-        };
-        for _ in 0..11 {
-            state.decrease_depth();
-        }
-        assert_eq!(state.max_depth, 1);
-
-        // Increase at maximum stays at 6.
-        state.max_depth = 6;
-        for _ in 0..11 {
-            state.increase_depth();
-        }
-        assert_eq!(state.max_depth, 6);
-
-        // DEPTH_LABELS index clamp.
-        const DEPTH_LABELS: [&str; 7] = [
-            "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
-        ];
-        for depth in [0u8, 1, 6, 7, 100, 255] {
-            let _ = DEPTH_LABELS[(depth as usize).min(6)];
         }
     }
 }
