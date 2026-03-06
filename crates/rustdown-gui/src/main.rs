@@ -9,7 +9,6 @@ compile_error!("rustdown is a native desktop app; web/wasm builds are not suppor
 use std::{
     borrow::Cow,
     cell::Cell,
-    ffi::OsString,
     io,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -19,29 +18,24 @@ use std::{
 use eframe::egui;
 use rustdown_md::{MarkdownStyle, MarkdownViewer};
 
+mod cli;
 mod diagnostics;
-mod disk_io;
-mod disk_sync;
-mod disk_watcher;
+mod disk;
 mod document;
 mod editor;
 mod format;
 mod highlight;
 mod live_merge;
 mod markdown_fence;
-mod nav_outline;
-mod nav_panel;
+mod nav;
 mod preferences;
 mod search;
 mod ui_style;
 
-#[cfg(debug_assertions)]
-mod nav_debug;
-
-use disk_io::{
+use disk::io::{
     DiskRevision, atomic_write_utf8, disk_revision, next_merge_sidecar_path, read_stable_utf8,
 };
-use disk_sync::{DiskSyncState, ReloadKind};
+use disk::sync::{DiskSyncState, ReloadKind};
 use document::{Document, DocumentStats, EditorGalleyCache, TrackedTextBuffer};
 use search::{SearchState, find_match_count, replace_all_occurrences};
 
@@ -56,181 +50,7 @@ const PANEL_EDGE_PADDING: f32 = 8.0;
 const DIAGNOSTICS_DEFAULT_ITERATIONS: usize = 200;
 const DIAGNOSTICS_DEFAULT_RUNS: usize = 1;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct LaunchOptions {
-    mode: Mode,
-    /// `true` when the user explicitly chose a mode via CLI flag (`-p`, `-s`).
-    mode_explicit: bool,
-    path: Option<PathBuf>,
-    print_version: bool,
-    diagnostics: DiagnosticsMode,
-    diagnostics_iterations: usize,
-    diagnostics_runs: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum DiagnosticsMode {
-    #[default]
-    Off,
-    OpenPipeline,
-    #[cfg(debug_assertions)]
-    NavPipeline,
-}
-
-/// Parse a `--long-name=VALUE` or `--short-name=VALUE` positive integer argument.
-fn parse_kv_usize(arg: &OsString, long: &str, short: &str) -> Option<usize> {
-    arg.to_str()
-        .and_then(|s| s.strip_prefix(short).or_else(|| s.strip_prefix(long)))
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v > 0)
-}
-
-#[must_use]
-fn parse_launch_options<I, S>(args: I) -> LaunchOptions
-where
-    I: IntoIterator<Item = S>,
-    S: Into<OsString>,
-{
-    let mut mode = None;
-    let mut path = None;
-    let mut print_version = false;
-    let mut diagnostics = DiagnosticsMode::Off;
-    let mut diagnostics_iterations = DIAGNOSTICS_DEFAULT_ITERATIONS;
-    let mut diagnostics_runs = DIAGNOSTICS_DEFAULT_RUNS;
-    let mut parse_flags = true;
-
-    for arg in args {
-        let arg = arg.into();
-        if arg == "-v" || arg == "--version" {
-            print_version = true;
-            continue;
-        }
-        if parse_flags {
-            if arg == "--" {
-                parse_flags = false;
-                continue;
-            }
-            if arg == "-p" {
-                mode = Some(Mode::Preview);
-                continue;
-            }
-            if arg == "-s" {
-                mode = Some(Mode::SideBySide);
-                continue;
-            }
-            if arg == "--diagnostics-open" || arg == "--diag-open" {
-                diagnostics = DiagnosticsMode::OpenPipeline;
-                continue;
-            }
-            #[cfg(debug_assertions)]
-            if arg == "--diagnostics-nav" || arg == "--diag-nav" {
-                diagnostics = DiagnosticsMode::NavPipeline;
-                continue;
-            }
-            if let Some(v) = parse_kv_usize(&arg, "--diagnostics-iterations=", "--diag-iterations=")
-            {
-                diagnostics_iterations = v;
-                continue;
-            }
-            if let Some(v) = parse_kv_usize(&arg, "--diagnostics-runs=", "--diag-runs=") {
-                diagnostics_runs = v;
-                continue;
-            }
-            if arg.to_str().is_some_and(|value| value.starts_with('-')) {
-                continue;
-            }
-        }
-
-        if path.is_none() {
-            path = Some(PathBuf::from(arg));
-        }
-    }
-
-    let mode_explicit = mode.is_some();
-    let mode = mode.unwrap_or_else(|| {
-        if path.is_some() {
-            Mode::Preview
-        } else {
-            Mode::Edit
-        }
-    });
-
-    LaunchOptions {
-        mode,
-        mode_explicit,
-        path,
-        print_version,
-        diagnostics,
-        diagnostics_iterations,
-        diagnostics_runs,
-    }
-}
-
-#[must_use]
-const fn app_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-/// On WSL, smithay-clipboard connects via Wayland and panics with
-/// "Broken pipe (os error 32)" during window resize.  Clearing
-/// `WAYLAND_DISPLAY` forces the clipboard backend to X11 (arboard),
-/// which avoids the crash while keeping clipboard fully functional.
-/// See <https://github.com/emilk/egui/issues/3805>.
-///
-/// The workaround is only applied when `libxkbcommon-x11.so` is present;
-/// without it the X11 backend cannot initialise and the app would panic
-/// on startup.  When the library is absent, Wayland remains active and
-/// the user sees a diagnostic hint to install it.
-#[cfg(target_os = "linux")]
-fn apply_wsl_workarounds() {
-    if let Ok(ver) = std::fs::read_to_string("/proc/version")
-        && ver.to_ascii_lowercase().contains("microsoft")
-    {
-        if x11_keyboard_lib_available() {
-            // SAFETY: called at the top of main() before any threads are
-            // spawned, so there is no concurrent access to the environment.
-            #[allow(unsafe_code)]
-            unsafe {
-                std::env::remove_var("WAYLAND_DISPLAY");
-            }
-        } else {
-            eprintln!(
-                "rustdown: WSL detected but libxkbcommon-x11.so not found; \
-                 X11 clipboard workaround disabled. Install libxkbcommon-x11-dev \
-                 to avoid resize crashes."
-            );
-        }
-    }
-}
-
-/// Returns `true` when `libxkbcommon-x11.so` can be loaded by the dynamic
-/// linker, meaning the X11 keyboard backend will work at runtime.
-#[cfg(target_os = "linux")]
-fn x11_keyboard_lib_available() -> bool {
-    // SAFETY: libxkbcommon-x11 is a well-known system library with no
-    // harmful init-time side effects.  We load only to probe availability
-    // and the library is dropped immediately.
-    #[allow(unsafe_code)]
-    let result = unsafe { libloading::Library::new("libxkbcommon-x11.so") };
-    result.is_ok()
-}
-
-/// Attach to the parent process's console so that `println!` output is
-/// visible when the GUI-subsystem binary is invoked from `PowerShell` or cmd.
-#[cfg(windows)]
-fn attach_parent_console() {
-    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
-    // SAFETY: `AttachConsole` is a well-documented Win32 API.  Calling it
-    // with ATTACH_PARENT_PROCESS is harmless even if there is no parent
-    // console — it simply returns FALSE.
-    #[allow(unsafe_code)]
-    {
-        unsafe extern "system" {
-            safe fn AttachConsole(process_id: u32) -> i32;
-        }
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
-    }
-}
+use cli::{DiagnosticsMode, LaunchOptions, app_version, parse_launch_options};
 
 fn main() -> eframe::Result {
     let launch_options = parse_launch_options(std::env::args_os().skip(1));
@@ -239,14 +59,14 @@ fn main() -> eframe::Result {
         // Attach to the parent console so the output is visible in
         // PowerShell / cmd.
         #[cfg(windows)]
-        attach_parent_console();
+        cli::attach_parent_console();
 
         println!("{}", app_version());
         return Ok(());
     }
 
     #[cfg(target_os = "linux")]
-    apply_wsl_workarounds();
+    cli::apply_wsl_workarounds();
 
     if launch_options.diagnostics == DiagnosticsMode::OpenPipeline {
         for run in 0..launch_options.diagnostics_runs {
@@ -269,7 +89,7 @@ fn main() -> eframe::Result {
     }
     #[cfg(debug_assertions)]
     if launch_options.diagnostics == DiagnosticsMode::NavPipeline {
-        if let Err(err) = nav_debug::run_nav_diagnostics(launch_options.path.as_deref()) {
+        if let Err(err) = nav::debug::run_nav_diagnostics(launch_options.path.as_deref()) {
             eprintln!("Nav diagnostics failed: {err}");
         }
         return Ok(());
@@ -355,7 +175,7 @@ struct RustdownApp {
     doc: Document,
     mode: Mode,
     search: SearchState,
-    nav: nav_panel::NavState,
+    nav: nav::panel::NavState,
     error: Option<String>,
     pending_action: Option<PendingAction>,
     last_viewport_title: String,
@@ -904,7 +724,7 @@ impl RustdownApp {
 
         // Request a scroll to the same position in the new mode.
         if let Some(byte_offset) = scroll_byte {
-            self.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(byte_offset));
+            self.nav.pending_scroll = Some(nav::panel::NavScrollTarget::ByteOffset(byte_offset));
         }
 
         self.save_preferences_with_zoom(ctx.zoom_factor());
@@ -956,7 +776,7 @@ impl RustdownApp {
         {
             return y;
         }
-        nav_panel::preview_byte_to_scroll_y(
+        nav::panel::preview_byte_to_scroll_y(
             &self.nav.outline,
             byte_offset,
             self.doc.preview_cache.total_height,
@@ -968,10 +788,10 @@ impl RustdownApp {
     fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
-            let state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())?;
+            let state = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id())?;
             self.editor_y_to_byte(state.offset.y)
         } else {
-            Some(nav_panel::preview_scroll_y_to_byte(
+            Some(nav::panel::preview_scroll_y_to_byte(
                 &self.nav.outline,
                 self.doc.preview_cache.last_scroll_y,
                 self.doc.preview_cache.total_height,
@@ -1262,7 +1082,7 @@ impl RustdownApp {
     /// Must run *before* the scroll areas render so targets are consumed
     /// on the same frame.
     fn resolve_nav_scroll_target(&mut self, ctx: &egui::Context) {
-        use nav_panel::NavScrollTarget;
+        use nav::panel::NavScrollTarget;
         self.nav_scroll_applied_this_frame = false;
         let Some(target) = self.nav.pending_scroll.take() else {
             return;
@@ -1324,14 +1144,14 @@ impl RustdownApp {
     fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
-            if let Some(state) = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id())
+            if let Some(state) = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id())
                 && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
             {
                 self.nav.update_active_from_position(byte_pos);
             }
         } else {
             // Preview mode: convert cached scroll-y to byte offset via outline.
-            let byte_pos = nav_panel::preview_scroll_y_to_byte(
+            let byte_pos = nav::panel::preview_scroll_y_to_byte(
                 &self.nav.outline,
                 self.doc.preview_cache.last_scroll_y,
                 self.doc.preview_cache.total_height,
@@ -1354,7 +1174,7 @@ impl RustdownApp {
         self.nav.refresh_outline(&self.doc.text, self.doc.edit_seq);
 
         // Read editor scroll position.
-        let editor_state = egui::scroll_area::State::load(ctx, nav_panel::editor_scroll_id());
+        let editor_state = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id());
         let Some(editor_state) = editor_state else {
             return;
         };
@@ -1369,7 +1189,7 @@ impl RustdownApp {
         self.last_sync_editor_byte = Some(editor_byte);
 
         // Map editor byte offset to preview scroll-y.
-        let preview_y = nav_panel::preview_byte_to_scroll_y(
+        let preview_y = nav::panel::preview_byte_to_scroll_y(
             &self.nav.outline,
             editor_byte,
             self.doc.preview_cache.total_height,
@@ -1761,8 +1581,9 @@ enum ConflictChoice {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::disk_sync::DiskConflict;
+    use crate::disk::sync::DiskConflict;
     use crate::document::bytecount_newlines;
+    use std::ffi::OsString;
     use std::time::Instant;
     use std::{fs, time::SystemTime};
 
@@ -2379,7 +2200,7 @@ mod tests {
             mode: Mode::Preview,
             ..RustdownApp::default()
         };
-        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
+        app.nav.pending_scroll = Some(nav::panel::NavScrollTarget::Top);
         app.resolve_nav_scroll_target(&ctx);
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
         assert!(app.nav.pending_editor_scroll_y.is_none());
@@ -2390,7 +2211,7 @@ mod tests {
             ..RustdownApp::default()
         };
         app.side_by_side_scroll_target = Some(999.0);
-        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::Top);
+        app.nav.pending_scroll = Some(nav::panel::NavScrollTarget::Top);
         app.resolve_nav_scroll_target(&ctx);
         assert_eq!(app.nav.pending_editor_scroll_y, Some(0.0));
         assert_eq!(app.nav.pending_preview_scroll_y, Some(0.0));
@@ -2405,13 +2226,13 @@ mod tests {
             ..RustdownApp::default()
         };
         let md = "# A\n\ntext\n\n## B\n";
-        app.nav.outline = nav_outline::extract_headings(md);
+        app.nav.outline = nav::outline::extract_headings(md);
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         app.doc.preview_cache.ensure_parsed(md);
         app.doc.preview_cache.ensure_heights(14.0, 400.0, &style);
         let b_offset = app.nav.outline[1].byte_offset;
         let expected_y = app.doc.preview_cache.heading_y(1).unwrap_or(0.0);
-        app.nav.pending_scroll = Some(nav_panel::NavScrollTarget::ByteOffset(b_offset));
+        app.nav.pending_scroll = Some(nav::panel::NavScrollTarget::ByteOffset(b_offset));
         app.resolve_nav_scroll_target(&ctx);
         let actual_y = app.nav.pending_preview_scroll_y.unwrap_or(0.0);
         assert!((actual_y - expected_y).abs() < 0.01);
@@ -2442,7 +2263,7 @@ mod tests {
         let dir = make_temp_dir("rustdown-doc-lifecycle-test");
         let path = dir.join("test.md");
         fs::write(&path, "test content").ok();
-        let rev = disk_io::disk_revision(&path).ok();
+        let rev = disk::io::disk_revision(&path).ok();
 
         let mut app = RustdownApp::default();
         let seq0 = app.doc.edit_seq;

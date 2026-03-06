@@ -10,7 +10,7 @@ use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme,
-    disk_io::read_stable_utf8, nav_panel::NavScrollTarget,
+    disk::io::read_stable_utf8, nav::panel::NavScrollTarget,
 };
 
 /// Render one simulated frame using the same layout as the real app.
@@ -38,7 +38,7 @@ pub fn run_nav_diagnostics(path: Option<&Path>) -> io::Result<()> {
 
     // --- Setup ---
     let (text, disk_rev) = read_stable_utf8(path)?;
-    let text = Arc::new(text);
+    let text: Arc<String> = Arc::new(text);
     let base_text = text.clone();
     let stats = DocumentStats::from_text(text.as_str());
     let ctx = egui::Context::default();

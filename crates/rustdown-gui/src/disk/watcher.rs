@@ -10,12 +10,12 @@ use std::time::Instant;
 use eframe::egui;
 use notify::{Event, RecursiveMode, Watcher};
 
-use crate::disk_io::{DiskRevision, disk_revision, read_stable_utf8};
-use crate::disk_sync::{DiskConflict, DiskReadMessage, DiskReloadOutcome, ReloadKind};
+use crate::disk::io::{DiskRevision, disk_revision, read_stable_utf8};
+use crate::disk::sync::{DiskConflict, DiskReadMessage, DiskReloadOutcome, ReloadKind};
 use crate::document::DocumentStats;
 use crate::live_merge::{Merge3Outcome, merge_three_way};
 
-use super::{DISK_POLL_INTERVAL, DISK_RELOAD_DEBOUNCE, RustdownApp};
+use crate::{DISK_POLL_INTERVAL, DISK_RELOAD_DEBOUNCE, RustdownApp};
 
 impl RustdownApp {
     fn clear_disk_watcher(&mut self) {

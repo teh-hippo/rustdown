@@ -10,7 +10,7 @@ use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, SearchState, default_image_uri_scheme,
-    disk_io::read_stable_utf8, find_match_count, highlight, ui_style,
+    disk::io::read_stable_utf8, find_match_count, highlight, ui_style,
 };
 
 #[allow(clippy::cast_precision_loss)] // iterations.max(1) is small

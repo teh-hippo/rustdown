@@ -3,7 +3,7 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::highlight;
-use crate::nav_outline::{self, HeadingEntry};
+use crate::nav::outline::{self, HeadingEntry};
 
 /// What the nav panel wants the host to scroll to.
 #[derive(Debug, PartialEq, Eq)]
@@ -219,7 +219,7 @@ impl NavState {
         if edit_seq == self.outline_seq {
             return;
         }
-        self.outline = nav_outline::extract_headings(source.as_str());
+        self.outline = outline::extract_headings(source.as_str());
         self.outline_source = Arc::clone(source);
         self.outline_seq = edit_seq;
         self.expanded.clear();
@@ -246,7 +246,7 @@ impl NavState {
     /// Update `active_index` from a byte position in the document.
     pub fn update_active_from_position(&mut self, byte_position: usize) {
         self.active_index =
-            nav_outline::active_heading_index(&self.outline, self.max_depth, byte_position);
+            outline::active_heading_index(&self.outline, self.max_depth, byte_position);
     }
 
     /// Decrease `max_depth` by one (clamped to 1).
@@ -686,13 +686,13 @@ mod tests {
 
         // Single heading.
         let md = "# Only Heading\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         assert_eq!(preview_byte_to_scroll_y(&outline, 0, 1000.0), 0.0);
         assert_eq!(preview_scroll_y_to_byte(&outline, 0.0, 1000.0), 0);
 
         // Zero and negative total height.
         let md = "# A\n## B\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         assert_eq!(preview_byte_to_scroll_y(&outline, 10, 0.0), 0.0);
         assert_eq!(preview_scroll_y_to_byte(&outline, 10.0, 0.0), 0);
         assert_eq!(preview_byte_to_scroll_y(&outline, 10, -100.0), 0.0);
@@ -703,7 +703,7 @@ mod tests {
     fn compute_visible_core_behaviors() {
         // Only top-level when collapsed.
         let md = "# A\n## B\n### C\n# D\n## E\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let expanded = vec![false; outline.len()];
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
@@ -711,7 +711,7 @@ mod tests {
 
         // Expand shows direct children only.
         let md = "# A\n## B\n### C\n# D\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let mut expanded = vec![false; outline.len()];
         expanded[0] = true;
         let visible = compute_visible_headings(&outline, &expanded, 4, 1);
@@ -728,25 +728,25 @@ mod tests {
 
         // All same level.
         let md = "## A\n## B\n## C\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let visible = compute_visible_headings(&outline, &[false; 3], 4, 2);
         assert_eq!(indices(&visible), vec![0, 1, 2]);
 
         // Single heading.
         let md = "# Only\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let visible = compute_visible_headings(&outline, &Vec::new(), 4, 1);
         assert_eq!(visible.len(), 1);
         assert!(!visible[0].1);
 
         // Headings beyond max_depth.
         let md = "##### H5\n###### H6\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         assert!(compute_visible_headings(&outline, &Vec::new(), 4, 1).is_empty());
 
         // max_depth=1 hides all subheadings and H1s don't report children.
         let md = "# A\n## B\n### C\n# D\n## E\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let visible = compute_visible_headings(&outline, &Vec::new(), 1, 1);
         let levels: Vec<_> = visible.iter().map(|&(i, _)| outline[i].level).collect();
         assert_eq!(levels, vec![1, 1]);
@@ -758,7 +758,7 @@ mod tests {
     fn compute_visible_children_depth_nesting_and_collapse() {
         // has_children flag.
         let md = "# A\n## B\n# C\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let expanded = {
             let mut v = vec![false; 3];
             v[0] = true;
@@ -773,13 +773,13 @@ mod tests {
 
         // has_children respects max_depth.
         let md = "# A\n### C\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         assert!(compute_visible_headings(&outline, &[true], 4, 1)[0].1);
         assert!(!compute_visible_headings(&outline, &Vec::new(), 1, 1)[0].1);
 
         // Deeply nested: expand ancestors to reveal deepest.
         let md = "# A\n## B\n### C\n#### D\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let mut exp = vec![false; outline.len()];
         for expected_len in 1..=outline.len() {
             assert_eq!(
@@ -793,7 +793,7 @@ mod tests {
 
         // Skipped levels: H1 → H3 → H2.
         let md = "# A\n### C\n## B\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let levels: Vec<_> = compute_visible_headings(&outline, &[true, false, false], 4, 1)
             .iter()
             .map(|&(i, _)| outline[i].level)
@@ -802,7 +802,7 @@ mod tests {
 
         // Collapse parent hides grandchildren.
         let md = "# A\n## B\n### C\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let mut exp = vec![true, true, false];
         assert_eq!(
             indices(&compute_visible_headings(&outline, &exp, 4, 1)),
@@ -816,7 +816,7 @@ mod tests {
 
         // max_depth=2 hides deeper headings.
         let md = "# A\n## B\n### C\n#### D\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let levels: Vec<_> = compute_visible_headings(&outline, &[true, true, true, false], 2, 1)
             .iter()
             .map(|&(i, _)| outline[i].level)
@@ -828,7 +828,7 @@ mod tests {
     fn preview_scroll_round_trip_and_monotonicity() {
         // Monotonic byte → y.
         let md = "# A\n\ntext\n\n## B\n\nmore\n\n### C\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let mut prev_y = 0.0_f32;
         for h in &outline {
             let y = preview_byte_to_scroll_y(&outline, h.byte_offset, 3000.0);
@@ -843,7 +843,7 @@ mod tests {
             + "\n## B\n"
             + &"z".repeat(200)
             + "\n### C\n";
-        let outline = nav_outline::extract_headings(&md);
+        let outline = outline::extract_headings(&md);
         for h in &outline {
             let y = preview_byte_to_scroll_y(&outline, h.byte_offset, 5000.0);
             assert_eq!(
@@ -861,7 +861,7 @@ mod tests {
             + "\n## B\n"
             + &"z".repeat(500)
             + "\n## C\n";
-        let outline = nav_outline::extract_headings(&md);
+        let outline = outline::extract_headings(&md);
         let mid_offset = outline[1].byte_offset;
         let y = preview_byte_to_scroll_y(&outline, mid_offset, 5000.0);
         assert_eq!(preview_scroll_y_to_byte(&outline, y, 5000.0), mid_offset);
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn stress_test_nav_headings_and_expand_collapse() {
-        let md = include_str!("../../../test-assets/stress-test.md");
+        let md = include_str!("../../../../test-assets/stress-test.md");
         let mut state = make_state(md);
 
         // All headings extracted with levels 1-6 and increasing offsets.
@@ -938,7 +938,7 @@ mod tests {
             "y".repeat(396),
             "z".repeat(476),
         );
-        let outline = nav_outline::extract_headings(&md);
+        let outline = outline::extract_headings(&md);
         assert_eq!(outline.len(), 4, "expected 4 headings");
         let total_height = 2000.0;
 
@@ -960,7 +960,7 @@ mod tests {
 
         // Boundary cases
         let md = "text\n\n# A\n\nmore\n\n## B\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let first = outline.first().map_or(0, |h| h.byte_offset);
         let last = outline.last().map_or(0, |h| h.byte_offset);
         for (label, byte, total_h) in [
@@ -971,7 +971,7 @@ mod tests {
             let y = preview_byte_to_scroll_y(&outline, byte, total_h);
             assert!((0.0..=total_h).contains(&y), "{label}: got {y}");
         }
-        let outline2 = nav_outline::extract_headings("text\n\n# Only\n");
+        let outline2 = outline::extract_headings("text\n\n# Only\n");
         assert!(preview_byte_to_scroll_y(&outline2, 999_999, 500.0) <= 500.0);
         assert_eq!(preview_scroll_y_to_byte(&outline, 0.0, 1000.0), first);
         assert!(preview_scroll_y_to_byte(&outline, 1000.0, 1000.0) >= last);
@@ -985,14 +985,14 @@ mod tests {
     fn compute_visible_advanced_cases() {
         // max_depth=6 fully expanded shows everything.
         let md = "# A\n## B\n### C\n#### D\n##### E\n###### F\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let expanded = vec![true, true, true, true, true, false];
         let visible = compute_visible_headings(&outline, &expanded, 6, 1);
         assert_eq!(indices(&visible), vec![0, 1, 2, 3, 4, 5], "full depth");
 
         // Alternating H1/H6 — collapsed only shows H1s.
         let md = "# A\n###### deep\n# B\n###### deeper\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let visible = compute_visible_headings(&outline, &Vec::new(), 6, 1);
         assert_eq!(indices(&visible), vec![0, 2], "alternating collapsed");
         let mut exp = vec![false; 1];
@@ -1002,7 +1002,7 @@ mod tests {
 
         // All H1 — none have children.
         let md = "# A\n# B\n# C\n# D\n";
-        let outline = nav_outline::extract_headings(md);
+        let outline = outline::extract_headings(md);
         let visible = compute_visible_headings(&outline, &Vec::new(), 6, 1);
         assert_eq!(visible.len(), 4);
         for &(_, hc) in &visible {

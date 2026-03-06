@@ -2,7 +2,7 @@ use std::{ffi::OsString, io, path::PathBuf, sync::mpsc, time::Instant};
 
 use notify::RecommendedWatcher;
 
-use crate::disk_io::DiskRevision;
+use crate::disk::io::DiskRevision;
 
 /// How the document should be flagged after applying disk text.
 #[derive(Clone, Copy, Debug)]

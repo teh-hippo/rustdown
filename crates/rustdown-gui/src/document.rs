@@ -9,7 +9,7 @@ use std::{
 use eframe::egui;
 use rustdown_md::MarkdownCache;
 
-use crate::disk_io::DiskRevision;
+use crate::disk::io::DiskRevision;
 
 pub struct Document {
     pub path: Option<PathBuf>,
