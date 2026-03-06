@@ -491,4 +491,198 @@ mod tests {
             "4-space fence"
         );
     }
+
+    // ── Issue: double-backtick code spans not highlighted ────────
+
+    /// The editor uses a simple single-backtick scanner, so `CommonMark`
+    /// double-backtick code spans (e.g. `` ``code`` ``) are **not**
+    /// highlighted as code.  The inner text appears in base format
+    /// instead of inline-code format.
+    ///
+    /// The preview renderer (via pulldown-cmark) handles these correctly,
+    /// producing a code span.  This test documents the current gap.
+    #[test]
+    fn double_backtick_code_span_not_highlighted_as_code() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+
+        // In CommonMark, ``double`` is a code span with content "double".
+        // The editor scanner treats each backtick independently, so "double"
+        // gets base format instead of inline-code format.
+        let source = "Use ``double`` backticks\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+
+        // Find the section covering the word "double".
+        let sec = section_for_snippet(&job, "double");
+
+        // BUG: "double" is styled as base text, not inline code.
+        // The preview renderer correctly treats this as code.
+        assert_ne!(
+            sec.format.background, visuals.faint_bg_color,
+            "double-backtick content is NOT currently highlighted as code (known gap)"
+        );
+    }
+
+    /// Editor inline-code font uses full monospace size while the preview
+    /// renderer scales code spans to 0.9× body size.  This test documents
+    /// the difference.
+    #[test]
+    fn editor_code_font_size_differs_from_preview() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+
+        let job = markdown_layout_job(&style, &visuals, "Use `code` here\n", false);
+        let sec = section_for_snippet(&job, "code");
+
+        let mono_size = egui::TextStyle::Monospace.resolve(&style).size;
+        let body_size = egui::TextStyle::Body.resolve(&style).size;
+
+        // Editor uses the default monospace size (same as body).
+        assert!(
+            (sec.format.font_id.size - mono_size).abs() < f32::EPSILON,
+            "editor code size should be full monospace size"
+        );
+        // Preview would use body_size * 0.9 — documenting the difference.
+        let preview_code_size = body_size * 0.9;
+        assert!(
+            (sec.format.font_id.size - preview_code_size).abs() > f32::EPSILON,
+            "editor code size differs from preview's 0.9× scale"
+        );
+    }
+
+    #[test]
+    fn diag_blockquote_lines_not_styled() {
+        // Editor does not style blockquote markers — they get base text color.
+        // This is a gap vs. the preview renderer.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "> A block quote.\n> Second line.\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let sec = section_for_snippet(&job, "> A block quote.");
+        // DOCUMENTS GAP: blockquotes get base text color, not weak/indented
+        assert_eq!(
+            sec.format.color,
+            visuals.text_color(),
+            "STYLING GAP: blockquote lines have base text color (no special styling)"
+        );
+    }
+
+    #[test]
+    fn diag_list_markers_not_styled() {
+        // Editor does not style list markers.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "- Item one\n- Item two\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let sec = section_for_snippet(&job, "- Item one");
+        assert_eq!(
+            sec.format.color,
+            visuals.text_color(),
+            "STYLING GAP: list markers have base text color"
+        );
+    }
+
+    #[test]
+    fn diag_bold_italic_not_styled_in_editor() {
+        // Editor does not detect **bold** or *italic* inline styling.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "Some **bold** and *italic* text.\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let sec = section_for_snippet(&job, "bold");
+        // DOCUMENTS GAP: bold text has same format as regular text
+        assert_eq!(
+            sec.format.color,
+            visuals.text_color(),
+            "STYLING GAP: bold text not styled differently in editor"
+        );
+    }
+
+    #[test]
+    fn diag_heading_with_inline_code_styled_as_heading_not_code() {
+        // When a heading line contains inline code, the entire line gets
+        // heading styling. The inline code does NOT get monospace/background.
+        // This is a divergence from the preview renderer.
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let source = "## Heading with `code` inside\n";
+        let job = markdown_layout_job(&style, &visuals, source, false);
+        let sec = section_for_snippet(&job, "code");
+        // In editor: the `code` part is styled as heading (scaled font, heading color)
+        // In preview: `code` would get monospace + background
+        assert_ne!(
+            sec.format.background, visuals.faint_bg_color,
+            "STYLING GAP: inline code inside heading gets heading style, not code style"
+        );
+        let body_size = egui::TextStyle::Body.resolve(&style).size;
+        assert!(
+            sec.format.font_id.size > body_size,
+            "code inside heading should have heading-scaled font size"
+        );
+    }
+
+    // ── Diagnostic: bundled document layout coverage ──
+
+    #[test]
+    fn diag_bundled_demo_produces_sections_without_gaps() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let demo = include_str!("bundled/demo.md");
+        let job = markdown_layout_job(&style, &visuals, demo, true);
+        // All bytes should be covered by sections (no rendering gaps)
+        let mut covered = vec![false; demo.len()];
+        for sec in &job.sections {
+            for i in sec.byte_range.clone() {
+                assert!(
+                    i < demo.len(),
+                    "section byte range {i} exceeds source length {}",
+                    demo.len()
+                );
+                covered[i] = true;
+            }
+        }
+        let uncovered: Vec<_> = covered
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !**c)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "demo.md has {} uncovered bytes at positions: {:?}",
+            uncovered.len(),
+            &uncovered[..uncovered.len().min(20)]
+        );
+    }
+
+    #[test]
+    fn diag_bundled_verification_produces_sections_without_gaps() {
+        let style = egui::Style::default();
+        let visuals = egui::Visuals::dark();
+        let verif = include_str!("bundled/verification.md");
+        let job = markdown_layout_job(&style, &visuals, verif, true);
+        let mut covered = vec![false; verif.len()];
+        for sec in &job.sections {
+            for i in sec.byte_range.clone() {
+                assert!(
+                    i < verif.len(),
+                    "section byte range {i} exceeds source length {}",
+                    verif.len()
+                );
+                covered[i] = true;
+            }
+        }
+        let uncovered: Vec<_> = covered
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !**c)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "verification.md has {} uncovered bytes at positions: {:?}",
+            uncovered.len(),
+            &uncovered[..uncovered.len().min(20)]
+        );
+    }
 }

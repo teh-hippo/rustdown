@@ -398,6 +398,157 @@ mod tests {
         );
     }
 
+    // ── Diagnostic: emphasis / bold markers leak into heading labels ──
+    //
+    // Bug: When a heading contains bold or italic text (but no links), the
+    // source byte-range label includes the raw emphasis delimiters.
+    // e.g. `## A **bold** heading` → label "A **bold** heading"
+    //        instead of "A bold heading".
+    //
+    // Root cause: `extract_headings` uses `source[label_start..label_end]`
+    // where label_start/label_end come from the first/last `Text` or `Code`
+    // events. The inter-event bytes (emphasis markers) are included.
+    //
+    // Severity: Low visual. The nav panel shows raw `**`/`*`/`~~` markers.
+    // File: crates/rustdown-gui/src/nav/outline.rs:89-103
+
+    #[test]
+    fn diag_heading_label_with_emphasis_leaks_markers() {
+        // Bold in heading — source range includes **
+        let md = "## A **bold** heading\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        // CURRENT BEHAVIOR: label contains raw markers
+        // This test documents the bug — when fixed, flip the assertion.
+        assert!(
+            label.contains("**"),
+            "BUG CONFIRMED: emphasis markers leak into label: {label:?}"
+        );
+        // Ideal: label should be "A bold heading"
+    }
+
+    #[test]
+    fn diag_heading_label_with_italic_leaks_markers() {
+        let md = "### An *italic* word\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        // CURRENT BEHAVIOR: label contains raw * markers
+        assert!(
+            label.contains('*'),
+            "BUG CONFIRMED: italic markers leak into label: {label:?}"
+        );
+    }
+
+    #[test]
+    fn diag_heading_label_with_strikethrough_leaks_markers() {
+        // pulldown_cmark needs ENABLE_STRIKETHROUGH for ~~
+        // extract_headings uses ENABLE_HEADING_ATTRIBUTES only,
+        // so ~~ is treated as literal text and doesn't leak.
+        let md = "## A ~~struck~~ heading\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        // With only ENABLE_HEADING_ATTRIBUTES, ~~ is literal text
+        // so the label should contain ~~ as literal text (not a bug).
+        assert!(
+            label.contains("~~"),
+            "~~ is literal text with current parser options: {label:?}"
+        );
+    }
+
+    #[test]
+    fn diag_heading_label_bold_plus_code_leaks_markers() {
+        // Heading with both bold and inline code (no links).
+        let md = "## **Bold** and `code`\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        let label = headings[0].label(md);
+        // Source range spans from first Text to last Code event,
+        // includes ** markers between runs.
+        assert!(
+            label.contains("**"),
+            "BUG CONFIRMED: bold markers leak when combined with code: {label:?}"
+        );
+    }
+
+    // ── Diagnostic: bundled document heading coverage ──
+
+    #[test]
+    fn diag_bundled_demo_heading_count() {
+        let demo = include_str!("../bundled/demo.md");
+        let headings = extract_headings(demo);
+        // demo.md has: ✨ Rustdown Feature Demo, Headings, Heading 1-6,
+        // Inline Styles, Smart Punctuation, Block Quotes, Lists,
+        // Unordered, Ordered, Task Lists, Code Blocks, Rust, Python,
+        // JSON, Plain (No Language), Tables, Simple, Column Alignment,
+        // Wide Table, Images, Horizontal Rules, Mixed Content, End
+        assert!(
+            headings.len() >= 20,
+            "demo.md should have ≥20 headings, got {}",
+            headings.len()
+        );
+        // All labels non-empty
+        for (i, h) in headings.iter().enumerate() {
+            let label = h.label(demo);
+            assert!(
+                !label.is_empty(),
+                "demo.md heading {i} has empty label at offset {}",
+                h.byte_offset
+            );
+        }
+    }
+
+    #[test]
+    fn diag_bundled_verification_heading_count() {
+        let verif = include_str!("../bundled/verification.md");
+        let headings = extract_headings(verif);
+        // verification.md is large with 16 top-level sections + many subsections
+        assert!(
+            headings.len() >= 60,
+            "verification.md should have ≥60 headings, got {}",
+            headings.len()
+        );
+        // All labels non-empty
+        for (i, h) in headings.iter().enumerate() {
+            let label = h.label(verif);
+            assert!(
+                !label.is_empty(),
+                "verification.md heading {i} has empty label at offset {}",
+                h.byte_offset
+            );
+        }
+        // Levels 1-6 all present
+        for level in 1..=6u8 {
+            assert!(
+                headings.iter().any(|h| h.level == level),
+                "verification.md missing heading level {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn diag_bundled_verification_no_setext_headings() {
+        // verification.md exercises ATX headings only; setext headings
+        // are tested in extract_headings_covers_basic_edge_and_unicode_cases
+        // but NOT in the bundled verification document. This is a
+        // coverage gap — setext headings should be added to verification.md.
+        let verif = include_str!("../bundled/verification.md");
+        let has_setext = verif.lines().any(|l: &str| {
+            let trimmed = l.trim();
+            (trimmed.chars().all(|c| c == '=') && trimmed.len() >= 3)
+                || (trimmed.chars().all(|c| c == '-')
+                    && trimmed.len() >= 3
+                    && !trimmed.starts_with("---"))
+        });
+        // Documents the gap: verification.md has no setext headings
+        assert!(
+            !has_setext,
+            "COVERAGE GAP: verification.md should exercise setext headings"
+        );
+    }
+
     // ── Cross-module: nav_outline ↔ render heading_y ordinal alignment ──
 
     #[test]

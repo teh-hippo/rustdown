@@ -530,4 +530,106 @@ mod tests {
             let _ = result.len();
         }
     }
+
+    // ── Diagnostic: format round-trip on bundled documents ──
+
+    #[test]
+    fn diag_format_round_trip_demo_md() {
+        let demo = include_str!("bundled/demo.md");
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let first = format_markdown(demo, opts);
+        let second = format_markdown(&first, opts);
+        assert_eq!(
+            first, second,
+            "format_markdown should be idempotent on demo.md"
+        );
+    }
+
+    #[test]
+    fn diag_format_round_trip_verification_md() {
+        let verif = include_str!("bundled/verification.md");
+        let opts = FormatOptions {
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            end_of_line: Some(EndOfLine::Lf),
+        };
+        let first = format_markdown(verif, opts);
+        let second = format_markdown(&first, opts);
+        assert_eq!(
+            first, second,
+            "format_markdown should be idempotent on verification.md"
+        );
+    }
+
+    #[test]
+    fn diag_format_preserves_tables() {
+        let table =
+            "| Left | Center | Right |\n|:-----|:------:|------:|\n| a    | b      |     c |\n";
+        let result = format_markdown(table, DEFAULT_OPTIONS);
+        // Table alignment markers must survive
+        assert!(
+            result.contains(":--"),
+            "table alignment markers lost: {result:?}"
+        );
+        assert!(
+            result.contains("--:"),
+            "right-align marker lost: {result:?}"
+        );
+        // Pipes must survive
+        assert_eq!(
+            result.matches('|').count(),
+            table.matches('|').count(),
+            "pipe count changed"
+        );
+    }
+
+    #[test]
+    fn diag_format_preserves_blockquotes() {
+        let bq = "> Level one.\n>\n> > Level two.\n>\n> Back to one.\n";
+        let result = format_markdown(bq, DEFAULT_OPTIONS);
+        assert_eq!(
+            result.matches('>').count(),
+            bq.matches('>').count(),
+            "blockquote markers changed"
+        );
+    }
+
+    #[test]
+    fn diag_format_preserves_nested_lists() {
+        let list = "- Item one\n  - Nested A\n    - Deep nested\n  - Nested B\n- Item two\n";
+        let result = format_markdown(list, DEFAULT_OPTIONS);
+        assert_eq!(result, list, "nested list structure should be preserved");
+    }
+
+    #[test]
+    fn diag_format_preserves_fenced_code_content() {
+        // Content inside fences must be byte-for-byte preserved,
+        // including trailing whitespace.
+        let code = "```rust\nfn main() {   \n    println!(\"hello\");  \n}\n```\n";
+        let result = format_markdown(code, DEFAULT_OPTIONS);
+        assert!(
+            result.contains("fn main() {   "),
+            "code block trailing spaces stripped: {result:?}"
+        );
+        assert!(
+            result.contains("    println!"),
+            "code block indentation stripped: {result:?}"
+        );
+    }
+
+    #[test]
+    fn diag_format_hard_break_preserved_in_blockquote() {
+        // Hard break (trailing two spaces) inside a blockquote line.
+        let bq = "> First line  \n> Second line\n";
+        let result = format_markdown(bq, DEFAULT_OPTIONS);
+        // The hard break should be preserved after trimming.
+        assert!(
+            result.contains("line  \n"),
+            "hard break inside blockquote lost: {result:?}"
+        );
+    }
 }

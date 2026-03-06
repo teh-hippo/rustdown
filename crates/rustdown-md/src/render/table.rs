@@ -169,6 +169,7 @@ pub(super) fn render_table_cell(
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use crate::parse::StyledText;
@@ -224,6 +225,130 @@ mod tests {
         for w in &widths {
             assert!(w.is_finite());
             assert!(*w >= min_w);
+        }
+    }
+
+    // ── Diagnostic: single-column cap uses header-only content estimate ──
+
+    fn styled(s: &str) -> StyledText {
+        StyledText {
+            text: s.to_owned(),
+            ..StyledText::default()
+        }
+    }
+
+    /// Diagnostic: single-column table 60% cap ignores row content length.
+    ///
+    /// Title: Single-column cap content estimate ignores row data
+    /// Location: table.rs:76-77
+    /// Description: `content_est` in the single-column width cap only
+    ///   examines `header.first()` text length.  When row cells are much
+    ///   longer than the header, `content_est` remains small and the 60%
+    ///   cap cannot be overridden by long body content.  The resulting
+    ///   column width is the same whether body cells are short or very
+    ///   long, even though a wider column would reduce text wrapping.
+    /// Visual impact: Single-column tables with a short header ("ID") and
+    ///   long body text get capped at 60% width; body text wraps
+    ///   unnecessarily when extra space is available.
+    /// Severity: Low — text wraps but is still readable.
+    /// Suggested fix: Compute content_est from max(header_len, max_row_len)
+    ///   instead of header_len only.
+    #[test]
+    fn diag_single_col_cap_ignores_row_content() {
+        let short_header = vec![styled("ID")];
+        let long_body = vec![vec![styled(
+            "This is a very long description that should influence the width cap",
+        )]];
+        let short_body = vec![vec![styled("x")]];
+
+        let (w_long, _) = compute_table_col_widths(&short_header, &long_body, 600.0, 7.7, 14.0);
+        let (w_short, _) = compute_table_col_widths(&short_header, &short_body, 600.0, 7.7, 14.0);
+
+        // Both should be finite and positive.
+        assert!(w_long[0].is_finite() && w_long[0] > 0.0);
+        assert!(w_short[0].is_finite() && w_short[0] > 0.0);
+
+        // BUG EVIDENCE: The cap is based on header only, so both long and
+        // short body produce the SAME column width.  A correct
+        // implementation would give the long-body column more width.
+        let same_width = (w_long[0] - w_short[0]).abs() < 1.0;
+        assert!(
+            same_width,
+            "BUG CONFIRMED: long body ({:.1}) vs short body ({:.1}) \
+             yield the same width because the 60% cap only checks the header",
+            w_long[0], w_short[0],
+        );
+    }
+
+    /// Diagnostic: column width computation uses byte length, not char count.
+    ///
+    /// Title: Column width uses byte-length, not char count, for non-ASCII
+    /// Location: table.rs:28-33
+    /// Description: `text.len()` returns byte count.  CJK characters are
+    ///   3 bytes each, emoji 4 bytes.  This inflates the estimated content
+    ///   width for non-ASCII columns relative to ASCII columns, causing
+    ///   disproportionate column widths.
+    /// Visual impact: In a table with one ASCII column and one CJK column
+    ///   of equal visual character count, the CJK column receives ~3×
+    ///   more width than it should.
+    /// Severity: Low — columns still render; widths are just uneven.
+    /// Suggested fix: Use `text.chars().count()` or the cached
+    ///   `StyledText::char_count` instead of `text.len()`.
+    #[test]
+    fn diag_col_width_byte_vs_char_non_ascii() {
+        // 10 ASCII chars vs 10 CJK chars (30 bytes).
+        let ascii_header = vec![styled("AAAAAAAAAA"), styled("BBBBBBBBBB")];
+        let ascii_rows = vec![vec![styled("aaaaaaaaaa"), styled("bbbbbbbbbb")]];
+
+        let cjk_header = vec![styled("AAAAAAAAAA"), styled("你好世界你好世界你好")];
+        let cjk_rows = vec![vec![styled("aaaaaaaaaa"), styled("你好世界你好世界你好")]];
+
+        let (w_ascii, _) = compute_table_col_widths(&ascii_header, &ascii_rows, 800.0, 7.7, 14.0);
+        let (w_cjk, _) = compute_table_col_widths(&cjk_header, &cjk_rows, 800.0, 7.7, 14.0);
+
+        // Both are 2-column tables with equal visual char count per column.
+        // In a correct implementation, widths should be roughly equal.
+        let ascii_ratio = w_ascii[1] / w_ascii[0];
+        let cjk_ratio = w_cjk[1] / w_cjk[0];
+
+        // BUG EVIDENCE: The CJK column's byte length (30) is 3× the ASCII
+        // column's byte length (10), so the CJK column gets proportionally
+        // more space than it should.
+        assert!(
+            (cjk_ratio - ascii_ratio).abs() > 0.1,
+            "BUG CONFIRMED: CJK col ratio ({cjk_ratio:.2}) differs from \
+             ASCII col ratio ({ascii_ratio:.2}) due to byte-length estimation",
+        );
+    }
+
+    /// Diagnostic: zero usable width produces zero-width columns (min_col_w
+    /// enforcement is inside the `total_est > 0` branch which is skipped).
+    ///
+    /// Title: Zero usable width bypasses min_col_w enforcement
+    /// Location: table.rs:41-70
+    /// Description: When `usable = 0`, `col_cap = 0`, all estimated widths
+    ///   are 0, `total_est = 0`, and the `if total_est > 0.0` block
+    ///   (containing the min_col_w clamp) is skipped entirely.  Columns
+    ///   get width 0 instead of min_col_w.
+    /// Visual impact: None in practice — the caller floors usable at 0.0
+    ///   and a 0-width container is unrealistic.
+    /// Severity: Negligible — defensive edge case.
+    /// Suggested fix: Move the final min_col_w clamp outside the
+    ///   `total_est > 0` guard, or early-return min_col_w widths when
+    ///   usable is non-positive.
+    #[test]
+    fn diag_zero_usable_bypasses_min_col_w() {
+        let header = vec![styled("A"), styled("B")];
+        let rows = vec![vec![styled("x"), styled("y")]];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 0.0, 7.7, 14.0);
+
+        // When usable = 0, total_est = 0, normalization is skipped, widths stay 0.
+        for (i, w) in widths.iter().enumerate() {
+            assert!(
+                *w < min_col_w,
+                "BUG CONFIRMED: col {i} width ({w}) < min_col_w ({min_col_w}) \
+                 because zero-usable bypasses the min clamp"
+            );
         }
     }
 }

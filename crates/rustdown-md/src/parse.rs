@@ -2216,6 +2216,66 @@ mod tests {
         assert!(!parse_markdown(&table).is_empty());
     }
 
+    // ── Rendering parity diagnostic tests ────────────────────────
+
+    /// GFM bare-URL autolinks (no angle brackets) are NOT parsed as
+    /// clickable links.  Despite `ENABLE_GFM` being set, pulldown-cmark
+    /// 0.13 does not include autolink detection in that flag — it only
+    /// enables blockquote admonition tags.
+    ///
+    /// This means bare URLs like `https://example.com` in paragraphs
+    /// (including verification.md §2.3) render as plain text, not links.
+    #[test]
+    fn gfm_bare_url_autolinks_not_parsed() {
+        // Bare https:// URL should become a link per GFM spec,
+        // but pulldown-cmark 0.13 does NOT parse them.
+        let st = parse_paragraph("Visit https://example.com for details.");
+        validate_styled_text(&st);
+        let link_span = st.spans.iter().find(|s| s.style.has_link());
+        // BUG / LIMITATION: bare URLs are plain text, not links.
+        assert!(
+            link_span.is_none(),
+            "pulldown-cmark 0.13 does NOT parse bare URLs as links (known limitation)"
+        );
+    }
+
+    /// Bold text inside a link paragraph produces spans with both
+    /// strong + link flags — confirming the rendering path divergence
+    /// between `build_layout_job` (`strengthen_color`) and
+    /// `render_text_with_links` (`RichText::strong`).
+    #[test]
+    fn bold_inside_link_has_both_flags() {
+        let st = parse_paragraph("[**bold link**](https://example.com)");
+        validate_styled_text(&st);
+        let bold_link = st
+            .spans
+            .iter()
+            .find(|s| s.style.strong() && s.style.has_link());
+        assert!(
+            bold_link.is_some(),
+            "should have a span that is both strong and a link"
+        );
+    }
+
+    /// Inline HTML is rendered with code styling (monospace), not as actual
+    /// HTML elements.  This documents the current behaviour.
+    #[test]
+    fn inline_html_renders_as_code_styled_text() {
+        let st = parse_paragraph("Text with <br> and <em>emphasis</em> tags.");
+        validate_styled_text(&st);
+        // The <br>, <em>, </em> fragments should have the CODE flag.
+        let html_spans: Vec<_> = st
+            .spans
+            .iter()
+            .filter(|s| s.style.code())
+            .map(|s| &st.text[s.start as usize..s.end as usize])
+            .collect();
+        assert!(
+            html_spans.iter().any(|t| t.contains('<')),
+            "HTML tags should be rendered as code-styled spans, got: {html_spans:?}"
+        );
+    }
+
     /// Input size limit: documents above `MAX_PARSE_BYTES` are truncated.
     #[test]
     fn parse_truncates_oversized_input() {
