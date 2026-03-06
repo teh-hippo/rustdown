@@ -340,7 +340,6 @@ mod tests {
 
     #[test]
     fn next_merge_sidecar_path_naming_and_edge_cases() {
-        // Prefers first candidate then skips existing.
         let dir = test_dir("rustdown-sidecar-test");
         let original = dir.join("notes.md");
         let sidecar = next_merge_sidecar_path(&original).unwrap_or_else(|_| unreachable!());
@@ -348,21 +347,17 @@ mod tests {
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge.md"
         );
-        // First call created the file via create_new; second call skips it.
         let sidecar = next_merge_sidecar_path(&original).unwrap_or_else(|_| unreachable!());
         assert_eq!(
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge-2.md"
         );
-
-        // Sequential numbering: slots 1 and 2 both created by prior calls.
         let sidecar = next_merge_sidecar_path(&original).unwrap_or_else(|_| unreachable!());
         assert_eq!(
             sidecar.file_name().unwrap_or_default(),
             "notes.rustdown-merge-3.md"
         );
 
-        // No extension.
         let dir2 = test_dir("rustdown-sidecar-noext-test");
         let sidecar =
             next_merge_sidecar_path(&dir2.join("README")).unwrap_or_else(|_| unreachable!());

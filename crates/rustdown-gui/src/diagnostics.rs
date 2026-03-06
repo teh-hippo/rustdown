@@ -8,12 +8,9 @@ use std::{
 use eframe::egui;
 use rustdown_md::MarkdownCache;
 
-use crate::disk_io::read_stable_utf8;
-use crate::highlight;
-use crate::ui_style;
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, SearchState, default_image_uri_scheme,
-    find_match_count,
+    disk_io::read_stable_utf8, find_match_count, highlight, ui_style,
 };
 
 #[allow(clippy::cast_precision_loss)] // iterations.max(1) is small
@@ -363,38 +360,22 @@ mod tests {
     // ── avg_duration_us ─────────────────────────────────────────────
 
     #[test]
-    fn avg_duration_us_basic() {
-        let total = Duration::from_micros(500);
-        let avg = avg_duration_us(total, 10);
-        assert!((avg - 50.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn avg_duration_us_single_iteration() {
-        let total = Duration::from_micros(123);
-        let avg = avg_duration_us(total, 1);
-        assert!((avg - 123.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn avg_duration_us_zero_iterations_clamps_to_one() {
-        let total = Duration::from_micros(200);
-        // iterations=0 should be clamped to 1 via .max(1)
-        let avg = avg_duration_us(total, 0);
-        assert!((avg - 200.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn avg_duration_us_zero_duration() {
-        let avg = avg_duration_us(Duration::ZERO, 100);
-        assert!((avg - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn avg_duration_us_large_iteration_count() {
-        let total = Duration::from_secs(1);
-        let avg = avg_duration_us(total, 1_000_000);
-        assert!((avg - 1.0).abs() < 0.001);
+    fn avg_duration_us_cases() {
+        // (micros, iterations, expected_avg, tolerance)
+        let cases: &[(u64, usize, f64, f64)] = &[
+            (500, 10, 50.0, f64::EPSILON),
+            (123, 1, 123.0, 0.01),
+            (200, 0, 200.0, 0.01), // 0 iters clamps to 1
+            (0, 100, 0.0, f64::EPSILON),
+            (1_000_000, 1_000_000, 1.0, 0.001),
+        ];
+        for &(micros, iters, expected, tolerance) in cases {
+            let avg = avg_duration_us(Duration::from_micros(micros), iters);
+            assert!(
+                (avg - expected).abs() < tolerance,
+                "avg_duration_us({micros}µs, {iters}) = {avg}, expected {expected}"
+            );
+        }
     }
 
     // ── measure_iterations ──────────────────────────────────────────
@@ -404,7 +385,6 @@ mod tests {
         let elapsed = measure_iterations(0, || {
             std::thread::sleep(Duration::from_millis(100));
         });
-        // Should return almost immediately since 0 iterations are executed.
         assert!(elapsed < Duration::from_millis(50));
     }
 
@@ -422,7 +402,6 @@ mod tests {
         let elapsed = measure_iterations(100, || {
             std::hint::black_box(42);
         });
-        // Trivial work completes without panicking; duration is valid.
         let _ = elapsed.as_nanos();
     }
 
@@ -443,37 +422,32 @@ mod tests {
     // ── estimate_text_heap_bytes ────────────────────────────────────
 
     #[test]
-    fn estimate_text_heap_shared_arcs() {
+    fn estimate_text_heap_bytes_cases() {
+        // Shared Arc: capacity counted once
         let text = Arc::new(String::from("hello world"));
-        let base_text = text.clone();
-        // When text and base_text are the same Arc, capacity is counted once.
-        let bytes = estimate_text_heap_bytes(&text, &base_text);
-        assert_eq!(bytes, text.capacity());
-    }
+        let base = text.clone();
+        assert_eq!(estimate_text_heap_bytes(&text, &base), text.capacity());
 
-    #[test]
-    fn estimate_text_heap_distinct_arcs() {
-        let text = Arc::new(String::from("hello"));
-        let base_text = Arc::new(String::from("goodbye world"));
-        // When distinct, both capacities are summed.
-        let bytes = estimate_text_heap_bytes(&text, &base_text);
-        assert_eq!(bytes, text.capacity() + base_text.capacity());
-    }
+        // Distinct Arcs: both capacities summed
+        let t2 = Arc::new(String::from("hello"));
+        let b2 = Arc::new(String::from("goodbye world"));
+        assert_eq!(
+            estimate_text_heap_bytes(&t2, &b2),
+            t2.capacity() + b2.capacity()
+        );
 
-    #[test]
-    fn estimate_text_heap_empty_strings() {
-        let text = Arc::new(String::new());
-        let base_text = Arc::new(String::new());
-        let bytes = estimate_text_heap_bytes(&text, &base_text);
-        assert_eq!(bytes, text.capacity() + base_text.capacity());
-    }
+        // Empty strings (distinct): both capacities summed
+        let t3 = Arc::new(String::new());
+        let b3 = Arc::new(String::new());
+        assert_eq!(
+            estimate_text_heap_bytes(&t3, &b3),
+            t3.capacity() + b3.capacity()
+        );
 
-    #[test]
-    fn estimate_text_heap_shared_empty() {
-        let text = Arc::new(String::new());
-        let base_text = text.clone();
-        let bytes = estimate_text_heap_bytes(&text, &base_text);
-        assert_eq!(bytes, text.capacity());
+        // Empty shared: capacity counted once
+        let t4 = Arc::new(String::new());
+        let b4 = t4.clone();
+        assert_eq!(estimate_text_heap_bytes(&t4, &b4), t4.capacity());
     }
 
     // ── run_open_pipeline_diagnostics ───────────────────────────────

@@ -89,7 +89,8 @@ mod tests {
         assert_eq!(row_byte_offset_to_y(&rows, 75), 20.0);
         assert_eq!(row_byte_offset_to_y(&rows, 100), 40.0);
         assert_eq!(row_byte_offset_to_y(&rows, 200), 60.0);
-        assert_eq!(row_byte_offset_to_y(&[], 50), 0.0);
+        assert_eq!(row_byte_offset_to_y(&[], 0), 0.0);
+        assert_eq!(row_byte_offset_to_y(&[], 42), 0.0);
     }
 
     #[test]
@@ -100,13 +101,6 @@ mod tests {
         assert_eq!(row_y_to_byte_offset(&rows, 25.0), 50);
         assert_eq!(row_y_to_byte_offset(&rows, 40.0), 100);
         assert_eq!(row_y_to_byte_offset(&rows, 99.0), 150);
-        assert_eq!(row_y_to_byte_offset(&[], 50.0), 0);
-    }
-
-    #[test]
-    fn row_mapping_empty_rows() {
-        assert_eq!(row_byte_offset_to_y(&[], 0), 0.0);
-        assert_eq!(row_byte_offset_to_y(&[], 42), 0.0);
         assert_eq!(row_y_to_byte_offset(&[], 0.0), 0);
         assert_eq!(row_y_to_byte_offset(&[], 42.0), 0);
     }

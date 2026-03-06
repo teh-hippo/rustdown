@@ -1,10 +1,11 @@
 //! List rendering — unordered and ordered lists with checkboxes.
 
+#![allow(clippy::cast_precision_loss)] // UI math — indent values are small
+
 use super::{render_blocks, text::render_styled_text};
 use crate::parse::ListItem;
 use crate::style::MarkdownStyle;
 
-#[allow(clippy::cast_precision_loss)] // UI math — indent values are small
 pub(super) fn render_unordered_list(
     ui: &mut egui::Ui,
     items: &[ListItem],
@@ -46,7 +47,6 @@ pub(super) fn render_unordered_list(
     }
 }
 
-#[allow(clippy::cast_precision_loss)] // UI math — indent values are small
 pub(super) fn render_ordered_list(
     ui: &mut egui::Ui,
     start: u64,

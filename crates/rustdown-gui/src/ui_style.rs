@@ -163,41 +163,23 @@ mod tests {
         let ctx = egui::Context::default();
         configure_style(&ctx);
         let style = ctx.style();
-        assert_eq!(
-            style
-                .text_styles
-                .get(&egui::TextStyle::Body)
-                .map(|font| font.size),
-            Some(DEFAULT_BODY_BUTTON_FONT_SIZE)
-        );
-        assert_eq!(
-            style
-                .text_styles
-                .get(&egui::TextStyle::Button)
-                .map(|font| font.size),
-            Some(DEFAULT_BODY_BUTTON_FONT_SIZE)
-        );
-        assert_eq!(
-            style
-                .text_styles
-                .get(&egui::TextStyle::Monospace)
-                .map(|font| font.size),
-            Some(DEFAULT_MONOSPACE_FONT_SIZE)
-        );
-        assert_eq!(
-            style
-                .text_styles
-                .get(&egui::TextStyle::Small)
-                .map(|font| font.size),
-            Some(DEFAULT_SMALL_FONT_SIZE)
-        );
-        assert_eq!(
-            style
-                .text_styles
-                .get(&egui::TextStyle::Heading)
-                .map(|font| font.size),
-            Some(DEFAULT_BODY_BUTTON_FONT_SIZE * 2.0)
-        );
+        let expected: &[(egui::TextStyle, f32)] = &[
+            (egui::TextStyle::Body, DEFAULT_BODY_BUTTON_FONT_SIZE),
+            (egui::TextStyle::Button, DEFAULT_BODY_BUTTON_FONT_SIZE),
+            (egui::TextStyle::Monospace, DEFAULT_MONOSPACE_FONT_SIZE),
+            (egui::TextStyle::Small, DEFAULT_SMALL_FONT_SIZE),
+            (
+                egui::TextStyle::Heading,
+                DEFAULT_BODY_BUTTON_FONT_SIZE * 2.0,
+            ),
+        ];
+        for (text_style, size) in expected {
+            assert_eq!(
+                style.text_styles.get(text_style).map(|f| f.size),
+                Some(*size),
+                "{text_style:?} should have size {size}"
+            );
+        }
     }
 
     #[test]
@@ -284,17 +266,7 @@ mod tests {
         let ctx = egui::Context::default();
         configure_style(&ctx);
         let style = ctx.style();
-        let body_size = style
-            .text_styles
-            .get(&egui::TextStyle::Body)
-            .map_or(0.0, |f| f.size);
-        let heading_size = style
-            .text_styles
-            .get(&egui::TextStyle::Heading)
-            .map_or(0.0, |f| f.size);
-        assert!(
-            heading_size > body_size,
-            "heading ({heading_size}) should be larger than body ({body_size})"
-        );
+        let size_of = |ts: &egui::TextStyle| style.text_styles.get(ts).map_or(0.0, |f| f.size);
+        assert!(size_of(&egui::TextStyle::Heading) > size_of(&egui::TextStyle::Body));
     }
 }

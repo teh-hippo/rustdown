@@ -211,15 +211,10 @@ mod tests {
             assert!(style.link_color.is_some(), "link_color should be set");
             assert!(style.code_bg.is_some(), "code_bg should be set");
 
-            let hr = style.hr_color;
-            let link = style.link_color;
-            let code_bg = style.code_bg;
-            assert!(hr.is_some() && link.is_some() && code_bg.is_some());
-
             let (hr, link, code_bg) = (
-                hr.unwrap_or_default(),
-                link.unwrap_or_default(),
-                code_bg.unwrap_or_default(),
+                style.hr_color.unwrap_or_default(),
+                style.link_color.unwrap_or_default(),
+                style.code_bg.unwrap_or_default(),
             );
             assert_ne!(hr.a(), 0, "hr_color should not be transparent");
             assert_ne!(link.a(), 0, "link_color should not be transparent");
@@ -242,7 +237,6 @@ mod tests {
     fn from_visuals_works_for_both_modes() {
         let dark = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let light = MarkdownStyle::from_visuals(&egui::Visuals::light());
-        // Both should produce valid styles with all 6 headings
         assert_eq!(dark.headings.len(), 6);
         assert_eq!(light.headings.len(), 6);
         assert!(dark.code_bg.is_some());

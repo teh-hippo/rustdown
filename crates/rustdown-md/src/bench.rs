@@ -32,6 +32,37 @@ mod tests {
         };
     }
 
+    fn viewport_scan(cache: &MarkdownCache, steps: u32) {
+        let total_h = cache.total_height;
+        let n_blocks = cache.blocks.len();
+        for step in 0..steps {
+            let vis_top = total_h * (step as f32 / steps as f32);
+            let vis_bottom = vis_top + 800.0;
+            let first = match cache
+                .cum_y
+                .binary_search_by(|y| y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+            let mut idx = first;
+            while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
+                idx += 1;
+            }
+            std::hint::black_box((first, idx));
+        }
+    }
+
+    fn test_input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        }
+    }
+
     // ── Parse benchmarks (parameterized by size) ─────────────────
 
     #[test]
@@ -203,24 +234,8 @@ mod tests {
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(&doc);
         cache.ensure_heights(14.0, 600.0, &style);
-        let total_h = cache.total_height;
-        let n_blocks = cache.blocks.len();
         let per_iter = bench("viewport_scan_200kb", 1000, || {
-            for step in 0..20_u32 {
-                let vis_top = total_h * (step as f32 / 20.0);
-                let vis_bottom = vis_top + 800.0;
-                let first = match cache.cum_y.binary_search_by(|y| {
-                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    Ok(i) => i,
-                    Err(i) => i.saturating_sub(1),
-                };
-                let mut idx = first;
-                while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
-                    idx += 1;
-                }
-                std::hint::black_box((first, idx));
-            }
+            viewport_scan(&cache, 20);
         });
         assert_perf!(
             per_iter < Duration::from_micros(10),
@@ -235,26 +250,10 @@ mod tests {
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(&doc);
         cache.ensure_heights(14.0, 600.0, &style);
-        let total_h = cache.total_height;
-        let n_blocks = cache.blocks.len();
         let per_iter = bench("rapid_scroll_200kb", 100, || {
             cache.ensure_parsed(&doc);
             cache.ensure_heights(14.0, 600.0, &style);
-            for step in 0..5_u32 {
-                let vis_top = total_h * (step as f32 / 5.0);
-                let vis_bottom = vis_top + 800.0;
-                let first = match cache.cum_y.binary_search_by(|y| {
-                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    Ok(i) => i,
-                    Err(i) => i.saturating_sub(1),
-                };
-                let mut idx = first;
-                while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
-                    idx += 1;
-                }
-                std::hint::black_box((first, idx));
-            }
+            viewport_scan(&cache, 5);
         });
         assert_perf!(
             per_iter < Duration::from_millis(1),
@@ -271,17 +270,7 @@ mod tests {
             cache.clear();
             cache.ensure_parsed(&doc);
             cache.ensure_heights(14.0, 600.0, &style);
-            let total_h = cache.total_height;
-            for i in 0..10_u32 {
-                let vis_top = total_h * (i as f32 / 10.0);
-                let _first = match cache.cum_y.binary_search_by(|y| {
-                    y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx.saturating_sub(1),
-                };
-                std::hint::black_box(vis_top + 800.0);
-            }
+            viewport_scan(&cache, 10);
         });
         assert_perf!(
             per_iter < Duration::from_millis(10),
@@ -440,23 +429,7 @@ mod tests {
         }
         let sum: f32 = cache.heights.iter().sum();
         assert!((cache.total_height - sum).abs() < 1.0);
-        let n_blocks = cache.blocks.len();
-        for step in 0..100_u32 {
-            let vis_top = cache.total_height * (step as f32 / 100.0);
-            let vis_bottom = vis_top + 800.0;
-            let first = match cache
-                .cum_y
-                .binary_search_by(|y| y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                Ok(i) => i,
-                Err(i) => i.saturating_sub(1),
-            };
-            let mut idx = first;
-            while idx < n_blocks && cache.cum_y[idx] <= vis_bottom {
-                idx += 1;
-            }
-            std::hint::black_box((first, idx));
-        }
+        viewport_scan(&cache, 100);
 
         // 10MB newlines
         let doc2 = "\n".repeat(10 * 1024 * 1024);
@@ -469,10 +442,8 @@ mod tests {
 
     #[test]
     fn parse_all_minimal_docs_without_panic() {
-        for (name, doc) in stress::minimal_docs() {
-            let blocks = parse_markdown(&doc);
-            std::hint::black_box(&blocks);
-            eprintln!("minimal/{name}: {} blocks", blocks.len());
+        for (_name, doc) in stress::minimal_docs() {
+            std::hint::black_box(parse_markdown(&doc));
         }
     }
 
@@ -523,7 +494,7 @@ mod tests {
     #[test]
     fn extreme_edge_cases() {
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        for (label, md) in [
+        for (_label, md) in [
             ("single_char", "a"),
             ("heading_no_text", "# "),
             ("unclosed_fence", "```"),
@@ -531,11 +502,7 @@ mod tests {
             let mut c = MarkdownCache::default();
             c.ensure_parsed(md);
             c.ensure_heights(14.0, 600.0, &style);
-            eprintln!(
-                "{label}: {} blocks, height={}",
-                c.blocks.len(),
-                c.total_height
-            );
+            std::hint::black_box((c.blocks.len(), c.total_height));
         }
         // 1000 empty code blocks
         let doc = "```\n```\n".repeat(1000);
@@ -630,26 +597,7 @@ mod tests {
 
     #[test]
     fn stress_mixed_content_5mb() {
-        let mut doc = String::with_capacity(5_000_000);
-        for section in 0..500 {
-            writeln!(doc, "# Section {section}\n").ok();
-            for para in 0..5 {
-                writeln!(
-                    doc,
-                    "Paragraph {para}: {}\n",
-                    "Lorem ipsum dolor sit amet. ".repeat(10)
-                )
-                .ok();
-            }
-            writeln!(doc, "```\ncode block {section}\nline 2\nline 3\n```\n").ok();
-            writeln!(
-                doc,
-                "| A | B | C |\n|---|---|---|\n| {section} | data | row |\n"
-            )
-            .ok();
-            writeln!(doc, "> Quote from section {section}\n").ok();
-            writeln!(doc, "- Item 1\n- Item 2\n- Item 3\n").ok();
-        }
+        let doc = stress::large_mixed_doc(5 * 1024);
         let start = Instant::now();
         let blocks = parse_markdown(&doc);
         let parse_time = start.elapsed();
@@ -661,70 +609,15 @@ mod tests {
         cache.ensure_heights(14.0, 600.0, &style);
         let height_time = start.elapsed();
         assert!(cache.total_height > 0.0);
-        if !cfg!(debug_assertions) {
-            assert!(parse_time.as_millis() < 500, "parse: {parse_time:?}");
-            assert!(height_time.as_millis() < 200, "heights: {height_time:?}");
-        }
+        assert_perf!(parse_time.as_millis() < 500, "parse: {parse_time:?}");
+        assert_perf!(height_time.as_millis() < 200, "heights: {height_time:?}");
     }
 
     // ── Mixed content and width sensitivity ──────────────────────
 
     #[test]
     fn mixed_content_programmatic_document() {
-        let mut doc = String::with_capacity(512 * 1024);
-        for i in 0..200_u32 {
-            let hashes = "#".repeat(((i % 6) + 1) as usize);
-            let _ = writeln!(doc, "{hashes} Heading {i}\n");
-        }
-        for t in 0..100_u32 {
-            let cols = (t % 20) + 1;
-            let rows = (t % 50) + 1;
-            let _ = write!(doc, "|");
-            for c in 0..cols {
-                let _ = write!(doc, " H{c} |");
-            }
-            let _ = writeln!(doc);
-            let _ = write!(doc, "|");
-            for _ in 0..cols {
-                let _ = write!(doc, " --- |");
-            }
-            let _ = writeln!(doc);
-            for r in 0..rows {
-                let _ = write!(doc, "|");
-                for c in 0..cols {
-                    let _ = write!(doc, " R{r}C{c} |");
-                }
-                let _ = writeln!(doc);
-            }
-            let _ = writeln!(doc);
-        }
-        for cb in 0..100_u32 {
-            let lang = match cb % 4 {
-                0 => "rust",
-                1 => "python",
-                2 => "js",
-                _ => "",
-            };
-            let _ = writeln!(doc, "```{lang}");
-            for l in 0..=(cb % 30) {
-                let _ = writeln!(doc, "line {l} of code block {cb}");
-            }
-            let _ = writeln!(doc, "```\n");
-        }
-        for li in 0..100_u32 {
-            for d in 0..=(li % 5) {
-                let indent = "  ".repeat(d as usize);
-                let _ = writeln!(doc, "{indent}- Item at depth {d} in list {li}");
-            }
-            let _ = writeln!(doc);
-        }
-        for i in 0..50_u32 {
-            let _ = writeln!(
-                doc,
-                "> Blockquote {i} with **bold** and *italic*\n> Second line.\n"
-            );
-            let _ = writeln!(doc, "![alt text {i}](https://example.com/image{i}.png)\n");
-        }
+        let doc = stress::large_mixed_doc(500);
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(&doc);
@@ -738,16 +631,11 @@ mod tests {
 
     #[test]
     fn width_sensitivity_monotonically_decreasing() {
-        let mut doc = String::with_capacity(64 * 1024);
-        for i in 0..500_u32 {
-            let _ = writeln!(
-                doc,
-                "Paragraph {i}: Lorem ipsum dolor sit amet, consectetur adipiscing \
-                 elit. Sed do eiusmod tempor incididunt ut labore et dolore magna \
-                 aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco \
-                 laboris nisi ut aliquip ex ea commodo consequat.\n"
-            );
-        }
+        let doc = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+                   Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+                   Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris \
+                   nisi ut aliquip ex ea commodo consequat.\n\n"
+            .repeat(500);
         let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
         let widths: &[f32] = &[100.0, 200.0, 400.0, 800.0, 1600.0];
         let mut heights: Vec<f32> = Vec::new();
@@ -791,14 +679,7 @@ mod tests {
             let mut cache = MarkdownCache::default();
             let style = MarkdownStyle::colored(&egui::Visuals::dark());
             let viewer = MarkdownViewer::new("integration");
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| {
+            let _ = ctx.run(test_input(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     viewer.show_scrollable(ui, &mut cache, &style, md, None);
                 });
@@ -816,16 +697,9 @@ mod tests {
         let mut cache = MarkdownCache::default();
         let style = MarkdownStyle::colored(&egui::Visuals::dark());
         let viewer = MarkdownViewer::new("stability");
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            ..Default::default()
-        };
         let mut heights = Vec::new();
         for _ in 0..3 {
-            let _ = ctx.run(input.clone(), |ctx| {
+            let _ = ctx.run(test_input(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     viewer.show_scrollable(ui, &mut cache, &style, md, None);
                 });
@@ -844,20 +718,13 @@ mod tests {
         let mut cache = MarkdownCache::default();
         let style = MarkdownStyle::colored(&egui::Visuals::dark());
         let viewer = MarkdownViewer::new("switch");
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            ..Default::default()
-        };
-        let _ = ctx.run(input.clone(), |ctx| {
+        let _ = ctx.run(test_input(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 viewer.show_scrollable(ui, &mut cache, &style, "# Doc A\n\nText.\n", None);
             });
         });
         let a = cache.blocks.len();
-        let _ = ctx.run(input, |ctx| {
+        let _ = ctx.run(test_input(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 viewer.show_scrollable(
                     ui,

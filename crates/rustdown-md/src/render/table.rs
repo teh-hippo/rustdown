@@ -1,5 +1,7 @@
 //! Table rendering — column width computation, grid layout, cell formatting.
 
+#![allow(clippy::cast_precision_loss)] // UI math — column count is small
+
 use super::text::{render_styled_text, render_styled_text_ex, strengthen_color};
 use crate::parse::{Alignment, StyledText};
 use crate::style::MarkdownStyle;
@@ -8,7 +10,6 @@ use crate::style::MarkdownStyle;
 /// sizing with a per-column minimum and a total budget.
 ///
 /// Returns `(col_widths, min_col_w)`.
-#[allow(clippy::cast_precision_loss)] // UI math — column count is small
 pub(super) fn compute_table_col_widths(
     header: &[StyledText],
     rows: &[Vec<StyledText>],
@@ -81,7 +82,6 @@ pub(super) fn compute_table_col_widths(
     (widths, min_col_w)
 }
 
-#[allow(clippy::cast_precision_loss)] // UI math — column count is small
 pub(super) fn render_table(
     ui: &mut egui::Ui,
     header: &[StyledText],
