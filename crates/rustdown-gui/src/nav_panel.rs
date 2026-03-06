@@ -972,55 +972,41 @@ mod tests {
     // ── preview_byte_to_scroll_y boundary tests ─────────────────────
 
     #[test]
-    fn preview_byte_to_scroll_y_boundaries() {
-        let md = "text\n\n# A\n\nmore\n\n## B\n";
-        let outline = nav_outline::extract_headings(md);
-        for (label, byte, total_h, check) in [
-            ("zero", 0_usize, 1000.0_f32, true),
-            (
-                "at last heading",
-                outline.last().map_or(0, |h| h.byte_offset),
-                1000.0,
-                true,
-            ),
-            ("beyond max", 999_999_usize, 1000.0, true),
-        ] {
-            let y = preview_byte_to_scroll_y(&outline, byte, total_h);
-            if check {
-                assert!((0.0..=total_h).contains(&y), "{label}: got {y}");
-            }
-        }
-        // Single heading beyond max clamps.
-        let md2 = "text\n\n# Only\n";
-        let outline2 = nav_outline::extract_headings(md2);
-        let y = preview_byte_to_scroll_y(&outline2, 999_999, 500.0);
-        assert!(y <= 500.0, "single-heading beyond-max: got {y}");
-    }
-
-    // ── preview_scroll_y_to_byte boundary tests ─────────────────────
-
-    #[test]
-    fn preview_scroll_y_to_byte_boundaries() {
+    fn preview_scroll_boundary_cases() {
         let md = "text\n\n# A\n\nmore\n\n## B\n";
         let outline = nav_outline::extract_headings(md);
         let first = outline.first().map_or(0, |h| h.byte_offset);
         let last = outline.last().map_or(0, |h| h.byte_offset);
 
-        // y=0 maps to first heading offset.
+        // byte_to_scroll_y boundaries.
+        for (label, byte, total_h) in [
+            ("zero", 0_usize, 1000.0_f32),
+            ("at last heading", last, 1000.0),
+            ("beyond max", 999_999_usize, 1000.0),
+        ] {
+            let y = preview_byte_to_scroll_y(&outline, byte, total_h);
+            assert!((0.0..=total_h).contains(&y), "{label}: got {y}");
+        }
+
+        // Single heading beyond max clamps.
+        let md2 = "text\n\n# Only\n";
+        let outline2 = nav_outline::extract_headings(md2);
+        assert!(preview_byte_to_scroll_y(&outline2, 999_999, 500.0) <= 500.0);
+
+        // scroll_y_to_byte boundaries.
         assert_eq!(
             preview_scroll_y_to_byte(&outline, 0.0, 1000.0),
             first,
             "y=0"
         );
-        // y=total maps near end.
         assert!(
             preview_scroll_y_to_byte(&outline, 1000.0, 1000.0) >= last,
             "y=total"
         );
-        // y beyond total clamps.
-        let byte = preview_scroll_y_to_byte(&outline, 5000.0, 1000.0);
-        assert!(byte <= last + 1000, "y beyond total: got {byte}");
-        // Negative y clamps to first heading.
+        assert!(
+            preview_scroll_y_to_byte(&outline, 5000.0, 1000.0) <= last + 1000,
+            "y beyond total"
+        );
         assert_eq!(
             preview_scroll_y_to_byte(&outline, -100.0, 1000.0),
             first,
@@ -1062,43 +1048,30 @@ mod tests {
     // ── Chaos tests ──────────────────────────────────────────────────
 
     #[test]
-    fn decrease_depth_at_minimum_stays_at_one() {
+    fn depth_clamp_and_labels_edge_cases() {
+        // Decrease at minimum stays at 1.
         let mut state = NavState {
             max_depth: 1,
             ..NavState::default()
         };
-        state.decrease_depth();
-        assert_eq!(state.max_depth, 1);
-        for _ in 0..10 {
+        for _ in 0..11 {
             state.decrease_depth();
         }
         assert_eq!(state.max_depth, 1);
-    }
 
-    #[test]
-    fn increase_depth_at_maximum_stays_at_six() {
-        let mut state = NavState {
-            max_depth: 6,
-            ..NavState::default()
-        };
-        state.increase_depth();
-        assert_eq!(state.max_depth, 6);
-        for _ in 0..10 {
+        // Increase at maximum stays at 6.
+        state.max_depth = 6;
+        for _ in 0..11 {
             state.increase_depth();
         }
         assert_eq!(state.max_depth, 6);
-    }
 
-    #[test]
-    fn depth_labels_index_clamped_within_bounds() {
-        // Simulate what the UI code does: DEPTH_LABELS[(max_depth as usize).min(6)]
+        // DEPTH_LABELS index clamp.
         const DEPTH_LABELS: [&str; 7] = [
             "H1–H0", "H1–H1", "H1–H2", "H1–H3", "H1–H4", "H1–H5", "H1–H6",
         ];
-        // Even with out-of-range values, the .min(6) clamp prevents panic
         for depth in [0u8, 1, 6, 7, 100, 255] {
-            let idx = (depth as usize).min(6);
-            let _ = DEPTH_LABELS[idx]; // must not panic
+            let _ = DEPTH_LABELS[(depth as usize).min(6)];
         }
     }
 }

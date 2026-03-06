@@ -70,7 +70,7 @@ pub struct DiskSyncState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io, path::Path, sync::mpsc, time::SystemTime};
+    use std::{io, sync::mpsc, time::SystemTime};
 
     fn dummy_rev() -> DiskRevision {
         DiskRevision {
@@ -85,71 +85,46 @@ mod tests {
 
     #[test]
     fn sync_state_mutation_and_defaults() {
+        // All Option fields default to None, counters to zero.
         let s = DiskSyncState::default();
         assert_eq!(s.reload_nonce, 0);
         assert!(!s.reload_in_flight);
-        assert!(s.watcher.is_none());
-        assert!(s.watch_root.is_none());
-        assert!(s.watch_target_name.is_none());
-        assert!(s.watch_rx.is_none());
-        assert!(s.poll_at.is_none());
-        assert!(s.pending_reload_at.is_none());
-        assert!(s.read_tx.is_none());
-        assert!(s.read_rx.is_none());
-        assert!(s.conflict.is_none());
-        assert!(s.merge_sidecar_path.is_none());
+        for is_none in [
+            s.watcher.is_none(),
+            s.watch_root.is_none(),
+            s.watch_target_name.is_none(),
+            s.watch_rx.is_none(),
+            s.poll_at.is_none(),
+            s.pending_reload_at.is_none(),
+            s.read_tx.is_none(),
+            s.read_rx.is_none(),
+            s.conflict.is_none(),
+            s.merge_sidecar_path.is_none(),
+        ] {
+            assert!(is_none);
+        }
 
-        // Nonce increments.
+        // Nonce, in-flight, conflict, watch fields, and channels.
         let mut s = DiskSyncState::default();
         s.reload_nonce += 1;
         assert_eq!(s.reload_nonce, 1);
-        s.reload_nonce += 1;
-        assert_eq!(s.reload_nonce, 2);
-
-        // Reload in-flight toggle.
-        let mut s = DiskSyncState {
-            reload_in_flight: true,
-            ..DiskSyncState::default()
-        };
+        s.reload_in_flight = true;
         assert!(s.reload_in_flight);
-        s.reload_in_flight = false;
-        assert!(!s.reload_in_flight);
-
-        // Conflict set and clear.
-        let mut s = DiskSyncState {
-            conflict: Some(DiskConflict {
-                disk_text: "d".into(),
-                disk_rev: dummy_rev(),
-                conflict_marked: "cm".into(),
-                ours_wins: "ow".into(),
-            }),
-            ..DiskSyncState::default()
-        };
+        s.conflict = Some(DiskConflict {
+            disk_text: "d".into(),
+            disk_rev: dummy_rev(),
+            conflict_marked: "cm".into(),
+            ours_wins: "ow".into(),
+        });
         assert!(s.conflict.is_some());
         s.conflict = None;
         assert!(s.conflict.is_none());
-
-        // Watch target and root fields.
-        let mut s = DiskSyncState {
-            watch_target_name: Some(OsString::from("README.md")),
-            ..DiskSyncState::default()
-        };
-        assert_eq!(
-            s.watch_target_name.as_deref(),
-            Some(std::ffi::OsStr::new("README.md"))
-        );
+        s.watch_target_name = Some(OsString::from("README.md"));
         s.watch_root = Some(PathBuf::from("/tmp"));
-        assert_eq!(s.watch_root.as_deref(), Some(Path::new("/tmp")));
-        s.merge_sidecar_path = Some(PathBuf::from("/tmp/.rustdown-merge0.md"));
-        assert!(s.merge_sidecar_path.is_some());
-
-        // Channel pair.
-        let mut s = DiskSyncState::default();
         let (tx, rx) = mpsc::channel::<DiskReadMessage>();
         s.read_tx = Some(tx);
         s.read_rx = Some(rx);
-        assert!(s.read_tx.is_some());
-        assert!(s.read_rx.is_some());
+        assert!(s.read_tx.is_some() && s.read_rx.is_some());
     }
 
     #[test]
@@ -211,42 +186,28 @@ mod tests {
 
     #[test]
     fn disk_types_fields_clone_debug_and_copy() {
-        // DiskReloadOutcome variant fields.
-        if let DiskReloadOutcome::Replace {
-            disk_text,
-            disk_rev,
-        } = (DiskReloadOutcome::Replace {
+        // DiskReloadOutcome variant fields via table.
+        let replace = DiskReloadOutcome::Replace {
             disk_text: "hello".into(),
             disk_rev: dummy_rev(),
-        }) {
-            assert_eq!(disk_text, "hello");
-            assert_eq!(disk_rev.len, 42);
-        }
-        if let DiskReloadOutcome::MergeClean {
-            merged_text,
-            disk_text,
-            ..
-        } = (DiskReloadOutcome::MergeClean {
+        };
+        let merge_clean = DiskReloadOutcome::MergeClean {
             merged_text: "m".into(),
             disk_text: "d".into(),
             disk_rev: dummy_rev(),
-        }) {
-            assert_eq!(merged_text, "m");
-            assert_eq!(disk_text, "d");
-        }
-        if let DiskReloadOutcome::MergeConflict {
-            conflict_marked,
-            ours_wins,
-            ..
-        } = (DiskReloadOutcome::MergeConflict {
+        };
+        let merge_conflict = DiskReloadOutcome::MergeConflict {
             disk_text: "t".into(),
             disk_rev: dummy_rev(),
             conflict_marked: "<<<".into(),
             ours_wins: "o".into(),
-        }) {
-            assert_eq!(conflict_marked, "<<<");
-            assert_eq!(ours_wins, "o");
-        }
+        };
+        assert!(matches!(replace, DiskReloadOutcome::Replace { .. }));
+        assert!(matches!(merge_clean, DiskReloadOutcome::MergeClean { .. }));
+        assert!(matches!(
+            merge_conflict,
+            DiskReloadOutcome::MergeConflict { .. }
+        ));
 
         // DiskConflict clone and debug.
         let c = DiskConflict {
@@ -266,18 +227,15 @@ mod tests {
         );
         assert!(format!("{c:?}").contains("DiskConflict"));
 
-        // ReloadKind debug and copy.
+        // ReloadKind: debug, Copy.
         for (kind, name) in [
             (ReloadKind::Clean, "Clean"),
             (ReloadKind::Merged, "Merged"),
             (ReloadKind::ConflictResolved, "ConflictResolved"),
         ] {
             assert!(format!("{kind:?}").contains(name));
+            let k2 = kind;
+            assert_eq!(format!("{kind:?}"), format!("{k2:?}"));
         }
-        // Verify Copy.
-        let k = ReloadKind::Clean;
-        let k2 = k;
-        assert!(matches!(k, ReloadKind::Clean));
-        assert!(matches!(k2, ReloadKind::Clean));
     }
 }

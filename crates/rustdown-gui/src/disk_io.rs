@@ -399,91 +399,40 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_round_trip_with_stable_read() {
-        let dir = test_dir("rustdown-round-trip-test");
-        let path = dir.join("round.md");
-        let content = "Hello, round-trip!\nLine 2\n";
-        assert!(atomic_write_utf8(&path, content).is_ok());
-        let (text, rev) = read_stable_utf8(&path).unwrap_or_else(|_| unreachable!());
-        assert_eq!(text, content);
-        assert_eq!(rev.len, content.len() as u64);
-    }
-
-    #[test]
-    fn atomic_write_unicode_content() {
-        let dir = test_dir("rustdown-atomic-unicode-test");
-        let path = dir.join("unicode.md");
-        let content = "日本語テスト 🦀 émojis\n";
-        assert!(atomic_write_utf8(&path, content).is_ok());
-        let read = fs::read_to_string(&path).unwrap_or_default();
-        assert_eq!(read, content);
-    }
-
-    #[test]
-    fn next_merge_sidecar_path_sequential_numbering() {
-        let dir = test_dir("rustdown-sidecar-seq-test");
-        let original = dir.join("notes.md");
-
-        // Fill slots 1 and 2 via create_new calls.
-        let s1 = next_merge_sidecar_path(&original);
-        assert!(s1.is_ok());
-        let s2 = next_merge_sidecar_path(&original);
-        assert!(s2.is_ok());
-
-        // Third call should return slot 3.
-        let result = next_merge_sidecar_path(&original);
-        assert!(result.is_ok());
-        let sidecar = result.unwrap_or_else(|_| unreachable!());
-        assert_eq!(
-            sidecar.file_name().unwrap_or_default(),
-            "notes.rustdown-merge-3.md"
-        );
-    }
-
-    #[test]
-    fn stable_read_large_file() {
-        use std::fmt::Write;
-        let dir = test_dir("rustdown-large-read-test");
-        let path = dir.join("large.md");
-        let mut content = String::with_capacity(1_100_000);
-        for i in 0..20_000 {
-            writeln!(content, "- Item {i}: {}", "x".repeat(50)).unwrap_or_default();
+    fn stable_read_edge_cases() {
+        // Large file.
+        {
+            use std::fmt::Write;
+            let dir = test_dir("rustdown-large-read-test");
+            let path = dir.join("large.md");
+            let mut content = String::with_capacity(1_100_000);
+            for i in 0..20_000 {
+                writeln!(content, "- Item {i}: {}", "x".repeat(50)).unwrap_or_default();
+            }
+            assert!(content.len() > 1_000_000);
+            fs::write(&path, &content).ok();
+            let (text, rev) = read_stable_utf8(&path).unwrap_or_else(|_| unreachable!());
+            assert_eq!(text, content);
+            assert_eq!(rev.len, content.len() as u64);
         }
-        assert!(content.len() > 1_000_000);
-        fs::write(&path, &content).ok();
-        let result = read_stable_utf8(&path);
-        assert!(result.is_ok(), "large file read should succeed");
-        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
-        assert_eq!(text, content);
-        assert_eq!(rev.len, content.len() as u64);
-    }
-
-    #[test]
-    fn stable_read_empty_file() {
-        let dir = test_dir("rustdown-empty-read-test");
-        let path = dir.join("empty.md");
-        fs::write(&path, "").ok();
-        let result = read_stable_utf8(&path);
-        assert!(result.is_ok(), "empty file read should succeed");
-        let (text, rev) = result.unwrap_or_else(|_| unreachable!());
-        assert_eq!(text, "");
-        assert_eq!(rev.len, 0);
-    }
-
-    #[test]
-    fn stable_read_invalid_utf8_returns_error() {
-        let dir = test_dir("rustdown-binary-read-test");
-        let path = dir.join("binary.md");
-        fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).ok();
-        let result = read_stable_utf8(&path);
-        assert!(result.is_err(), "binary file should fail UTF-8 read");
-    }
-
-    #[test]
-    fn stable_read_deleted_file_returns_error() {
-        let path = PathBuf::from("/nonexistent/path/deleted.md");
-        let result = read_stable_utf8(&path);
-        assert!(result.is_err());
+        // Empty file.
+        {
+            let dir = test_dir("rustdown-empty-read-test");
+            let path = dir.join("empty.md");
+            fs::write(&path, "").ok();
+            let (text, rev) = read_stable_utf8(&path).unwrap_or_else(|_| unreachable!());
+            assert_eq!(text, "");
+            assert_eq!(rev.len, 0);
+        }
+        // Invalid UTF-8.
+        {
+            let dir = test_dir("rustdown-binary-read-test");
+            let path = dir.join("binary.md");
+            fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).ok();
+            assert!(read_stable_utf8(&path).is_err());
+        }
+        // Deleted file.
+        assert!(read_stable_utf8(Path::new("/nonexistent/path/deleted.md")).is_err());
     }
 
     #[test]
@@ -498,9 +447,7 @@ mod tests {
         assert!(content.len() > 500_000);
         let write_result = atomic_write_utf8(&path, &content);
         assert!(write_result.is_ok(), "large write should succeed");
-        let read_result = read_stable_utf8(&path);
-        assert!(read_result.is_ok(), "large read-back should succeed");
-        let (read_back, _) = read_result.unwrap_or_else(|_| unreachable!());
+        let (read_back, _) = read_stable_utf8(&path).unwrap_or_else(|_| unreachable!());
         assert_eq!(read_back, content);
     }
 

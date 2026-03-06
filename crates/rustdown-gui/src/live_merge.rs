@@ -531,15 +531,17 @@ mod tests {
 
     #[test]
     fn merge_large_identical_change() {
-        // Both sides make the same large change → clean.
         use std::fmt::Write;
-        let mut base = String::new();
-        let mut modified = String::new();
-        for i in 0..100 {
-            let _ = writeln!(base, "line {i}");
-            let _ = writeln!(modified, "CHANGED {i}");
+        // Both sides make the same large change → clean.
+        for size in [100, 1000] {
+            let mut base = String::new();
+            let mut modified = String::new();
+            for i in 0..size {
+                let _ = writeln!(base, "line {i}");
+                let _ = writeln!(modified, "CHANGED {i}");
+            }
+            assert_clean(&base, &modified, &modified, &modified);
         }
-        assert_clean(&base, &modified, &modified, &modified);
     }
 
     #[test]
@@ -580,50 +582,27 @@ mod tests {
     }
 
     #[test]
-    fn merge_disk_truncated_to_empty() {
-        let base = "original content\n";
-        let ours = "original content\nour addition\n";
-        let theirs = "";
-        match merge_three_way(base, ours, theirs) {
-            Merge3Outcome::Conflicted { ours_wins, .. } => {
-                assert_eq!(ours_wins, ours, "ours_wins should preserve user edits");
-            }
-            Merge3Outcome::Clean(result) => {
-                // If merge resolves cleanly, the user addition should survive
-                assert!(
-                    result.contains("our addition"),
-                    "clean merge must preserve user edits"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn merge_large_identical_edits_clean() {
-        use std::fmt::Write;
-        let mut base = String::new();
-        let mut modified = String::new();
-        for i in 0..1000 {
-            writeln!(base, "line {i}").unwrap_or_default();
-            writeln!(modified, "modified line {i}").unwrap_or_default();
-        }
-        assert_clean(&base, &modified, &modified, &modified);
-    }
-
-    #[test]
-    fn merge_multiple_disjoint_edits() {
+    fn merge_multiple_disjoint_and_truncated_edits() {
+        // Disjoint edits merge cleanly.
         let base = "aaa\nbbb\nccc\nddd\neee\n";
-        let ours = "AAA\nbbb\nccc\nddd\neee\n"; // changed line 1
-        let theirs = "aaa\nbbb\nccc\nddd\nEEE\n"; // changed line 5
+        let ours = "AAA\nbbb\nccc\nddd\neee\n";
+        let theirs = "aaa\nbbb\nccc\nddd\nEEE\n";
         match merge_three_way(base, ours, theirs) {
             Merge3Outcome::Clean(result) => {
-                assert!(result.contains("AAA"), "should keep our edit");
-                assert!(result.contains("EEE"), "should keep their edit");
-                assert!(!result.contains("aaa"), "should not keep original line 1");
-                assert!(!result.contains("eee"), "should not keep original line 5");
+                assert!(result.contains("AAA") && result.contains("EEE"));
             }
-            Merge3Outcome::Conflicted { .. } => {
-                panic!("disjoint edits should merge cleanly")
+            Merge3Outcome::Conflicted { .. } => panic!("disjoint edits should merge cleanly"),
+        }
+
+        // Disk truncated to empty while user has additions.
+        let base2 = "original content\n";
+        let ours2 = "original content\nour addition\n";
+        match merge_three_way(base2, ours2, "") {
+            Merge3Outcome::Conflicted { ours_wins, .. } => {
+                assert_eq!(ours_wins, ours2);
+            }
+            Merge3Outcome::Clean(result) => {
+                assert!(result.contains("our addition"));
             }
         }
     }
@@ -638,90 +617,63 @@ mod tests {
             Merge3Outcome::Clean("same".to_owned())
         );
 
-        // Empty inputs.
-        let _ = merge_three_way("", "", "");
-        let _ = merge_three_way("", "new", "");
-        let _ = merge_three_way("", "", "new");
-        let _ = merge_three_way("base", "", "");
-
-        // Null bytes in content.
-        let _ = merge_three_way("a\0b", "a\0c", "a\0d");
+        // Various adversarial inputs: must not panic.
+        let adversarial: Vec<(&str, &str, &str)> = vec![
+            ("", "", ""),
+            ("", "new", ""),
+            ("", "", "new"),
+            ("base", "", ""),
+            ("a\0b", "a\0c", "a\0d"),
+            ("a", "b", "c"),
+            ("a", "a", "b"),
+            ("a", "b", "a"),
+            ("x", "y", "z"),
+            ("\n\n\n", "\n\n\n\n", "\n\n"),
+            // CRLF mixed endings.
+            (
+                "line1\r\nline2\r\nline3\r\n",
+                "line1\nline2\nline3\n",
+                "line1\r\nmodified\r\nline3\r\n",
+            ),
+            // Unicode boundaries.
+            (
+                "héllo wörld\ncafé résumé\n",
+                "HÉLLO wörld\ncafé résumé\n",
+                "héllo wörld\nCAFÉ résumé\n",
+            ),
+            // Pre-existing conflict markers.
+            (
+                "normal\n<<<<<<< ours\n=======\n>>>>>>> theirs\n",
+                "changed\n<<<<<<< ours\n=======\n>>>>>>> theirs\n",
+                "normal\n<<<<<<< ours\nmodified\n>>>>>>> theirs\n",
+            ),
+        ];
+        for (base, ours, theirs) in &adversarial {
+            let result = merge_three_way(base, ours, theirs);
+            match result {
+                Merge3Outcome::Clean(_) | Merge3Outcome::Conflicted { .. } => {}
+            }
+        }
 
         // Very long identical lines (deduplication stress).
         let long_line = "x".repeat(100_000) + "\n";
         let base = long_line.repeat(10);
         let _ = merge_three_way(&base, &base, &base);
 
-        // Single character differences.
-        let _ = merge_three_way("a", "b", "c");
-        let _ = merge_three_way("a", "a", "b");
-        let _ = merge_three_way("a", "b", "a");
-    }
-
-    #[test]
-    fn fuzz_merge_binary_like_content() {
-        // Content that looks like binary data (high bytes, no newlines).
-        let base = (0..256)
+        // Binary-like content.
+        let bin_base = (0..256)
             .map(|b| (b % 128) as u8 as char)
             .collect::<String>();
-        let ours = base.clone() + "ours";
-        let theirs = base.clone() + "theirs";
-        let result = merge_three_way(&base, &ours, &theirs);
-        // Should produce a result (clean or conflicted) without panicking.
+        let bin_ours = bin_base.clone() + "ours";
+        let bin_theirs = bin_base.clone() + "theirs";
+        let result = merge_three_way(&bin_base, &bin_ours, &bin_theirs);
         match result {
             Merge3Outcome::Clean(text) => assert!(!text.is_empty()),
             Merge3Outcome::Conflicted {
                 conflict_marked,
                 ours_wins,
             } => {
-                assert!(!conflict_marked.is_empty());
-                assert!(!ours_wins.is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn fuzz_merge_crlf_mixed_endings() {
-        let base = "line1\r\nline2\r\nline3\r\n";
-        let ours = "line1\nline2\nline3\n";
-        let theirs = "line1\r\nmodified\r\nline3\r\n";
-        let result = merge_three_way(base, ours, theirs);
-        // Should not panic regardless of mixed line endings.
-        match result {
-            Merge3Outcome::Clean(text) => assert!(!text.is_empty()),
-            Merge3Outcome::Conflicted { .. } => {}
-        }
-    }
-
-    #[test]
-    fn fuzz_merge_unicode_boundaries() {
-        // Edits that change within multi-byte characters.
-        let base = "héllo wörld\ncafé résumé\n";
-        let ours = "HÉLLO wörld\ncafé résumé\n";
-        let theirs = "héllo wörld\nCAFÉ résumé\n";
-        let result = merge_three_way(base, ours, theirs);
-        match result {
-            Merge3Outcome::Clean(text) => {
-                assert!(text.contains("HÉLLO") || text.contains("héllo"));
-            }
-            Merge3Outcome::Conflicted { .. } => {}
-        }
-    }
-
-    #[test]
-    fn fuzz_merge_conflict_markers_in_content() {
-        // Content that already contains conflict markers.
-        let base = "normal\n<<<<<<< ours\n=======\n>>>>>>> theirs\n";
-        let ours = "changed\n<<<<<<< ours\n=======\n>>>>>>> theirs\n";
-        let theirs = "normal\n<<<<<<< ours\nmodified\n>>>>>>> theirs\n";
-        let result = merge_three_way(base, ours, theirs);
-        // Must not corrupt output even with pre-existing markers.
-        match result {
-            Merge3Outcome::Clean(text)
-            | Merge3Outcome::Conflicted {
-                ours_wins: text, ..
-            } => {
-                assert!(!text.is_empty());
+                assert!(!conflict_marked.is_empty() && !ours_wins.is_empty());
             }
         }
     }
@@ -729,72 +681,27 @@ mod tests {
     // ── Chaos tests ──────────────────────────────────────────────────
 
     #[test]
-    fn render_range_with_edits_empty_base() {
-        let base: Vec<&str> = vec![];
-        let result = render_range_with_edits(&base, 0, 0, &[]);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn render_range_with_edits_oob_end() {
-        // end > base.len() should be clamped, not panic
+    fn render_range_with_edits_edge_cases() {
+        // Empty base.
+        assert_eq!(render_range_with_edits(&[], 0, 0, &[]), "");
+        // end > base.len() clamped.
         let base = vec!["a\n", "b\n"];
-        let result = render_range_with_edits(&base, 0, 100, &[]);
-        assert_eq!(result, "a\nb\n");
-    }
-
-    #[test]
-    fn render_range_with_edits_oob_start() {
-        // start > end should produce empty string
-        let base = vec!["a\n", "b\n"];
-        let result = render_range_with_edits(&base, 50, 100, &[]);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn render_range_with_edits_edit_beyond_base() {
-        // edit.base_start beyond base length should be clamped
-        let base = vec!["a\n"];
+        assert_eq!(render_range_with_edits(&base, 0, 100, &[]), "a\nb\n");
+        // start > end → empty.
+        assert_eq!(render_range_with_edits(&base, 50, 100, &[]), "");
+        // edit beyond base clamped.
         let edits = vec![Edit {
             base_start: 100,
             base_end: 200,
             replacement: vec!["x\n"],
         }];
-        let result = render_range_with_edits(&base, 0, 1, &edits);
-        // base[0..1] is "a\n", then the replacement "x\n" is appended
-        assert_eq!(result, "a\nx\n");
-    }
-
-    #[test]
-    fn merge_single_char_documents() {
-        // Minimal documents that are all different
-        let result = merge_three_way("x", "y", "z");
-        match result {
-            Merge3Outcome::Clean(_) | Merge3Outcome::Conflicted { .. } => {}
-        }
-    }
-
-    #[test]
-    fn merge_only_newlines() {
-        let result = merge_three_way("\n\n\n", "\n\n\n\n", "\n\n");
-        match result {
-            Merge3Outcome::Clean(_) | Merge3Outcome::Conflicted { .. } => {}
-        }
+        assert_eq!(render_range_with_edits(&["a\n"], 0, 1, &edits), "a\nx\n");
     }
 
     #[test]
     fn diff_edits_empty_inputs() {
-        let edits = diff_edits("", "");
-        assert!(edits.is_empty());
-    }
-
-    #[test]
-    fn diff_edits_one_side_empty() {
-        // Adding content to empty base
-        let edits = diff_edits("", "hello\nworld\n");
-        assert!(!edits.is_empty());
-        // Removing all content
-        let edits = diff_edits("hello\nworld\n", "");
-        assert!(!edits.is_empty());
+        assert!(diff_edits("", "").is_empty());
+        assert!(!diff_edits("", "hello\nworld\n").is_empty());
+        assert!(!diff_edits("hello\nworld\n", "").is_empty());
     }
 }

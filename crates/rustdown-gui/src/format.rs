@@ -401,9 +401,19 @@ mod tests {
             ("über\rcool", "über\ncool", "unicode with lone CR"),
             ("hello\r", "hello\n", "trailing CR at EOF"),
             ("\r", "\n", "single CR"),
+            // Multibyte round-trip cases (merged from fuzz_format_crlf_preserves_multibyte).
+            ("héllo\r\nwörld\r\n", "héllo\nwörld\n", "latin diacritics"),
+            (
+                "café\r\nnaïve\r\nrésumé\r\n",
+                "café\nnaïve\nrésumé\n",
+                "french diacritics",
+            ),
+            ("Ω≈ç√∫\r\n≤≥÷\r\n", "Ω≈ç√∫\n≤≥÷\n", "math symbols"),
         ];
         for (input, expected, desc) in cases {
-            assert_eq!(format_markdown(input, opts), expected, "{desc}");
+            let result = format_markdown(input, opts);
+            assert_eq!(result, expected, "{desc}");
+            assert!(!result.contains('\r'), "leftover CR for: {desc}");
         }
     }
 
@@ -506,49 +516,7 @@ mod tests {
             &"\r\n".repeat(50_000),                    // 50K empty CRLF lines
             "\u{FEFF}# BOM heading\n",                 // byte-order mark
             "日本語テスト\t \n中文测试  \n한국어\t\n", // CJK with trailing whitespace
-        ];
-        for input in &cases {
-            let result = format_markdown(input, DEFAULT_OPTIONS);
-            // Must not panic. Output should be valid UTF-8 (guaranteed by String).
-            // Output may grow slightly due to insert_final_newline.
-            let _ = result.len();
-        }
-    }
-
-    #[test]
-    fn fuzz_format_crlf_preserves_multibyte() {
-        // Ensure CRLF normalization doesn't corrupt multi-byte UTF-8.
-        let multibyte_inputs = [
-            "héllo\r\nwörld\r\n",
-            "日本語\r\nテスト\r\n",
-            "🦀\r\n🎉\r\n",
-            "café\r\nnaïve\r\nrésumé\r\n",
-            "Ω≈ç√∫\r\n≤≥÷\r\n",
-        ];
-        for input in multibyte_inputs {
-            let result = format_markdown(
-                input,
-                FormatOptions {
-                    end_of_line: Some(EndOfLine::Lf),
-                    ..DEFAULT_OPTIONS
-                },
-            );
-            // No \r should remain after LF normalization.
-            assert!(!result.contains('\r'), "CRLF not normalized for: {input:?}");
-            // Verify round-trip: content minus line-ending changes should be preserved.
-            let input_words: Vec<&str> = input.split_whitespace().collect();
-            for word in &input_words {
-                if !word.is_empty() {
-                    assert!(result.contains(word.trim()), "lost content word {word:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn fuzz_format_fence_boundary() {
-        // Fences at various states.
-        let cases = [
+            // Fence boundary cases.
             "```\ncode\n```\n",
             "````\ncode\n````\n",
             "~~~\ncode\n~~~\n",
@@ -557,7 +525,7 @@ mod tests {
             "```\nunclosed fence\n",     // unclosed
             "   ```\n   code\n   ```\n", // indented fence
         ];
-        for input in cases {
+        for input in &cases {
             let result = format_markdown(input, DEFAULT_OPTIONS);
             let _ = result.len();
         }

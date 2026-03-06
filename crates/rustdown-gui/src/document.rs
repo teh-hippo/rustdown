@@ -232,79 +232,44 @@ mod tests {
     // ── TrackedTextBuffer ─────────────────────────────────────────────
 
     #[test]
-    fn tracked_buffer_insert_bumps_seq() {
+    fn tracked_buffer_operations() {
+        // Insert bumps seq.
         let mut text = Arc::new(String::from("hello"));
         let seq = Cell::new(0_u64);
         let mut buf = TrackedTextBuffer {
             text: &mut text,
             seq: &seq,
         };
-        let inserted = egui::TextBuffer::insert_text(&mut buf, " world", 5);
-        assert_eq!(inserted, 6);
+        assert_eq!(egui::TextBuffer::insert_text(&mut buf, " world", 5), 6);
         assert_eq!(seq.get(), 1);
         assert_eq!(buf.as_str(), "hello world");
-    }
 
-    #[test]
-    fn tracked_buffer_insert_empty_does_not_bump_seq() {
-        let mut text = Arc::new(String::from("hello"));
-        let seq = Cell::new(0_u64);
-        let mut buf = TrackedTextBuffer {
-            text: &mut text,
-            seq: &seq,
-        };
-        let inserted = egui::TextBuffer::insert_text(&mut buf, "", 0);
-        assert_eq!(inserted, 0);
-        assert_eq!(seq.get(), 0);
-    }
-
-    #[test]
-    fn tracked_buffer_delete_bumps_seq() {
-        let mut text = Arc::new(String::from("hello"));
-        let seq = Cell::new(0_u64);
-        let mut buf = TrackedTextBuffer {
-            text: &mut text,
-            seq: &seq,
-        };
-        egui::TextBuffer::delete_char_range(&mut buf, 0..3);
+        // Empty insert does not bump seq.
+        assert_eq!(egui::TextBuffer::insert_text(&mut buf, "", 0), 0);
         assert_eq!(seq.get(), 1);
-        assert_eq!(buf.as_str(), "lo");
-    }
 
-    #[test]
-    fn tracked_buffer_delete_empty_range_does_not_bump_seq() {
-        let mut text = Arc::new(String::from("hello"));
-        let seq = Cell::new(0_u64);
-        let mut buf = TrackedTextBuffer {
-            text: &mut text,
-            seq: &seq,
-        };
+        // Delete bumps seq.
+        egui::TextBuffer::delete_char_range(&mut buf, 0..3);
+        assert_eq!(seq.get(), 2);
+        assert_eq!(buf.as_str(), "lo world");
+
+        // Empty-range delete does not bump seq.
         egui::TextBuffer::delete_char_range(&mut buf, 2..2);
-        assert_eq!(seq.get(), 0);
-        assert_eq!(buf.as_str(), "hello");
-    }
+        assert_eq!(seq.get(), 2);
+        assert_eq!(buf.as_str(), "lo world");
 
-    #[test]
-    fn tracked_buffer_is_mutable() {
-        let mut text = Arc::new(String::new());
-        let seq = Cell::new(0_u64);
-        let buf = TrackedTextBuffer {
-            text: &mut text,
-            seq: &seq,
-        };
+        // is_mutable.
         assert!(egui::TextBuffer::is_mutable(&buf));
-    }
 
-    #[test]
-    fn tracked_buffer_seq_wraps_at_max() {
-        let mut text = Arc::new(String::from("x"));
-        let seq = Cell::new(u64::MAX);
-        let mut buf = TrackedTextBuffer {
-            text: &mut text,
-            seq: &seq,
+        // Seq wraps at u64::MAX.
+        let mut text2 = Arc::new(String::from("x"));
+        let seq2 = Cell::new(u64::MAX);
+        let mut buf2 = TrackedTextBuffer {
+            text: &mut text2,
+            seq: &seq2,
         };
-        let _ = egui::TextBuffer::insert_text(&mut buf, "y", 0);
-        assert_eq!(seq.get(), 0);
+        let _ = egui::TextBuffer::insert_text(&mut buf2, "y", 0);
+        assert_eq!(seq2.get(), 0);
     }
 
     // ── Document defaults & helpers ───────────────────────────────────
@@ -322,58 +287,39 @@ mod tests {
     }
 
     #[test]
-    fn document_title_without_path() {
-        let doc = Document::default();
-        assert_eq!(doc.title(), "Untitled");
+    fn document_title_and_path_label() {
+        for (path, expected_title, expected_label) in [
+            (None, "Untitled", "Unsaved"),
+            (Some("/tmp/readme.md"), "readme.md", "/tmp/readme.md"),
+        ] {
+            let doc = Document {
+                path: path.map(PathBuf::from),
+                ..Default::default()
+            };
+            assert_eq!(doc.title(), expected_title);
+            assert_eq!(doc.path_label(), expected_label);
+        }
     }
 
     #[test]
-    fn document_title_with_path() {
-        let doc = Document {
-            path: Some(PathBuf::from("/tmp/readme.md")),
-            ..Default::default()
-        };
-        assert_eq!(doc.title(), "readme.md");
-    }
-
-    #[test]
-    fn document_path_label_without_path() {
-        let doc = Document::default();
-        assert_eq!(doc.path_label(), "Unsaved");
-    }
-
-    #[test]
-    fn document_path_label_with_path() {
-        let doc = Document {
-            path: Some(PathBuf::from("/tmp/readme.md")),
-            ..Default::default()
-        };
-        assert_eq!(doc.path_label(), "/tmp/readme.md");
-    }
-
-    #[test]
-    fn debounce_remaining_none_when_no_edit() {
-        let doc = Document::default();
-        assert!(doc.debounce_remaining(Duration::from_millis(500)).is_none());
-    }
-
-    #[test]
-    fn debounce_remaining_some_after_recent_edit() {
-        let doc = Document {
+    fn debounce_remaining_cases() {
+        // No edit → None.
+        assert!(
+            Document::default()
+                .debounce_remaining(Duration::from_millis(500))
+                .is_none()
+        );
+        // Recent edit → Some.
+        let recent = Document {
             last_edit_at: Some(Instant::now()),
             ..Default::default()
         };
-        let remaining = doc.debounce_remaining(Duration::from_secs(10));
-        assert!(remaining.is_some());
-    }
-
-    #[test]
-    fn debounce_remaining_none_after_expired() {
-        let doc = Document {
+        assert!(recent.debounce_remaining(Duration::from_secs(10)).is_some());
+        // Expired → None.
+        let old = Document {
             last_edit_at: Instant::now().checked_sub(Duration::from_secs(5)),
             ..Default::default()
         };
-        let remaining = doc.debounce_remaining(Duration::from_millis(100));
-        assert!(remaining.is_none());
+        assert!(old.debounce_remaining(Duration::from_millis(100)).is_none());
     }
 }

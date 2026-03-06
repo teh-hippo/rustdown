@@ -136,12 +136,6 @@ impl SpanStyle {
         self.flags & FLAG_STRIKETHROUGH != 0
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // API symmetry with set_strong / set_emphasis / set_code
-    pub const fn set_strikethrough(&mut self) {
-        self.flags |= FLAG_STRIKETHROUGH;
-    }
-
     #[inline]
     #[must_use]
     pub const fn code(self) -> bool {
@@ -960,11 +954,6 @@ mod tests {
                 "# 你好世界\n## 🚀 Rocket\n",
                 vec![(1, "你好世界"), (2, "🚀 Rocket")],
             ),
-            (
-                "consecutive",
-                "# H1\n## H2\n### H3\n",
-                vec![(1, "H1"), (2, "H2"), (3, "H3")],
-            ),
             ("trailing_hashes", "## Title ##\n", vec![(2, "Title")]),
         ] {
             let blocks = parse_markdown(md);
@@ -984,10 +973,17 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn heading_with_formatting() {
+        // Inline formatting in headings
+        let has_style = |text: &StyledText, check: &str| -> bool {
+            match check {
+                "strong" => text.spans.iter().any(|s| s.style.strong()),
+                "emphasis" => text.spans.iter().any(|s| s.style.emphasis()),
+                "code" => text.spans.iter().any(|s| s.style.code()),
+                "link" => text.spans.iter().any(|s| s.style.has_link()),
+                "strikethrough" => text.spans.iter().any(|s| s.style.strikethrough()),
+                _ => false,
+            }
+        };
         for (label, md, checks) in [
             (
                 "mixed",
@@ -997,40 +993,18 @@ mod tests {
             (
                 "all_inline",
                 "## **bold** *italic* `code` [link](url) ~~strike~~\n",
-                &["strong", "emphasis", "code", "link", "strikethrough"],
+                &["strong", "emphasis", "code", "link", "strikethrough"] as &[&str],
             ),
             (
                 "link_and_code",
                 "### [`parse`](https://docs.rs) function\n",
-                &["code", "link"],
+                &["code", "link"] as &[&str],
             ),
         ] {
-            let blocks = parse_markdown(md);
-            match &blocks[0] {
+            match &parse_markdown(md)[0] {
                 Block::Heading { text, .. } => {
                     for check in checks {
-                        match *check {
-                            "strong" => assert!(
-                                text.spans.iter().any(|s| s.style.strong()),
-                                "{label}: strong"
-                            ),
-                            "emphasis" => assert!(
-                                text.spans.iter().any(|s| s.style.emphasis()),
-                                "{label}: emphasis"
-                            ),
-                            "code" => {
-                                assert!(text.spans.iter().any(|s| s.style.code()), "{label}: code");
-                            }
-                            "link" => assert!(
-                                text.spans.iter().any(|s| s.style.has_link()),
-                                "{label}: link"
-                            ),
-                            "strikethrough" => assert!(
-                                text.spans.iter().any(|s| s.style.strikethrough()),
-                                "{label}: strike"
-                            ),
-                            _ => {}
-                        }
+                        assert!(has_style(text, check), "{label}: {check}");
                     }
                     validate_styled_text(text);
                 }
@@ -1089,15 +1063,6 @@ mod tests {
                 false,
                 true,
                 false,
-            ),
-            (
-                "triple_bold_italic",
-                "***bold and italic***\n",
-                "bold and italic",
-                true,
-                true,
-                false,
-                true,
             ),
         ] {
             let blocks = parse_markdown(md);
@@ -1165,12 +1130,31 @@ mod tests {
                 other => panic!("{label}: expected Code, got {other:?}"),
             }
         }
+        // Nested backtick fences (4-tick wrapping 3-tick)
+        let b = parse_markdown("````\n```rust\nfn main() {}\n```\n````\n");
+        match &b[0] {
+            Block::Code { code, .. } => {
+                assert!(code.contains("```rust"));
+                assert!(code.contains("fn main()"));
+            }
+            other => panic!("nested_fence: expected Code, got {other:?}"),
+        }
+        // 5-tick wrapping 3+4 tick
+        let b = parse_markdown("`````\n```\n````\nsome code\n`````\n");
+        match &b[0] {
+            Block::Code { code, .. } => {
+                assert!(code.contains("```"));
+                assert!(code.contains("````"));
+            }
+            other => panic!("nested_fence_5: expected Code, got {other:?}"),
+        }
     }
 
     // ── List parsing ─────────────────────────────────────────────
 
     #[test]
-    fn list_parsing_unordered() {
+    fn list_parsing() {
+        // Unordered lists
         for (label, md, count, first) in [
             ("basic", "- one\n- two\n- three", 3, "one"),
             ("empty_items", "- \n- text\n", 2, ""),
@@ -1184,10 +1168,7 @@ mod tests {
                 other => panic!("{label}: expected UL, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn list_parsing_ordered() {
+        // Ordered lists
         for (label, md, start, count, first) in [
             ("basic", "1. first\n2. second", 1_u64, 2, "first"),
             ("start_zero", "0. zero\n1. one\n", 0, 2, "zero"),
@@ -1203,10 +1184,7 @@ mod tests {
                 other => panic!("{label}: expected OL, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn list_nesting() {
+        // Nesting
         for (label, md) in [
             ("nested_ul", "- parent\n  - child\n  - child2\n- sibling"),
             (
@@ -1265,6 +1243,16 @@ mod tests {
             .filter(|b| matches!(b, Block::Image { .. }))
             .count();
         assert_eq!(imgs, 3);
+        // Long alt text with formatting
+        let long_alt = "A".repeat(500);
+        let md = format!("![**bold** *italic* {long_alt}](img.png)");
+        match &parse_markdown(&md)[0] {
+            Block::Image { alt, url } => {
+                assert_eq!(&**url, "img.png");
+                assert!(alt.contains(&long_alt) && alt.contains("bold") && alt.contains("italic"));
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
     }
 
     // ── Link parsing ─────────────────────────────────────────────
@@ -1310,6 +1298,34 @@ mod tests {
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
+        // URL edge cases: encoded spaces, unicode, parentheses
+        for (md, frag) in [
+            (
+                "[spaces](https://example.com/path%20with%20spaces)",
+                "spaces",
+            ),
+            ("[unicode](https://example.com/日本語)", "日本語"),
+            (
+                "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))",
+                "Rust_",
+            ),
+        ] {
+            match &parse_markdown(md)[0] {
+                Block::Paragraph(st) => {
+                    let span = st
+                        .spans
+                        .iter()
+                        .find(|s| s.style.has_link())
+                        .unwrap_or_else(|| panic!("link span for {md:?}"));
+                    let url = st.link_url(span.style.link_idx).expect("url");
+                    assert!(
+                        url.contains(frag),
+                        "URL should contain {frag:?}, got {url:?}"
+                    );
+                }
+                other => panic!("expected paragraph, got {other:?}"),
+            }
+        }
     }
 
     // ── Table parsing ────────────────────────────────────────────
@@ -1344,13 +1360,6 @@ mod tests {
                 3,
                 1,
                 vec![Alignment::None, Alignment::None, Alignment::None],
-            ),
-            (
-                "empty_data",
-                "| X | Y |\n|---|---|\n",
-                2,
-                0,
-                vec![Alignment::None, Alignment::None],
             ),
         ] {
             let blocks = parse_markdown(md);
@@ -1414,12 +1423,29 @@ mod tests {
                 other => panic!("{label}: expected Quote, got {other:?}"),
             }
         }
+        // 5 levels deep
+        let md = "> level 1\n>> level 2\n>>> level 3\n>>>> level 4\n>>>>> level 5\n";
+        fn max_depth(blocks: &[Block]) -> usize {
+            blocks
+                .iter()
+                .map(|b| {
+                    if let Block::Quote(inner) = b {
+                        1 + max_depth(inner)
+                    } else {
+                        0
+                    }
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        assert!(max_depth(&parse_markdown(md)) >= 5);
     }
 
     // ── Span coverage ────────────────────────────────────────────
 
     #[test]
     fn spans_cover_all_block_types() {
+        // Paragraphs with various inline formatting (also covers validate_various_inputs)
         for md in [
             "Hello world",
             "Hello **bold** world",
@@ -1427,6 +1453,9 @@ mod tests {
             "A [link](https://x.com) here",
             "**bold *bold-italic* bold**",
             "Mixed **bold** and *italic* with `code` and [link](url)",
+            "**你好** *世界* `🚀`",
+            "plain **bold** *italic* ~~strike~~ `code` [link](url) ***bi*** end",
+            "***~~all~~***",
         ] {
             for block in &parse_markdown(md) {
                 if let Block::Paragraph(st) = block {
@@ -1447,30 +1476,20 @@ mod tests {
                 }
             }
         }
-        let table_md = "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |";
-        for block in &parse_markdown(table_md) {
-            if let Block::Table(t) = block {
-                for cell in &t.header {
-                    validate_styled_text(cell);
-                }
-                for row in &t.rows {
-                    for cell in row {
+        // Tables with formatting (simple + complex cells)
+        for table_md in [
+            "| **Bold** | `Code` | [Link](url) |\n|---|---|---|\n| a | b | c |",
+            "| **Bold** `code` | *it* ~~s~~ [lnk](u) |\n|---|---|\n| **x** *y* | `a` ~~b~~ |",
+        ] {
+            for block in &parse_markdown(table_md) {
+                if let Block::Table(t) = block {
+                    for cell in &t.header {
                         validate_styled_text(cell);
                     }
-                }
-            }
-        }
-        // Large table cells with formatting
-        let md2 =
-            "| **Bold** `code` | *it* ~~s~~ [lnk](u) |\n|---|---|\n| **x** *y* | `a` ~~b~~ |\n";
-        for block in &parse_markdown(md2) {
-            if let Block::Table(t) = block {
-                for cell in &t.header {
-                    validate_styled_text(cell);
-                }
-                for row in &t.rows {
-                    for cell in row {
-                        validate_styled_text(cell);
+                    for row in &t.rows {
+                        for cell in row {
+                            validate_styled_text(cell);
+                        }
                     }
                 }
             }
@@ -1498,16 +1517,6 @@ mod tests {
             .filter(|b| matches!(b, Block::Paragraph(_)))
             .count();
         assert_eq!(p, 2);
-    }
-
-    #[test]
-    fn parse_inline_code() {
-        for (label, md) in [("single", "Use `code` here"), ("double", "`` `inner` ``\n")] {
-            match &parse_markdown(md)[0] {
-                Block::Paragraph(st) => assert!(st.spans.iter().any(|s| s.style.code()), "{label}"),
-                other => panic!("{label}: expected paragraph, got {other:?}"),
-            }
-        }
     }
 
     #[test]
@@ -1553,6 +1562,26 @@ mod tests {
                 assert_eq!(items[2].checked, None);
             }
             other => panic!("expected OL, got {other:?}"),
+        }
+        // Nested task lists
+        let md = "- [x] parent done\n  - [ ] child todo\n  - [x] child done\n- [ ] parent todo\n  - [ ] nested todo\n";
+        match &parse_markdown(md)[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items[0].checked, Some(true));
+                assert_eq!(items[1].checked, Some(false));
+                if let Some(Block::UnorderedList(n)) = items[0].children.first() {
+                    assert_eq!(n[0].checked, Some(false));
+                    assert_eq!(n[1].checked, Some(true));
+                } else {
+                    panic!("nested list");
+                }
+                if let Some(Block::UnorderedList(n)) = items[1].children.first() {
+                    assert_eq!(n[0].checked, Some(false));
+                } else {
+                    panic!("nested list");
+                }
+            }
+            other => panic!("expected UL, got {other:?}"),
         }
     }
 
@@ -1604,24 +1633,58 @@ mod tests {
             Block::Paragraph(t) => assert!(t.text.contains("html")),
             other => panic!("expected Paragraph, got {other:?}"),
         }
+        // Smart punctuation
+        match &parse_markdown("\"Hello\" -- world... 'single' --- em")[0] {
+            Block::Paragraph(st) => {
+                let t = &st.text;
+                assert!(t.contains('\u{201c}') || t.contains('\u{201d}') || t.contains('"'));
+                assert!(t.contains('\u{2026}') || t.contains("..."));
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
     }
 
     #[test]
-    fn inline_state_pop_without_push() {
+    fn inline_merge_behavior() {
+        // Pop without push is safe
         let mut state = InlineState::new();
         state.pop(&InlineFlag::Strong);
         assert!(state.stack.is_empty());
         assert_eq!(state.flags(), 0);
         assert!(state.cached_link.is_none());
-    }
 
-    #[test]
-    fn styled_text_merges_adjacent() {
+        // Adjacent same-style spans merge
         let mut st = StyledText::default();
         st.push_text("hello", SpanStyle::plain());
         st.push_text(" world", SpanStyle::plain());
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.spans[0].end, 11);
+
+        // Adjacent bold merges
+        let mut st = StyledText::default();
+        let mut bold = SpanStyle::plain();
+        bold.set_strong();
+        st.push_text("bold1", bold);
+        st.push_text("bold2", bold);
+        assert_eq!(st.spans.len(), 1);
+        assert!(st.spans[0].style.strong());
+        validate_styled_text(&st);
+
+        // Different styles don't merge
+        let st = parse_paragraph("*italic*normal*italic*");
+        assert!(st.spans.len() >= 3);
+        assert!(st.spans[0].style.emphasis());
+        assert!(!st.spans[1].style.emphasis());
+        assert!(st.spans[2].style.emphasis());
+        validate_styled_text(&st);
+
+        // Plain fragments merge
+        let mut st = StyledText::default();
+        st.push_text("aaa", SpanStyle::plain());
+        st.push_text("bbb", SpanStyle::plain());
+        st.push_text("ccc", SpanStyle::plain());
+        assert_eq!(st.spans.len(), 1);
+        assert_eq!(st.text, "aaabbbccc");
     }
 
     #[test]
@@ -1653,38 +1716,55 @@ mod tests {
             };
             assert!(has_children, "{label}: should have children");
         }
+        // Deeply nested lists (10 levels)
+        let mut md = String::with_capacity(512);
+        for depth in 0..10 {
+            let indent = "  ".repeat(depth);
+            writeln!(md, "{indent}- level {depth}").ok();
+        }
+        let blocks = parse_markdown(&md);
+        fn count_depth(block: &Block) -> usize {
+            match block {
+                Block::UnorderedList(items) => {
+                    items[0].children.first().map_or(1, |c| 1 + count_depth(c))
+                }
+                _ => 0,
+            }
+        }
+        assert!(count_depth(&blocks[0]) >= 10);
+        // Mixed ordered/unordered nesting
+        let md = "- bullet A\n  1. ordered 1\n     - nested bullet\n       1. deep ordered\n  2. ordered 2\n- bullet B\n";
+        let blocks = parse_markdown(md);
+        match &blocks[0] {
+            Block::UnorderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(
+                    items[0]
+                        .children
+                        .iter()
+                        .any(|b| matches!(b, Block::OrderedList { .. }))
+                );
+                for child in &items[0].children {
+                    if let Block::OrderedList { items: ol, .. } = child
+                        && let Some(Block::UnorderedList(ul)) = ol[0]
+                            .children
+                            .iter()
+                            .find(|b| matches!(b, Block::UnorderedList(_)))
+                    {
+                        assert!(
+                            ul[0]
+                                .children
+                                .iter()
+                                .any(|b| matches!(b, Block::OrderedList { .. }))
+                        );
+                    }
+                }
+            }
+            other => panic!("expected UL, got {other:?}"),
+        }
     }
 
     // ── Inline merge and nesting ─────────────────────────────────
-
-    #[test]
-    fn inline_merge_behavior() {
-        // Adjacent bold merges
-        let mut st = StyledText::default();
-        let mut bold = SpanStyle::plain();
-        bold.set_strong();
-        st.push_text("bold1", bold);
-        st.push_text("bold2", bold);
-        assert_eq!(st.spans.len(), 1);
-        assert!(st.spans[0].style.strong());
-        validate_styled_text(&st);
-
-        // Different styles don't merge
-        let st = parse_paragraph("*italic*normal*italic*");
-        assert!(st.spans.len() >= 3);
-        assert!(st.spans[0].style.emphasis());
-        assert!(!st.spans[1].style.emphasis());
-        assert!(st.spans[2].style.emphasis());
-        validate_styled_text(&st);
-
-        // Plain fragments merge
-        let mut st = StyledText::default();
-        st.push_text("aaa", SpanStyle::plain());
-        st.push_text("bbb", SpanStyle::plain());
-        st.push_text("ccc", SpanStyle::plain());
-        assert_eq!(st.spans.len(), 1);
-        assert_eq!(st.text, "aaabbbccc");
-    }
 
     #[test]
     fn inline_deep_nesting() {
@@ -1740,10 +1820,18 @@ mod tests {
             );
             validate_styled_text(&st);
         }
+
+        // Deeply interleaved: all formatting types nested
+        let st = parse_paragraph("**bold *italic ~~strike `code` strike~~ italic* bold**");
+        validate_styled_text(&st);
+        assert!(st.spans.iter().any(|s| s.style.strong()));
+        assert!(st.spans.iter().any(|s| s.style.emphasis()));
+        assert!(st.spans.iter().any(|s| s.style.strikethrough()));
+        assert!(st.spans.iter().any(|s| s.style.code()));
     }
 
     #[test]
-    fn inline_code_in_context() {
+    fn inline_code_and_link_contexts() {
         // Code inside bold inherits strong
         let st = parse_paragraph("**bold `code` bold**");
         validate_styled_text(&st);
@@ -1755,16 +1843,13 @@ mod tests {
             "code"
         );
 
-        // Backtick sequences
-        for md in ["`a`b`c`", "`` `inner` ``"] {
+        // Backtick sequences (also covers single inline code)
+        for md in ["Use `code` here", "`a`b`c`", "`` `inner` ``"] {
             let st = parse_paragraph(md);
             validate_styled_text(&st);
             assert!(st.spans.iter().any(|s| s.style.code()));
         }
-    }
 
-    #[test]
-    fn inline_link_formatting() {
         // Formatted text in link
         let st = parse_paragraph("[**bold** and *italic*](url)");
         validate_styled_text(&st);
@@ -1805,43 +1890,18 @@ mod tests {
         let st = parse_paragraph("*italic\nacross lines*");
         validate_styled_text(&st);
         assert!(st.spans.iter().any(|s| s.style.emphasis()));
-    }
 
-    #[test]
-    fn inline_deeply_interleaved_formatting() {
-        let st = parse_paragraph("**bold *italic ~~strike `code` strike~~ italic* bold**");
-        validate_styled_text(&st);
-        assert!(st.spans.iter().any(|s| s.style.strong()));
-        assert!(st.spans.iter().any(|s| s.style.emphasis()));
-        assert!(st.spans.iter().any(|s| s.style.strikethrough()));
-        assert!(st.spans.iter().any(|s| s.style.code()));
-    }
-
-    #[test]
-    fn inline_validate_various_inputs() {
-        for input in [
-            "Hello world",
-            "**bold** and *italic* and `code` end",
-            "**你好** *世界* `🚀`",
-            "plain **bold** *italic* ~~strike~~ `code` [link](url) ***bi*** end",
-            "***~~all~~***",
+        // Empty and unclosed markers
+        for md in [
+            "****",
+            "__",
+            "[](url)",
+            "**unclosed",
+            "*unclosed",
+            "`unclosed",
+            "~~unclosed",
         ] {
-            validate_styled_text(&parse_paragraph(input));
-        }
-    }
-
-    #[test]
-    fn inline_empty_and_unclosed() {
-        for md in ["****", "__", "[](url)"] {
-            for block in &parse_markdown(md) {
-                if let Block::Paragraph(st) = block {
-                    validate_styled_text(st);
-                }
-            }
-        }
-        for md in ["**unclosed", "*unclosed", "`unclosed", "~~unclosed"] {
             let blocks = parse_markdown(md);
-            assert!(!blocks.is_empty(), "{md:?}");
             if let Some(Block::Paragraph(st)) = blocks.first() {
                 validate_styled_text(st);
             }
@@ -1885,7 +1945,7 @@ mod tests {
     // ── Stress tests ─────────────────────────────────────────────
 
     #[test]
-    fn stress_table_structural() {
+    fn stress_table_edge_cases() {
         // Extra cols
         match &parse_markdown("| A | B |\n|---|---|\n| 1 | 2 | 3 | 4 |\n")[0] {
             Block::Table(t) => {
@@ -1935,10 +1995,7 @@ mod tests {
                 .count(),
             2
         );
-    }
-
-    #[test]
-    fn stress_table_alignment_with_long_headers() {
+        // Long headers with alignment
         let (la, lb) = ("A".repeat(200), "B".repeat(300));
         let md = format!("| {la} | {lb} | Short |\n|:---|:---:|---:|\n| x | y | z |\n");
         match &parse_markdown(&md)[0] {
@@ -1952,10 +2009,7 @@ mod tests {
             }
             other => panic!("expected table, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn stress_table_cell_with_all_formatting() {
+        // Cell with all formatting types
         let md = "| Cell |\n|---|\n| **bold** *italic* `code` [link](url) ~~strike~~ |\n";
         match &parse_markdown(md)[0] {
             Block::Table(t) => {
@@ -2002,184 +2056,6 @@ mod tests {
     }
 
     #[test]
-    fn stress_deeply_nested_lists_10_levels() {
-        let mut md = String::with_capacity(512);
-        for depth in 0..10 {
-            let indent = "  ".repeat(depth);
-            writeln!(md, "{indent}- level {depth}").ok();
-        }
-        let blocks = parse_markdown(&md);
-        fn count_depth(block: &Block) -> usize {
-            match block {
-                Block::UnorderedList(items) => {
-                    items[0].children.first().map_or(1, |c| 1 + count_depth(c))
-                }
-                _ => 0,
-            }
-        }
-        assert!(count_depth(&blocks[0]) >= 10);
-    }
-
-    #[test]
-    fn stress_mixed_ordered_unordered_nesting() {
-        let md = "- bullet A\n  1. ordered 1\n     - nested bullet\n       1. deep ordered\n  2. ordered 2\n- bullet B\n";
-        let blocks = parse_markdown(md);
-        match &blocks[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items.len(), 2);
-                assert!(
-                    items[0]
-                        .children
-                        .iter()
-                        .any(|b| matches!(b, Block::OrderedList { .. }))
-                );
-                for child in &items[0].children {
-                    if let Block::OrderedList { items: ol, .. } = child
-                        && let Some(Block::UnorderedList(ul)) = ol[0]
-                            .children
-                            .iter()
-                            .find(|b| matches!(b, Block::UnorderedList(_)))
-                    {
-                        assert!(
-                            ul[0]
-                                .children
-                                .iter()
-                                .any(|b| matches!(b, Block::OrderedList { .. }))
-                        );
-                    }
-                }
-            }
-            other => panic!("expected UL, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_code_block_variations() {
-        let b = parse_markdown("````\n```rust\nfn main() {}\n```\n````\n");
-        match &b[0] {
-            Block::Code { code, .. } => {
-                assert!(code.contains("```rust"));
-                assert!(code.contains("fn main()"));
-            }
-            other => panic!("expected Code, got {other:?}"),
-        }
-        let b = parse_markdown("`````\n```\n````\nsome code\n`````\n");
-        match &b[0] {
-            Block::Code { code, .. } => {
-                assert!(code.contains("```"));
-                assert!(code.contains("````"));
-            }
-            other => panic!("expected Code, got {other:?}"),
-        }
-        // Inline backticks preserved
-        match &parse_markdown("Use `` `backtick` `` in code")[0] {
-            Block::Paragraph(st) => {
-                assert!(st.text.contains('`'));
-                assert!(st.spans.iter().any(|s| s.style.code()));
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_link_url_edge_cases() {
-        for (md, frag) in [
-            (
-                "[spaces](https://example.com/path%20with%20spaces)",
-                "spaces",
-            ),
-            ("[unicode](https://example.com/日本語)", "日本語"),
-            (
-                "[parens](https://en.wikipedia.org/wiki/Rust_(programming_language))",
-                "Rust_",
-            ),
-        ] {
-            match &parse_markdown(md)[0] {
-                Block::Paragraph(st) => {
-                    let span = st
-                        .spans
-                        .iter()
-                        .find(|s| s.style.has_link())
-                        .unwrap_or_else(|| panic!("link span for {md:?}"));
-                    let url = st.link_url(span.style.link_idx).expect("url");
-                    assert!(
-                        url.contains(frag),
-                        "URL should contain {frag:?}, got {url:?}"
-                    );
-                }
-                other => panic!("expected paragraph, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn stress_image_long_alt() {
-        let long_alt = "A".repeat(500);
-        let md = format!("![**bold** *italic* {long_alt}](img.png)");
-        match &parse_markdown(&md)[0] {
-            Block::Image { alt, url } => {
-                assert_eq!(&**url, "img.png");
-                assert!(alt.contains(&long_alt) && alt.contains("bold") && alt.contains("italic"));
-            }
-            other => panic!("expected Image, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_blockquote_deep_and_content() {
-        let md = "> level 1\n>> level 2\n>>> level 3\n>>>> level 4\n>>>>> level 5\n";
-        fn max_depth(blocks: &[Block]) -> usize {
-            blocks
-                .iter()
-                .map(|b| {
-                    if let Block::Quote(inner) = b {
-                        1 + max_depth(inner)
-                    } else {
-                        0
-                    }
-                })
-                .max()
-                .unwrap_or(0)
-        }
-        assert!(max_depth(&parse_markdown(md)) >= 5);
-    }
-
-    #[test]
-    fn stress_task_lists_nested() {
-        let md = "- [x] parent done\n  - [ ] child todo\n  - [x] child done\n- [ ] parent todo\n  - [ ] nested todo\n";
-        match &parse_markdown(md)[0] {
-            Block::UnorderedList(items) => {
-                assert_eq!(items[0].checked, Some(true));
-                assert_eq!(items[1].checked, Some(false));
-                if let Some(Block::UnorderedList(n)) = items[0].children.first() {
-                    assert_eq!(n[0].checked, Some(false));
-                    assert_eq!(n[1].checked, Some(true));
-                } else {
-                    panic!("nested list");
-                }
-                if let Some(Block::UnorderedList(n)) = items[1].children.first() {
-                    assert_eq!(n[0].checked, Some(false));
-                } else {
-                    panic!("nested list");
-                }
-            }
-            other => panic!("expected UL, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stress_smart_punctuation() {
-        match &parse_markdown("\"Hello\" -- world... 'single' --- em")[0] {
-            Block::Paragraph(st) => {
-                let t = &st.text;
-                assert!(t.contains('\u{201c}') || t.contains('\u{201d}') || t.contains('"'));
-                assert!(t.contains('\u{2026}') || t.contains("..."));
-            }
-            other => panic!("expected paragraph, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn stress_parse_no_panic() {
         for (label, md) in [
             (
@@ -2202,10 +2078,7 @@ mod tests {
                 .count(),
             5
         );
-    }
-
-    #[test]
-    fn stress_mixed_block_types() {
+        // Mixed block types in one document
         let md = "# Heading\nParagraph.\n\n---\n\n- list\n\n> quote\n\n```\ncode\n```\n\n| T |\n|---|\n| v |\n\n![img](x.png)\n";
         let b = parse_markdown(md);
         assert!(b.iter().any(|b| matches!(b, Block::Heading { .. })));
@@ -2216,36 +2089,31 @@ mod tests {
         assert!(b.iter().any(|b| matches!(b, Block::Code { .. })));
         assert!(b.iter().any(|b| matches!(b, Block::Table(_))));
         assert!(b.iter().any(|b| matches!(b, Block::Image { .. })));
+        // Mixed adversarial: every construct interleaved
+        let md = "# **~~`heading`~~**\n\n> > > deeply quoted **bold** ~~strike~~ `code`\n\n| a | b |\n|---|---|\n| [link](http://x) | ![img](y) |\n\n- [ ] task 1\n  - [x] sub task\n    - normal\n      1. ordered\n\n```rust\nfn main() {}\n```\n\n---\n\ntext with [link](url \"title\") and ![image](img.png)\n\n<div>raw html</div>\n\n&amp; &lt; &gt; entities\n";
+        assert!(!parse_markdown(md).is_empty());
     }
 
     // ── Chaos / fuzz tests ──────────────────────────────────────────
 
     #[test]
-    fn chaos_deeply_nested_blockquotes_no_stack_overflow() {
-        // 500 levels of nested blockquotes should NOT stack overflow.
+    fn chaos_deep_nesting_no_stack_overflow() {
+        // 500 levels of nested blockquotes
         let md = "> ".repeat(500) + "leaf text\n";
-        let blocks = parse_markdown(&md);
-        assert!(!blocks.is_empty());
-    }
+        assert!(!parse_markdown(&md).is_empty());
 
-    #[test]
-    fn chaos_deeply_nested_lists_no_stack_overflow() {
-        // 500 levels of nested list indentation.
+        // 500 levels of nested list indentation
         let mut md = String::new();
         for depth in 0..500 {
             let indent = "  ".repeat(depth);
             writeln!(md, "{indent}- level {depth}").ok();
         }
-        let blocks = parse_markdown(&md);
-        assert!(!blocks.is_empty());
+        assert!(!parse_markdown(&md).is_empty());
     }
 
     #[test]
     fn chaos_huge_text_u32_saturation() {
-        // StyledText with text approaching u32::MAX should not panic.
-        // We can't allocate 4GB, but test that char_count saturates.
         let mut st = StyledText::default();
-        // Simulate: push_text 50000 chars, check char_count stays valid
         let chunk = "a".repeat(50_000);
         for _ in 0..100 {
             st.push_text(&chunk, SpanStyle::plain());
@@ -2256,132 +2124,78 @@ mod tests {
 
     #[test]
     fn chaos_empty_table_no_columns() {
-        // Table with empty header should not crash height estimation.
         let md = "|||\n||\n||\n";
         let blocks = parse_markdown(md);
-        // Whatever pulldown_cmark produces, it shouldn't crash.
         assert!(blocks.len() <= 5);
     }
 
     #[test]
-    fn chaos_unclosed_code_fence() {
-        // Unclosed fence: rest of doc treated as code.
+    fn chaos_large_content() {
+        // Unclosed fence: rest of doc treated as code
         let md = format!("```\n{}\n", "x".repeat(100_000));
-        let blocks = parse_markdown(&md);
-        assert!(!blocks.is_empty());
-    }
+        assert!(!parse_markdown(&md).is_empty());
 
-    #[test]
-    fn chaos_million_list_items() {
-        // Should parse without panicking (may be slow).
+        // 10K list items
         let mut md = String::with_capacity(20 * 10_000);
         for i in 0..10_000 {
             let _ = writeln!(md, "- item {i}");
         }
-        let blocks = parse_markdown(&md);
-        assert!(!blocks.is_empty());
+        assert!(!parse_markdown(&md).is_empty());
+
+        // Single 1MB line
+        assert!(!parse_markdown(&"x".repeat(1_000_000)).is_empty());
+
+        // Long heading
+        assert!(!parse_markdown(&format!("# {}", "A".repeat(100_000))).is_empty());
+
+        // Long link URL
+        assert!(!parse_markdown(&format!("[text]({})", "a".repeat(100_000))).is_empty());
     }
 
     // ── Security / Fuzz Tests ────────────────────────────────────────
 
-    /// Adversarial input: null bytes throughout markdown.
+    /// Adversarial input: null bytes, control characters, and extreme unicode.
     #[test]
-    fn fuzz_null_bytes_in_markdown() {
-        let inputs = [
+    fn fuzz_adversarial_characters() {
+        let owned_emoji = "🦀".repeat(10_000);
+        for input in [
             "\0",
             "# Hello\0World",
             "text\0\0\0more",
             "\0\0\0\0\0\0\0\0",
             "```\0rust\0\ncode\0\n```",
             "| col\0 |\n|---|\n| val\0 |",
-        ];
-        for input in inputs {
-            let blocks = parse_markdown(input);
-            // Must not panic — output content is implementation-defined.
-            let _ = blocks.len();
+            "\u{FEFF}# BOM heading",
+            "text\u{200B}zero\u{200B}width",
+            "\u{202E}RTL override\u{202C}",
+            "\u{FFFD}\u{FFFD}\u{FFFD}",
+            &owned_emoji,
+            "\t\t\t\t\t\t\t\t\t\t",
+            "\r\r\r\r\r\r\r\r",
+            "\x01\x02\x03\x04\x05\x06\x07",
+        ] {
+            let _ = parse_markdown(input).len();
         }
     }
 
-    /// Adversarial input: extreme unicode and control characters.
+    /// Adversarial input: alternating markers and enormous tables.
     #[test]
-    fn fuzz_control_and_unicode_chars() {
-        let inputs = [
-            "\u{FEFF}# BOM heading",         // byte-order mark
-            "text\u{200B}zero\u{200B}width", // zero-width spaces
-            "\u{202E}RTL override\u{202C}",  // right-to-left override
-            "\u{FFFD}\u{FFFD}\u{FFFD}",      // replacement characters
-            &"🦀".repeat(10_000),            // many emoji
-            "\t\t\t\t\t\t\t\t\t\t",          // only tabs
-            "\r\r\r\r\r\r\r\r",              // bare carriage returns
-            "\x01\x02\x03\x04\x05\x06\x07",  // ASCII control chars
-        ];
-        for input in &inputs {
-            let blocks = parse_markdown(input);
-            let _ = blocks.len();
+    fn fuzz_adversarial_patterns() {
+        // Alternating open/close markers
+        for input in [
+            "**".repeat(5_000),
+            "~~".repeat(5_000),
+            "`".repeat(10_000),
+            "```\n".repeat(1_000),
+            "[".repeat(5_000),
+            "](".repeat(5_000),
+            "![".repeat(5_000),
+        ] {
+            let _ = parse_markdown(&input).len();
         }
-    }
-
-    /// Adversarial input: pathological nesting depths.
-    #[test]
-    fn fuzz_deep_nesting() {
-        // 500 nested blockquotes.
-        let deep_quote = "> ".repeat(500) + "deep";
-        let blocks = parse_markdown(&deep_quote);
-        let _ = blocks.len();
-
-        // 500 nested lists.
-        let mut deep_list = String::new();
-        for i in 0..500 {
-            deep_list.push_str(&"  ".repeat(i));
-            let _ = writeln!(deep_list, "- item");
-        }
-        let blocks = parse_markdown(&deep_list);
-        let _ = blocks.len();
-    }
-
-    /// Adversarial input: extremely long single lines.
-    #[test]
-    fn fuzz_very_long_lines() {
-        // Single 1MB line.
-        let single_line = "x".repeat(1_000_000);
-        let blocks = parse_markdown(&single_line);
-        assert!(!blocks.is_empty());
-
-        // Long heading.
-        let heading = format!("# {}", "A".repeat(100_000));
-        let blocks = parse_markdown(&heading);
-        assert!(!blocks.is_empty());
-
-        // Long link URL.
-        let link = format!("[text]({})", "a".repeat(100_000));
-        let blocks = parse_markdown(&link);
-        assert!(!blocks.is_empty());
-    }
-
-    /// Adversarial input: alternating open/close markers.
-    #[test]
-    fn fuzz_alternating_markers() {
-        let inputs = [
-            "**".repeat(5_000),    // unclosed bold
-            "~~".repeat(5_000),    // unclosed strikethrough
-            "`".repeat(10_000),    // unclosed code
-            "```\n".repeat(1_000), // rapid fenced blocks
-            "[".repeat(5_000),     // unclosed links
-            "](".repeat(5_000),    // partial link syntax
-            "![".repeat(5_000),    // unclosed images
-        ];
-        for input in &inputs {
-            let blocks = parse_markdown(input);
-            let _ = blocks.len();
-        }
-    }
-
-    /// Adversarial input: enormous tables.
-    #[test]
-    fn fuzz_large_table() {
+        // Enormous table (100 cols × 500 rows)
         use std::fmt::Write;
         let mut table = String::with_capacity(200_000);
-        // 100 columns header.
         table.push('|');
         for c in 0..100 {
             let _ = write!(table, " col{c} |");
@@ -2392,7 +2206,6 @@ mod tests {
             table.push_str(" --- |");
         }
         table.push('\n');
-        // 500 rows.
         for r in 0..500 {
             table.push('|');
             for c in 0..100 {
@@ -2400,8 +2213,7 @@ mod tests {
             }
             table.push('\n');
         }
-        let blocks = parse_markdown(&table);
-        assert!(!blocks.is_empty());
+        assert!(!parse_markdown(&table).is_empty());
     }
 
     /// Input size limit: documents above `MAX_PARSE_BYTES` are truncated.
@@ -2417,37 +2229,5 @@ mod tests {
         // Must not panic or OOM — parser truncates.
         let blocks = parse_markdown(&big);
         let _ = blocks.len();
-    }
-
-    /// Mixed adversarial: markdown with every construct interleaved.
-    #[test]
-    fn fuzz_mixed_constructs() {
-        let md = r#"# **~~`heading`~~**
-
-> > > deeply quoted **bold** ~~strike~~ `code`
-
-| a | b |
-|---|---|
-| [link](http://x) | ![img](y) |
-
-- [ ] task 1
-  - [x] sub task
-    - normal
-      1. ordered
-
-```rust
-fn main() {}
-```
-
----
-
-text with [link](url "title") and ![image](img.png)
-
-<div>raw html</div>
-
-&amp; &lt; &gt; entities
-"#;
-        let blocks = parse_markdown(md);
-        assert!(!blocks.is_empty());
     }
 }

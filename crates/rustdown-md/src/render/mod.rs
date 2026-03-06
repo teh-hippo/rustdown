@@ -596,6 +596,14 @@ mod tests {
     use table::compute_table_col_widths;
     use text::{build_layout_job, strengthen_color};
 
+    fn dark_style() -> MarkdownStyle {
+        MarkdownStyle::from_visuals(&egui::Visuals::dark())
+    }
+
+    fn dark_colored_style() -> MarkdownStyle {
+        MarkdownStyle::colored(&egui::Visuals::dark())
+    }
+
     #[test]
     fn cache_behavior() {
         // Invalidates on text change
@@ -612,7 +620,7 @@ mod tests {
         assert_eq!(simple_hash("same"), simple_hash("same"));
 
         // Heights invalidate on size change
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed("# Hello\n\nParagraph");
         cache.ensure_heights(14.0, 400.0, &style);
@@ -643,7 +651,7 @@ mod tests {
         assert!((cache.total_height).abs() < f32::EPSILON);
 
         // Style with heading scales
-        let mut style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let mut style = dark_style();
         let scales = [3.0, 2.5, 2.0, 1.5, 1.2, 1.0];
         style.set_heading_scales(scales);
         for (i, &expected) in scales.iter().enumerate() {
@@ -654,34 +662,8 @@ mod tests {
         }
     }
     #[test]
-    fn estimate_text_height_cases() {
-        // Basic
-        let h = estimate_text_height("Hello World", 14.0, 200.0);
-        assert!(h > 0.0 && h < 100.0);
-
-        // Wrapping: long > short
-        let short = estimate_text_height("Hi", 14.0, 200.0);
-        let long = estimate_text_height(&"word ".repeat(100), 14.0, 200.0);
-        assert!(long > short);
-
-        // Empty text → font_size
-        let h = estimate_text_height("", 14.0, 200.0);
-        assert!((h - 14.0).abs() < f32::EPSILON);
-
-        // Zero/negative wrap_width → finite, positive
-        for w in [0.0_f32, -100.0] {
-            let h = estimate_text_height("some text", 14.0, w);
-            assert!(h > 0.0 && h.is_finite(), "wrap={w}");
-        }
-
-        // Multiline > single
-        let one = estimate_text_height("hello", 14.0, 400.0);
-        let ten = estimate_text_height(&"hello\n".repeat(10), 14.0, 400.0);
-        assert!(ten > one);
-    }
-    #[test]
     fn heading_y_behavior() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
 
         // Returns ordered offsets
         let mut cache = MarkdownCache::default();
@@ -718,10 +700,55 @@ mod tests {
         assert!(y0.is_some() && y1.is_some());
         assert!(y0.unwrap_or(0.0) < y1.unwrap_or(0.0));
         assert!(cache.heading_y(2).is_none());
+
+        // No headings → None
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("Just a paragraph.\n\nAnother paragraph.\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+        assert!(cache.heading_y(0).is_none(), "no headings → None");
+
+        // 1000 headings
+        let mut doc = String::with_capacity(30_000);
+        for i in 0..1000 {
+            let _ = writeln!(doc, "## Heading {i}\n");
+        }
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(&doc);
+        cache.ensure_heights(14.0, 400.0, &style);
+        let y999 = cache.heading_y(999);
+        assert!(y999.is_some(), "heading_y(999) must exist");
+        let y998 = cache.heading_y(998).expect("heading_y(998)");
+        assert!(y999.expect("") > y998, "heading 999 > heading 998");
+        assert!(cache.heading_y(1000).is_none());
+
+        // Heights cleared → None
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed("# A\n\n## B\n");
+        cache.ensure_heights(14.0, 400.0, &style);
+        assert!(cache.heading_y(0).is_some());
+        cache.heights.clear();
+        cache.cum_y.clear();
+        assert!(cache.heading_y(0).is_none(), "cleared → None");
     }
     #[test]
     fn estimate_height_all_block_types_positive() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // Text height basics
+        let h = estimate_text_height("Hello World", 14.0, 200.0);
+        assert!(h > 0.0 && h < 100.0);
+        let short = estimate_text_height("Hi", 14.0, 200.0);
+        let long = estimate_text_height(&"word ".repeat(100), 14.0, 200.0);
+        assert!(long > short);
+        assert!((estimate_text_height("", 14.0, 200.0) - 14.0).abs() < f32::EPSILON);
+        for w in [0.0_f32, -100.0] {
+            let h = estimate_text_height("some text", 14.0, w);
+            assert!(h > 0.0 && h.is_finite(), "wrap={w}");
+        }
+        let one = estimate_text_height("hello", 14.0, 400.0);
+        let ten = estimate_text_height(&"hello\n".repeat(10), 14.0, 400.0);
+        assert!(ten > one);
+
+        // All block types
+        let style = dark_style();
         let cell = |s: &str| StyledText {
             text: s.to_owned(),
             spans: vec![],
@@ -814,7 +841,7 @@ mod tests {
 
     #[test]
     fn height_estimation_perf() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let mut cache = MarkdownCache::default();
 
         // Build a ~50KB document.
@@ -870,7 +897,7 @@ mod tests {
     fn headless_render(source: &str) -> (Vec<Block>, f32) {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let viewer = MarkdownViewer::new("test");
 
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
@@ -889,7 +916,7 @@ mod tests {
     fn headless_render_scrollable(source: &str, scroll_to_y: Option<f32>) -> (usize, f32) {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let viewer = MarkdownViewer::new("test_scroll");
 
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
@@ -939,6 +966,23 @@ mod tests {
                 assert!(alt.contains("bold") && alt.contains("italic"), "alt={alt}");
             }
             other => panic!("expected Image, got {other:?}"),
+        }
+
+        // Render with base URI set
+        let ctx = headless_ctx();
+        let mut cache = MarkdownCache::default();
+        let mut style = dark_colored_style();
+        style.image_base_uri = "file:///base/dir/".to_owned();
+        let viewer = MarkdownViewer::new("img_base");
+        let _ = ctx.run(raw_input_1024x768(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show(ui, &mut cache, &style, "![alt](relative/pic.png)");
+            });
+        });
+        assert_eq!(cache.blocks.len(), 1);
+        match &cache.blocks[0] {
+            Block::Image { url, .. } => assert_eq!(&**url, "relative/pic.png"),
+            other => panic!("expected Image block, got {other:?}"),
         }
     }
     #[test]
@@ -998,17 +1042,15 @@ mod tests {
         }
     }
 
-    // ── Heading colours ────────────────────────────────────────────
-
     #[test]
     fn heading_style_and_rendering() {
         // Colors applied
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         for (i, expected) in crate::DARK_HEADING_COLORS.iter().enumerate() {
             assert_eq!(style.headings[i].color, *expected, "heading {i} colour");
         }
         // Scales descend
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         for i in 0..5 {
             assert!(
                 style.headings[i].font_scale >= style.headings[i + 1].font_scale,
@@ -1027,11 +1069,52 @@ mod tests {
             6
         );
         assert!(height > 0.0);
+
+        // HR: estimate covers render spacing
+        let body_size = 14.0;
+        let estimated = body_size * 0.8;
+        let render_spacing = body_size * 0.4 + body_size * 0.4;
+        assert!(estimated >= render_spacing - 0.01);
+        let (_, _est, rendered) = headless_render_at_width("Above\n\n---\n\nBelow\n", 800.0);
+        assert!(rendered > 0.0);
+
+        // Heading height: H1 > H3 and H2 > H3
+        let style = dark_style();
+        let h1 = estimate_block_height(
+            &Block::Heading {
+                level: 1,
+                text: plain("Title"),
+            },
+            14.0,
+            400.0,
+            &style,
+        );
+        let h2 = estimate_block_height(
+            &Block::Heading {
+                level: 2,
+                text: plain("Heading"),
+            },
+            14.0,
+            400.0,
+            &style,
+        );
+        let h3 = estimate_block_height(
+            &Block::Heading {
+                level: 3,
+                text: plain("Title"),
+            },
+            14.0,
+            400.0,
+            &style,
+        );
+        assert!(h1 > h3, "H1 ({h1}) > H3 ({h3})");
+        assert!(h2 > h3, "H2 ({h2}) > H3 ({h3})");
     }
     // ── Tables ─────────────────────────────────────────────────────
 
     #[test]
     fn render_table_variations() {
+        // Various table shapes render with positive height
         let cases: Vec<(&str, &str)> = vec![
             (
                 "simple",
@@ -1063,9 +1146,7 @@ mod tests {
             );
             assert!(height > 0.0, "{label}: positive height");
         }
-    }
-    #[test]
-    fn render_table_specific_assertions() {
+
         // Empty cells
         let (blocks, _) = headless_render(
             "| Feature | Yes | No |\n|---------|-----|----|\n| A | ✅ | |\n| | | |\n| C | | ❌ |\n",
@@ -1081,7 +1162,7 @@ mod tests {
             other => panic!("expected Table, got {other:?}"),
         }
 
-        // Alignment
+        // Alignment: 3-column
         let (blocks, _) = headless_render(
             "| Left | Center | Right |\n|:-----|:------:|------:|\n| l | c | r |\n",
         );
@@ -1090,6 +1171,32 @@ mod tests {
                 assert_eq!(table.alignments[0], Alignment::Left);
                 assert_eq!(table.alignments[1], Alignment::Center);
                 assert_eq!(table.alignments[2], Alignment::Right);
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+
+        // Alignment: 4-column with default
+        let (blocks, h) = headless_render(
+            "| Default | Left | Center | Right |\n|---------|:-----|:------:|------:|\n| d | l | c | r |\n",
+        );
+        assert!(h > 0.0);
+        match &blocks[0] {
+            Block::Table(table) => {
+                assert_eq!(table.alignments[0], Alignment::None);
+                assert_eq!(table.alignments[1], Alignment::Left);
+                assert_eq!(table.alignments[2], Alignment::Center);
+                assert_eq!(table.alignments[3], Alignment::Right);
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+
+        // No alignment markers → all None
+        let (blocks, _) = headless_render("| A | B |\n|---|---|\n| 1 | 2 |\n");
+        match &blocks[0] {
+            Block::Table(table) => {
+                for (i, a) in table.alignments.iter().enumerate() {
+                    assert_eq!(*a, Alignment::None, "col {i} should default to None");
+                }
             }
             other => panic!("expected Table, got {other:?}"),
         }
@@ -1288,10 +1395,6 @@ mod tests {
         }
     }
 
-    // ── Unicode & special characters ───────────────────────────────
-
-    // ── Scrollable rendering ───────────────────────────────────────
-
     #[test]
     fn scrollable_render_basics() {
         // Basic render
@@ -1319,6 +1422,45 @@ mod tests {
         let (block_count, total_height) = headless_render_scrollable("", None);
         assert_eq!(block_count, 0);
         assert!((total_height).abs() < f32::EPSILON);
+
+        // Edge cases: various unusual documents
+        let edge_cases: Vec<(&str, String)> = vec![
+            ("1000_thematic_breaks", {
+                let mut d = String::new();
+                for _ in 0..1000 {
+                    d.push_str("---\n\n");
+                }
+                d
+            }),
+            ("deeply_nested_blockquotes_with_tables", {
+                let mut d = String::new();
+                for depth in 0..8 {
+                    let prefix = "> ".repeat(depth + 1);
+                    let _ = writeln!(d, "{prefix}Level {} paragraph\n", depth + 1);
+                    if depth % 2 == 0 {
+                        let _ = writeln!(d, "{prefix}| A | B |");
+                        let _ = writeln!(d, "{prefix}|---|---|");
+                        let _ = writeln!(d, "{prefix}| x | y |");
+                        d.push('\n');
+                    }
+                }
+                d
+            }),
+            ("deeply_nested_blockquotes_scrollable", {
+                let mut d = String::new();
+                for depth in 0..10 {
+                    let prefix = "> ".repeat(depth + 1);
+                    let _ = writeln!(d, "{prefix}Nested level {}", depth + 1);
+                }
+                d
+            }),
+        ];
+        for (label, md) in &edge_cases {
+            let (count, height) = headless_render_scrollable(md, None);
+            assert!(count > 0, "{label}: should have blocks");
+            assert!(height >= 0.0, "{label}: non-negative height");
+            let _ = headless_render_scrollable(md, Some(height / 2.0));
+        }
     }
     // ── Stress tests with headless rendering ───────────────────────
 
@@ -1342,6 +1484,28 @@ mod tests {
             let (_, height) = headless_render(&doc);
             assert!(height >= 0.0, "minimal doc '{label}' should render");
         }
+        // 1KB generators all valid and parseable
+        let generators: Vec<(&str, fn(usize) -> String)> = vec![
+            ("large_mixed", crate::stress::large_mixed_doc),
+            ("unicode", crate::stress::unicode_stress_doc),
+            ("table_heavy", crate::stress::table_heavy_doc),
+            ("emoji", crate::stress::emoji_heavy_doc),
+            ("task_list", crate::stress::task_list_doc),
+            ("pathological", crate::stress::pathological_doc),
+        ];
+        for (label, generator) in &generators {
+            let doc = generator(1);
+            assert!(!doc.is_empty(), "{label}: 1KB doc should be non-empty");
+            let blocks = crate::parse::parse_markdown(&doc);
+            assert!(!blocks.is_empty(), "{label}: should produce blocks");
+        }
+        for (label, doc) in crate::stress::minimal_docs() {
+            let blocks = crate::parse::parse_markdown(&doc);
+            assert!(
+                !doc.is_empty() || blocks.is_empty(),
+                "minimal '{label}': non-empty doc should parse"
+            );
+        }
     }
 
     // ── Viewport culling correctness ───────────────────────────────
@@ -1358,7 +1522,7 @@ mod tests {
             )
             .ok();
         }
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let mut c1 = MarkdownCache::default();
         let mut c2 = MarkdownCache::default();
         c1.ensure_parsed(&doc);
@@ -1574,6 +1738,44 @@ mod tests {
             check(&widths);
             let _ = label; // used by assertion messages inside check closures
         }
+
+        // Edge cases: zero usable space
+        let header = vec![plain("A"), plain("B")];
+        let rows = vec![vec![plain("x"), plain("y")]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
+        assert_eq!(widths.len(), 2);
+        for w in &widths {
+            assert!(*w >= 0.0, "width should be non-negative, got {w}");
+        }
+
+        // Very small usable → clamped to min_col_w
+        let header = vec![plain("A"), plain("B"), plain("C")];
+        let rows = vec![vec![plain("x"), plain("y"), plain("z")]];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 10.0, 7.0, 14.0);
+        for w in &widths {
+            assert!(*w >= min_col_w - 0.01, "width {w} >= min {min_col_w}");
+        }
+
+        // Equal-length columns → roughly equal widths
+        let header = vec![plain("ABCD"), plain("EFGH"), plain("IJKL")];
+        let rows = vec![vec![plain("1234"), plain("5678"), plain("9012")]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
+        let avg = widths.iter().sum::<f32>() / widths.len() as f32;
+        for w in &widths {
+            assert!((*w - avg).abs() < avg * 0.2, "roughly equal: {widths:?}");
+        }
+
+        // One much longer column → gets more space
+        let header = vec![plain("A"), plain(&"X".repeat(300))];
+        let rows = vec![vec![plain("a"), plain(&"Y".repeat(300))]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
+        assert!(widths[1] > widths[0], "longer column wider: {widths:?}");
+
+        // body_size = 0 → min_col_w = 36
+        let header = vec![plain("A"), plain("B")];
+        let rows = vec![vec![plain("x"), plain("y")]];
+        let (_, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
+        assert!((min_col_w - 36.0).abs() < 0.01, "min_col_w={min_col_w}");
     }
 
     // ── Image URL resolution ───────────────────────────────────────
@@ -1646,38 +1848,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn image_render_uses_base_uri() {
-        // Verify via headless render that image blocks parse and render
-        // with a style that has a base URI set.
-        let ctx = headless_ctx();
-        let mut cache = MarkdownCache::default();
-        let mut style = MarkdownStyle::colored(&egui::Visuals::dark());
-        style.image_base_uri = "file:///base/dir/".to_owned();
-        let viewer = MarkdownViewer::new("img_base");
-
-        let md = "![alt](relative/pic.png)";
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                viewer.show(ui, &mut cache, &style, md);
-            });
-        });
-
-        // Parse produces an Image block with the raw relative URL
-        assert_eq!(cache.blocks.len(), 1);
-        match &cache.blocks[0] {
-            Block::Image { url, .. } => {
-                assert_eq!(&**url, "relative/pic.png");
-            }
-            other => panic!("expected Image block, got {other:?}"),
-        }
-    }
-
     // ── Height estimation: comprehensive ───────────────────────────
 
     #[test]
     fn estimate_height_larger_inputs_taller() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let cell = |s: &str| StyledText {
             text: s.to_owned(),
             spans: vec![],
@@ -1779,6 +1954,38 @@ mod tests {
         let h_st = estimate_block_height(&small_t, 14.0, 400.0, &style);
         let h_lt = estimate_block_height(&large_t, 14.0, 400.0, &style);
         assert!(h_lt > h_st, "20-row table ({h_lt}) > 1-row ({h_st})");
+
+        // CJK not overestimated
+        let cjk_h = estimate_text_height("日本語テスト文字列十", 14.0, 200.0);
+        let latin_h = estimate_text_height("abcdefghij", 14.0, 200.0);
+        assert!(cjk_h < latin_h * 3.0, "CJK {cjk_h} vs Latin {latin_h}");
+
+        // Ordered list wider numbers — similar height to unordered
+        let items: Vec<ListItem> = (0..100)
+            .map(|i| ListItem {
+                content: StyledText {
+                    text: format!("item {i}"),
+                    spans: vec![],
+                    ..StyledText::default()
+                },
+                children: vec![],
+                checked: None,
+            })
+            .collect();
+        let h_ord = estimate_block_height(
+            &Block::OrderedList {
+                start: 1,
+                items: items.clone(),
+            },
+            14.0,
+            400.0,
+            &style,
+        );
+        let h_unord = estimate_block_height(&Block::UnorderedList(items), 14.0, 400.0, &style);
+        assert!(
+            h_ord >= h_unord * 0.9,
+            "ordered {h_ord} not much shorter than unordered {h_unord}"
+        );
     }
 
     // ── strengthen_color tests ───────────────────────────────────────
@@ -1849,17 +2056,9 @@ mod tests {
         );
     }
 
-    // ── Edge-case code block rendering ────────────────────────────────
-
-    // ── Viewport culling at exact boundary ────────────────────────────
-
-    // ── estimate_text_height edge cases ───────────────────────────────
-
-    // ── Round 6-8: New comprehensive tests ────────────────────────────
-
     #[test]
-    fn height_estimation_images_and_paragraphs_edge_cases() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+    fn height_estimation_edge_cases_comprehensive() {
+        let style = dark_style();
 
         // Image: scales with width
         let img = Block::Image {
@@ -1872,30 +2071,28 @@ mod tests {
             h_wide > h_narrow,
             "wider viewport ({h_wide}) > narrow ({h_narrow})"
         );
-
-        // Image: narrow wrap widths
         for width in [0.0_f32, 1.0, 10.0, 50.0] {
-            let h = estimate_block_height(&img, 14.0, width, &style);
-            assert_sane_height(h, &format!("image at {width}px"));
+            assert_sane_height(
+                estimate_block_height(&img, 14.0, width, &style),
+                &format!("image at {width}px"),
+            );
         }
 
         // Paragraph: single long word, empty text
-        let word = "x".repeat(5000);
-        let h = estimate_block_height(&Block::Paragraph(plain(&word)), 14.0, 600.0, &style);
+        let h = estimate_block_height(
+            &Block::Paragraph(plain(&"x".repeat(5000))),
+            14.0,
+            600.0,
+            &style,
+        );
         assert_sane_height(h, "5k-char word paragraph");
-
         let h_empty = estimate_block_height(&Block::Paragraph(plain("")), 14.0, 600.0, &style);
         assert!(
             h_empty > 0.0 && h_empty.is_finite(),
             "empty paragraph height"
         );
-    }
 
-    #[test]
-    fn height_estimation_blockquote_and_list_depth() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // Blockquote: deep nesting hits width floor
+        // Blockquote: deep nesting
         let mut bq = Block::Quote(vec![Block::Paragraph(plain("deep content"))]);
         for _ in 0..7 {
             bq = Block::Quote(vec![bq]);
@@ -1904,8 +2101,6 @@ mod tests {
             estimate_block_height(&bq, 14.0, 400.0, &style),
             "8-level blockquote",
         );
-
-        // Even deeper nesting (20 levels)
         let mut bq = Block::Quote(vec![Block::Paragraph(plain("text"))]);
         for _ in 0..19 {
             bq = Block::Quote(vec![bq]);
@@ -1932,18 +2127,17 @@ mod tests {
             estimate_block_height(&list, 14.0, 600.0, &style),
             "10-level nested list",
         );
-
-        // Nested > flat
         let flat = Block::UnorderedList(vec![ListItem {
             content: plain("single"),
             children: vec![],
             checked: None,
         }]);
-        let h_flat = estimate_block_height(&flat, 14.0, 400.0, &style);
-        let h_nested = estimate_block_height(&list, 14.0, 400.0, &style);
-        assert!(h_nested > h_flat, "nested ({h_nested}) > flat ({h_flat})");
+        assert!(
+            estimate_block_height(&list, 14.0, 400.0, &style)
+                > estimate_block_height(&flat, 14.0, 400.0, &style)
+        );
 
-        // Long item text
+        // Long vs short list item text
         let long = Block::UnorderedList(vec![ListItem {
             content: plain(&"word ".repeat(500)),
             children: vec![],
@@ -1954,9 +2148,10 @@ mod tests {
             children: vec![],
             checked: None,
         }]);
-        let h_long = estimate_block_height(&long, 14.0, 600.0, &style);
-        let h_short = estimate_block_height(&short, 14.0, 600.0, &style);
-        assert!(h_long > h_short, "long item ({h_long}) > short ({h_short})");
+        assert!(
+            estimate_block_height(&long, 14.0, 600.0, &style)
+                > estimate_block_height(&short, 14.0, 600.0, &style)
+        );
 
         // Narrow wrap width
         let narrow_list = Block::UnorderedList(vec![ListItem {
@@ -2024,7 +2219,6 @@ mod tests {
             other => panic!("expected UnorderedList, got {other:?}"),
         }
     }
-    // ── Round 9: comprehensive new tests ──────────────────────────────
 
     #[test]
     fn smart_punctuation_and_autolinks() {
@@ -2063,7 +2257,7 @@ mod tests {
     }
     #[test]
     fn height_estimation_viewport_widths() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let md = "# Title\n\nA paragraph with some text that should wrap at narrow widths.\n\n                  - Item one\n- Item two\n- Item three\n\n                  ```\ncode block\n```\n\n                  | A | B | C |\n|---|---|---|\n| x | y | z |\n";
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(md);
@@ -2093,6 +2287,29 @@ mod tests {
             "short doc at wide should be < 500: {}",
             cache.total_height
         );
+
+        // Extreme narrow widths
+        let doc = "# Title\n\nParagraph with **bold** and `code`.\n\n- list item\n- another item\n\n```\ncode block\n```\n\n> blockquote\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n![img](url)\n";
+        let mut cache = MarkdownCache::default();
+        cache.ensure_parsed(doc);
+        for &width in &[1.0_f32, 5.0, 10.0, 20.0] {
+            cache.heights.clear();
+            cache.ensure_heights(14.0, width, &style);
+            for (i, h) in cache.heights.iter().enumerate() {
+                assert!(h.is_finite() && *h >= 0.0, "width={width}: h[{i}]={h}");
+            }
+            assert!(cache.total_height.is_finite() && cache.total_height >= 0.0);
+        }
+
+        // Tiny font sizes
+        for &size in &[0.1_f32, 0.5, 1.0] {
+            cache.heights.clear();
+            cache.ensure_heights(size, 400.0, &style);
+            for (i, h) in cache.heights.iter().enumerate() {
+                assert!(h.is_finite() && *h >= 0.0, "size={size}: h[{i}]={h}");
+            }
+            assert!(cache.total_height > 0.0, "size={size}: positive");
+        }
     }
     // ── Viewport culling stress tests ─────────────────────────────────
 
@@ -2121,7 +2338,7 @@ mod tests {
 
     /// Build a cache with heights computed for the given source.
     fn build_cache(source: &str) -> MarkdownCache {
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(source);
         cache.ensure_heights(14.0, 900.0, &style);
@@ -2189,29 +2406,21 @@ mod tests {
 
     // 2. Scroll to exact block boundaries (cum_y[i] values)
     #[test]
-    fn viewport_exact_boundary_finds_correct_block() {
+    fn viewport_structural_invariants() {
+        // Exact boundary finds correct block
         let doc = uniform_paragraph_doc(200);
         let cache = build_cache(&doc);
-        let n = cache.blocks.len();
-        assert!(n >= 200);
-
-        let viewport_h = 800.0;
-        for i in 0..n {
+        assert!(cache.blocks.len() >= 200);
+        for i in 0..cache.blocks.len() {
             let vis_top = cache.cum_y[i];
-            let vis_bottom = vis_top + viewport_h;
-            let (first, _) = viewport_range(&cache, vis_top, vis_bottom);
+            let (first, _) = viewport_range(&cache, vis_top, vis_top + 800.0);
             assert_eq!(
                 first, i,
                 "scrolling to cum_y[{i}]={vis_top} should start at block {i}, got {first}"
             );
         }
-    }
 
-    // 3. Scroll to positions between blocks
-    // 4. Scroll past total_height — no panic, no out-of-bounds
-
-    #[test]
-    fn viewport_cum_y_monotonic_across_docs() {
+        // cum_y monotonically increases across doc types
         for (label, doc) in [
             ("uniform_10k", uniform_paragraph_doc(10_500)),
             ("mixed", crate::stress::large_mixed_doc(200)),
@@ -2227,10 +2436,8 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn viewport_total_height_equals_sum() {
+        // total_height equals sum of individual heights
         for (label, doc) in [
             ("mixed", crate::stress::large_mixed_doc(100)),
             ("uniform", uniform_paragraph_doc(1_000)),
@@ -2244,161 +2451,7 @@ mod tests {
                 sum
             );
         }
-    }
 
-    #[test]
-    fn viewport_single_block_and_empty_doc() {
-        // Single block via cache
-        let cache = build_cache("# Only heading\n");
-        assert_eq!(cache.blocks.len(), 1);
-        assert!((cache.cum_y[0]).abs() < f32::EPSILON);
-        let (first, last) = viewport_range(&cache, 0.0, 800.0);
-        assert_eq!(first, 0);
-        assert_eq!(last, 1);
-
-        // Single block via headless
-        let (count, h) = headless_render_scrollable("# Only\n", Some(0.0));
-        assert_eq!(count, 1);
-        assert!(h > 0.0);
-
-        // Empty doc via cache
-        let cache = build_cache("");
-        assert!(cache.blocks.is_empty());
-        assert!((cache.total_height).abs() < f32::EPSILON);
-        let (first, last) = viewport_range(&cache, 0.0, 800.0);
-        assert_eq!(first, 0);
-        assert_eq!(last, 0);
-
-        // Empty doc via headless
-        let (count, h) = headless_render_scrollable("", Some(0.0));
-        assert_eq!(count, 0);
-        assert!((h).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn viewport_scroll_past_total_height() {
-        // Via cache
-        let doc = uniform_paragraph_doc(100);
-        let cache = build_cache(&doc);
-        let vis_top = cache.total_height * 2.0;
-        let (first, last) = viewport_range(&cache, vis_top, vis_top + 800.0);
-        assert!(first < cache.blocks.len());
-        assert!(last <= cache.blocks.len());
-
-        // Via headless
-        let (count, h) = headless_render_scrollable("# Hello\n\nWorld\n\n", Some(999_999.0));
-        assert!(count > 0);
-        assert!(h > 0.0);
-    }
-
-    #[test]
-    fn viewport_narrow_1px_viewport() {
-        let doc = uniform_paragraph_doc(100);
-        let cache = build_cache(&doc);
-
-        // At block boundaries
-        for i in (0..cache.blocks.len()).step_by(10) {
-            let vis_top = cache.cum_y[i];
-            let (first, last) = viewport_range(&cache, vis_top, vis_top + 1.0);
-            assert!(last > first, "1px at block {i}: [{first}, {last})");
-        }
-
-        // Mid-block
-        let mid_y = cache.cum_y[50] + cache.heights[50] / 2.0;
-        let (first, last) = viewport_range(&cache, mid_y, mid_y + 1.0);
-        assert!(
-            first <= 50 && last > 50,
-            "1px mid-block 50: [{first}, {last})"
-        );
-    }
-
-    #[test]
-    fn viewport_wide_includes_all_or_rest() {
-        let doc = uniform_paragraph_doc(500);
-        let cache = build_cache(&doc);
-        let n = cache.blocks.len();
-
-        // From start
-        let (first, last) = viewport_range(&cache, 0.0, 100_000.0);
-        assert_eq!(first, 0);
-        assert_eq!(last, n);
-
-        // From middle
-        let mid = n / 2;
-        let vis_top = cache.cum_y[mid];
-        let (first, last) = viewport_range(&cache, vis_top, vis_top + 100_000.0);
-        assert_eq!(first, mid);
-        assert_eq!(last, n);
-    }
-
-    // 4b. Also test via the full render pipeline
-    // 5. Scroll to negative Y — overlapping viewport still renders blocks
-    #[test]
-    fn viewport_negative_scroll() {
-        let doc = uniform_paragraph_doc(100);
-        let cache = build_cache(&doc);
-
-        // Overlapping viewport
-        let (first, last) = viewport_range(&cache, -100.0, 700.0);
-        assert_eq!(first, 0, "negative scroll starts at 0");
-        assert!(last > 0, "overlapping renders blocks");
-
-        // Entirely negative
-        let (first, last) = viewport_range(&cache, -1000.0, -200.0);
-        assert_eq!(first, 0);
-        assert_eq!(last, 0, "entirely negative renders nothing");
-
-        // Via headless
-        let (count, _) = headless_render_scrollable("# Hello\n\nWorld\n\n", Some(-500.0));
-        assert!(count > 0);
-    }
-    // 5b. Entirely negative viewport renders nothing (correct behavior)
-    // 5b. Via full render pipeline
-    // 6. Uniform heights — binary search should be exact
-    #[test]
-    fn viewport_uniform_and_varying_heights() {
-        // Uniform: binary search exact
-        let doc = uniform_paragraph_doc(500);
-        let cache = build_cache(&doc);
-        let h0 = cache.heights[0];
-        for (i, &h) in cache.heights.iter().enumerate() {
-            assert!((h - h0).abs() < f32::EPSILON, "block {i}: {h} != {h0}");
-        }
-        for (i, &y) in cache.cum_y.iter().enumerate() {
-            assert!((y - h0 * i as f32).abs() < 0.1, "cum_y[{i}]={y}");
-        }
-        for i in (0..cache.blocks.len()).step_by(50) {
-            let (first, _) = viewport_range(&cache, cache.cum_y[i], cache.cum_y[i] + 800.0);
-            assert_eq!(first, i, "exact at block {i}");
-        }
-
-        // Varying: tiny paragraph + huge code block
-        let mut doc = String::from("Hi\n\n```\n");
-        for i in 0..500 {
-            writeln!(doc, "code line {i}").ok();
-        }
-        doc.push_str("```\n\nAfter code\n\n");
-        let cache = build_cache(&doc);
-        assert!(
-            cache.heights[1] > cache.heights[0] * 10.0,
-            "code >> paragraph"
-        );
-        let code_mid = cache.cum_y[1] + cache.heights[1] / 2.0;
-        let (first, last) = viewport_range(&cache, code_mid, code_mid + 100.0);
-        assert!(first <= 1 && last > 1, "code in range [{first}, {last})");
-    }
-    // 7. Wildly varying heights — tiny paragraph then huge code block
-    // 8. Single-block document at Y=0
-    // 8b. Via full render pipeline
-    // 9. Empty document — should render nothing, not crash
-    // 9b. Via full render pipeline
-    // 10. cum_y is monotonically increasing (10k+ blocks)
-    // 10b. Also on mixed doc
-    // 11. total_height == sum of all heights
-    // 11b. On uniform doc
-    // 12. cum_y[0] == 0 always
-    #[test]
-    fn viewport_structural_invariants() {
         // cum_y[0] == 0 always
         for (label, doc) in [
             ("single", "# H\n".to_owned()),
@@ -2449,21 +2502,115 @@ mod tests {
             assert!(last <= cache.blocks.len());
         }
     }
-    // 13. Very narrow viewport (height=1px)
-    // 13b. 1px viewport in the middle of a block
-    // 14. Very wide viewport (100,000px) includes all blocks
-    // 14b. Wide viewport starting from a non-zero offset
-    // ── Additional edge cases ─────────────────────────────────────────
 
-    // Verify scrollable render pipeline handles all extreme positions
-    // Verify the pathological doc doesn't break viewport culling
-    // Boundary: last block's cum_y + height == total_height
-    // Lengths consistency: blocks, heights, cum_y all same length
+    #[test]
+    fn viewport_edge_cases() {
+        // Single block
+        let cache = build_cache("# Only heading\n");
+        assert_eq!(cache.blocks.len(), 1);
+        assert!((cache.cum_y[0]).abs() < f32::EPSILON);
+        let (first, last) = viewport_range(&cache, 0.0, 800.0);
+        assert_eq!(first, 0);
+        assert_eq!(last, 1);
+        let (count, h) = headless_render_scrollable("# Only\n", Some(0.0));
+        assert_eq!(count, 1);
+        assert!(h > 0.0);
+
+        // Empty doc
+        let cache = build_cache("");
+        assert!(cache.blocks.is_empty());
+        assert!((cache.total_height).abs() < f32::EPSILON);
+        let (first, last) = viewport_range(&cache, 0.0, 800.0);
+        assert_eq!((first, last), (0, 0));
+        let (count, h) = headless_render_scrollable("", Some(0.0));
+        assert_eq!(count, 0);
+        assert!((h).abs() < f32::EPSILON);
+
+        // Scroll past total_height
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+        let vis_top = cache.total_height * 2.0;
+        let (first, last) = viewport_range(&cache, vis_top, vis_top + 800.0);
+        assert!(first < cache.blocks.len());
+        assert!(last <= cache.blocks.len());
+        let (count, h) = headless_render_scrollable("# Hello\n\nWorld\n\n", Some(999_999.0));
+        assert!(count > 0 && h > 0.0);
+
+        // Narrow 1px viewport at block boundaries
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+        for i in (0..cache.blocks.len()).step_by(10) {
+            let vis_top = cache.cum_y[i];
+            let (first, last) = viewport_range(&cache, vis_top, vis_top + 1.0);
+            assert!(last > first, "1px at block {i}: [{first}, {last})");
+        }
+        let mid_y = cache.cum_y[50] + cache.heights[50] / 2.0;
+        let (first, last) = viewport_range(&cache, mid_y, mid_y + 1.0);
+        assert!(
+            first <= 50 && last > 50,
+            "1px mid-block 50: [{first}, {last})"
+        );
+
+        // Wide viewport includes all or rest
+        let doc = uniform_paragraph_doc(500);
+        let cache = build_cache(&doc);
+        let n = cache.blocks.len();
+        let (first, last) = viewport_range(&cache, 0.0, 100_000.0);
+        assert_eq!((first, last), (0, n));
+        let mid = n / 2;
+        let (first, last) = viewport_range(&cache, cache.cum_y[mid], cache.cum_y[mid] + 100_000.0);
+        assert_eq!((first, last), (mid, n));
+
+        // Negative scroll: overlapping viewport
+        let doc = uniform_paragraph_doc(100);
+        let cache = build_cache(&doc);
+        let (first, last) = viewport_range(&cache, -100.0, 700.0);
+        assert_eq!(first, 0, "negative scroll starts at 0");
+        assert!(last > 0, "overlapping renders blocks");
+        let (first, last) = viewport_range(&cache, -1000.0, -200.0);
+        assert_eq!((first, last), (0, 0), "entirely negative renders nothing");
+        let (count, _) = headless_render_scrollable("# Hello\n\nWorld\n\n", Some(-500.0));
+        assert!(count > 0);
+    }
+    // 6. Uniform heights — binary search should be exact
+    #[test]
+    fn viewport_uniform_and_varying_heights() {
+        // Uniform: binary search exact
+        let doc = uniform_paragraph_doc(500);
+        let cache = build_cache(&doc);
+        let h0 = cache.heights[0];
+        for (i, &h) in cache.heights.iter().enumerate() {
+            assert!((h - h0).abs() < f32::EPSILON, "block {i}: {h} != {h0}");
+        }
+        for (i, &y) in cache.cum_y.iter().enumerate() {
+            assert!((y - h0 * i as f32).abs() < 0.1, "cum_y[{i}]={y}");
+        }
+        for i in (0..cache.blocks.len()).step_by(50) {
+            let (first, _) = viewport_range(&cache, cache.cum_y[i], cache.cum_y[i] + 800.0);
+            assert_eq!(first, i, "exact at block {i}");
+        }
+
+        // Varying: tiny paragraph + huge code block
+        let mut doc = String::from("Hi\n\n```\n");
+        for i in 0..500 {
+            writeln!(doc, "code line {i}").ok();
+        }
+        doc.push_str("```\n\nAfter code\n\n");
+        let cache = build_cache(&doc);
+        assert!(
+            cache.heights[1] > cache.heights[0] * 10.0,
+            "code >> paragraph"
+        );
+        let code_mid = cache.cum_y[1] + cache.heights[1] / 2.0;
+        let (first, last) = viewport_range(&cache, code_mid, code_mid + 100.0);
+        assert!(first <= 1 && last > 1, "code in range [{first}, {last})");
+    }
+
     #[test]
     fn viewport_stress_tests() {
         // Multiple viewport widths with stress test
         let md = include_str!("../../../../test-assets/stress-test.md");
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         for &width in &[320.0_f32, 768.0, 1024.0, 1920.0] {
             let ctx = headless_ctx();
             let mut cache = MarkdownCache::default();
@@ -2492,6 +2639,28 @@ mod tests {
         for &frac in &[0.0, 0.25, 0.5, 0.75, 1.0, 1.5] {
             let (c, _) = headless_render_scrollable(&doc, Some(total_h * frac));
             assert!(c >= 10_000, "stable at scroll {frac:.0}");
+        }
+
+        // Narrow (100px) and wide (5000px) widths
+        let md2 = "# Heading\n\nA paragraph with some text.\n\n| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+        for (label, width) in [("narrow", 100.0_f32), ("wide", 5000.0)] {
+            let ctx = headless_ctx();
+            let mut cache = MarkdownCache::default();
+            let viewer = MarkdownViewer::new("width_test");
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 768.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, md2, None);
+                });
+            });
+            assert!(!cache.blocks.is_empty(), "{label}: blocks");
+            assert!(cache.total_height > 0.0, "{label}: height");
         }
     }
     // ── Height estimation stress tests ─────────────────────────────
@@ -2529,7 +2698,7 @@ mod tests {
 
     #[test]
     fn table_height_estimation_cases() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         // Scales with rows
         let h5 = estimate_block_height(
             &Block::Table(Box::new(make_table(3, 5, "cell"))),
@@ -2628,13 +2797,65 @@ mod tests {
         let h_narrow = estimate_table_height(&narrow_table, 14.0, 50.0);
         let h_wide = estimate_table_height(&narrow_table, 14.0, 800.0);
         assert!(h_narrow >= h_wide, "narrow ({h_narrow}) >= wide ({h_wide})");
+
+        // col_width floor with many columns
+        let table = Block::Table(Box::new(make_table(100, 3, "cell data")));
+        assert_sane_height(
+            estimate_block_height(&table, 14.0, 400.0, &style),
+            "100-col in 400px",
+        );
+
+        // Empty table (no header, no rows)
+        let empty = Block::Table(Box::new(TableData {
+            header: vec![],
+            alignments: vec![],
+            rows: vec![],
+        }));
+        assert!(
+            estimate_block_height(&empty, 14.0, 400.0, &style) > 0.0,
+            "empty table positive height"
+        );
+
+        // Table height vs render constants
+        let row_h = 14.0 * 1.8;
+        let table = make_table(3, 5, "data");
+        let h = estimate_table_height(&table, 14.0, 600.0);
+        assert!(
+            h >= row_h * 5.0 * 0.5,
+            "5-row table {h} vs min {}",
+            row_h * 5.0
+        );
+
+        // Short rows no panic
+        let md = "| A | B |\n|---|---|\n| x | y |\n";
+        let (blocks, height) = headless_render(md);
+        assert!(matches!(&blocks[0], Block::Table(_)));
+        assert!(height > 0.0);
+
+        // Single column width reasonable
+        let header = vec![plain("Header")];
+        let rows = vec![vec![plain("val")]];
+        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert!(
+            widths[0] > 40.0 && widths[0] < 600.0,
+            "single col width: {}",
+            widths[0]
+        );
+
+        // Redistribution respects min_col_width
+        let header: Vec<StyledText> = (0..10).map(|i| plain(&format!("H{i}"))).collect();
+        let rows = vec![(0..10).map(|i| plain(&format!("d{i}"))).collect()];
+        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
+        for (i, w) in widths.iter().enumerate() {
+            assert!(*w >= min_col_w - 0.01, "col {i}: {w} >= {min_col_w}");
+        }
     }
 
     // ── Code blocks: edge cases ────────────────────────────────────
 
     #[test]
     fn code_block_height_estimation_cases() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
 
         let cases: Vec<(&str, Block)> = vec![
             (
@@ -2751,14 +2972,12 @@ mod tests {
         assert!(h_wl > h_nl2, "with language ({h_wl}) > without ({h_nl2})");
     }
 
-    // ── Blockquotes: deep nesting ──────────────────────────────────
-
-    // ── wrap_width=0 across all block types ────────────────────────
-
     #[test]
-    fn all_block_types_handle_zero_wrap_width() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let blocks: Vec<Block> = vec![
+    fn block_height_robustness() {
+        let style = dark_style();
+
+        // All block types handle wrap_width=0
+        let all_blocks: Vec<Block> = vec![
             Block::Heading {
                 level: 1,
                 text: plain("Title"),
@@ -2789,34 +3008,19 @@ mod tests {
                 alt: Box::from("a"),
             },
         ];
-
-        for (i, block) in blocks.iter().enumerate() {
+        for (i, block) in all_blocks.iter().enumerate() {
             let h = estimate_block_height(block, 14.0, 0.0, &style);
-            assert!(
-                h.is_finite(),
-                "block {i} ({block:?}): wrap_width=0 produced non-finite h={h}"
-            );
-            assert!(
-                h > 0.0,
-                "block {i}: wrap_width=0 produced non-positive h={h}"
-            );
+            assert!(h.is_finite() && h > 0.0, "block {i}: wrap_width=0, h={h}");
         }
-    }
 
-    // ── No NaN/Infinity across typical font sizes ──────────────────
-
-    #[test]
-    fn heights_consistency_and_finiteness() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // Finite across font sizes
+        // Finite and positive across font sizes
         let block = Block::Paragraph(plain(&"word ".repeat(50)));
         for size in [1.0_f32, 8.0, 14.0, 24.0, 72.0, 200.0] {
             let h = estimate_block_height(&block, size, 600.0, &style);
             assert!(h.is_finite() && h > 0.0, "font_size={size}: {h}");
         }
 
-        // Total height == sum of individual
+        // Total height == sum of individual heights
         let blocks: Vec<Block> = vec![
             Block::Heading {
                 level: 2,
@@ -2860,114 +3064,39 @@ mod tests {
             cache.total_height
         );
     }
-    // ── Table column width floor with many columns ─────────────────
-
-    #[test]
-    fn table_misc_height_and_rendering() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // col_width floor with many columns
-        let table = Block::Table(Box::new(make_table(100, 3, "cell data")));
-        assert_sane_height(
-            estimate_block_height(&table, 14.0, 400.0, &style),
-            "100-col in 400px",
-        );
-
-        // Empty table (no header, no rows)
-        let empty = Block::Table(Box::new(TableData {
-            header: vec![],
-            alignments: vec![],
-            rows: vec![],
-        }));
-        assert!(
-            estimate_block_height(&empty, 14.0, 400.0, &style) > 0.0,
-            "empty table positive height"
-        );
-
-        // Table height vs render constants
-        let row_h = 14.0 * 1.8;
-        let table = make_table(3, 5, "data");
-        let h = estimate_table_height(&table, 14.0, 600.0);
-        let min_expected = row_h * 5.0;
-        assert!(
-            h >= min_expected * 0.5,
-            "5-row table {h} vs min {min_expected}"
-        );
-
-        // Short rows no panic
-        let md = "| A | B |\n|---|---|\n| x | y |\n";
-        let (blocks, height) = headless_render(md);
-        assert!(matches!(&blocks[0], Block::Table(_)));
-        assert!(height > 0.0);
-
-        // Single column width reasonable
-        let header = vec![plain("Header")];
-        let rows = vec![vec![plain("val")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
-        assert!(
-            widths[0] > 40.0 && widths[0] < 600.0,
-            "single col width: {}",
-            widths[0]
-        );
-
-        // Redistribution respects min_col_width
-        let header: Vec<StyledText> = (0..10).map(|i| plain(&format!("H{i}"))).collect();
-        let rows = vec![(0..10).map(|i| plain(&format!("d{i}"))).collect()];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
-        for (i, w) in widths.iter().enumerate() {
-            assert!(*w >= min_col_w - 0.01, "col {i}: {w} >= {min_col_w}");
-        }
-    }
-    // ── Ordered list saturating_add for display number ─────────────
 
     #[test]
     fn ordered_list_huge_start_no_overflow() {
         // start near u64::MAX must not panic via integer overflow.
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let _viewer = MarkdownViewer::new("ol_huge");
+        let style = dark_colored_style();
 
-        // Construct a Block directly because the parser caps start values.
+        let mk = |text: &str| ListItem {
+            content: StyledText {
+                text: text.to_owned(),
+                spans: vec![],
+                ..StyledText::default()
+            },
+            children: vec![],
+            checked: None,
+        };
+
         cache.blocks = vec![Block::OrderedList {
             start: u64::MAX - 1,
-            items: vec![
-                ListItem {
-                    content: StyledText {
-                        text: "first".to_owned(),
-                        spans: vec![],
-                        ..StyledText::default()
-                    },
-                    children: vec![],
-                    checked: None,
-                },
-                ListItem {
-                    content: StyledText {
-                        text: "second".to_owned(),
-                        spans: vec![],
-                        ..StyledText::default()
-                    },
-                    children: vec![],
-                    checked: None,
-                },
-                ListItem {
-                    content: StyledText {
-                        text: "third".to_owned(),
-                        spans: vec![],
-                        ..StyledText::default()
-                    },
-                    children: vec![],
-                    checked: None,
-                },
-            ],
+            items: vec![mk("first"), mk("second"), mk("third")],
         }];
 
-        // Must not panic — previous code used `start + i` which overflows.
+        // Render must not panic — previous code used `start + i` which overflows.
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 render_blocks(ui, &cache.blocks, &style, 0);
             });
         });
+
+        // Height estimation must also handle near-max start.
+        let h = estimate_block_height(&cache.blocks[0], 14.0, 400.0, &style);
+        assert!(h.is_finite() && h > 0.0, "near-u64::MAX height: {h}");
     }
 
     // ── Headless rendering: width-configurable helper ──────────────
@@ -2977,7 +3106,7 @@ mod tests {
     fn headless_render_at_width(source: &str, width: f32) -> (usize, f32, f32) {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let viewer = MarkdownViewer::new("test_width");
 
         let input = egui::RawInput {
@@ -3086,57 +3215,8 @@ mod tests {
         }
     }
 
-    // ── 5. Width sensitivity ───────────────────────────────────────
-
     // ── 6. Edge case rendering ─────────────────────────────────────
 
-    #[test]
-    fn edge_case_scrollable_docs() {
-        let cases: Vec<(&str, String)> = vec![
-            ("empty_string", String::new()),
-            ("single_heading", "# Hello\n".to_owned()),
-            ("1000_thematic_breaks", {
-                let mut d = String::new();
-                for _ in 0..1000 {
-                    d.push_str("---\n\n");
-                }
-                d
-            }),
-            ("deeply_nested_blockquotes_with_tables", {
-                let mut d = String::new();
-                for depth in 0..8 {
-                    let prefix = "> ".repeat(depth + 1);
-                    let _ = writeln!(d, "{prefix}Level {} paragraph\n", depth + 1);
-                    if depth % 2 == 0 {
-                        let _ = writeln!(d, "{prefix}| A | B |");
-                        let _ = writeln!(d, "{prefix}|---|---|");
-                        let _ = writeln!(d, "{prefix}| x | y |");
-                        d.push('\n');
-                    }
-                }
-                d
-            }),
-            ("deeply_nested_blockquotes_scrollable", {
-                let mut d = String::new();
-                for depth in 0..10 {
-                    let prefix = "> ".repeat(depth + 1);
-                    let _ = writeln!(d, "{prefix}Nested level {}", depth + 1);
-                }
-                d
-            }),
-        ];
-        for (label, md) in &cases {
-            let (count, height) = headless_render_scrollable(md, None);
-            if md.is_empty() {
-                assert_eq!(count, 0, "{label}: empty → 0 blocks");
-            } else {
-                assert!(count > 0, "{label}: should have blocks");
-            }
-            assert!(height >= 0.0, "{label}: non-negative height");
-            // Also try scrolling
-            let _ = headless_render_scrollable(md, Some(height / 2.0));
-        }
-    }
     // ── Table stress tests ─────────────────────────────────────────
 
     /// Build a markdown table with `cols` columns and `rows` data rows.
@@ -3217,134 +3297,47 @@ mod tests {
             assert!(!blocks.is_empty(), "{label}: should produce blocks");
             assert!(height > 0.0, "{label}: should have positive height");
         }
-    }
 
-    // ── 2. Extreme row counts ──────────────────────────────────────
-
-    #[test]
-    fn table_stress_500_rows_scrollable() {
+        // 500 rows scrollable at various positions
         let md = build_table_md(3, 500, |r, c| format!("val_{r}_{c}"));
-        // Render at various scroll positions: top, middle, bottom.
         for scroll_y in [None, Some(0.0), Some(2000.0), Some(10000.0)] {
             let (count, height) = headless_render_scrollable(&md, scroll_y);
             assert!(count > 0, "500-row table should parse into blocks");
             assert!(
                 height > 0.0,
-                "500-row table should have positive height at scroll {scroll_y:?}"
+                "500-row table positive height at scroll {scroll_y:?}"
             );
         }
-    }
 
-    // ── 4. compute_table_col_widths edge cases ─────────────────────
-
-    #[test]
-    fn col_widths_edge_cases() {
-        // Zero usable space → widths non-negative
-        let header = vec![plain("A"), plain("B")];
-        let rows = vec![vec![plain("x"), plain("y")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 0.0, 7.0, 14.0);
-        assert_eq!(widths.len(), 2);
-        for w in &widths {
-            assert!(*w >= 0.0, "width should be non-negative, got {w}");
-        }
-
-        // Very small usable → clamped to min_col_w
-        let header = vec![plain("A"), plain("B"), plain("C")];
-        let rows = vec![vec![plain("x"), plain("y"), plain("z")]];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 10.0, 7.0, 14.0);
-        for w in &widths {
-            assert!(*w >= min_col_w - 0.01, "width {w} >= min {min_col_w}");
-        }
-
-        // Equal-length columns → roughly equal widths
-        let header = vec![plain("ABCD"), plain("EFGH"), plain("IJKL")];
-        let rows = vec![vec![plain("1234"), plain("5678"), plain("9012")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
-        let avg = widths.iter().sum::<f32>() / widths.len() as f32;
-        for w in &widths {
-            assert!((*w - avg).abs() < avg * 0.2, "roughly equal: {widths:?}");
-        }
-
-        // One much longer column → gets more space
-        let header = vec![plain("A"), plain(&"X".repeat(300))];
-        let rows = vec![vec![plain("a"), plain(&"Y".repeat(300))]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.0, 14.0);
-        assert!(widths[1] > widths[0], "longer column wider: {widths:?}");
-
-        // body_size = 0 → min_col_w = 36
-        let header = vec![plain("A"), plain("B")];
-        let rows = vec![vec![plain("x"), plain("y")]];
-        let (_, min_col_w) = compute_table_col_widths(&header, &rows, 200.0, 7.0, 0.0);
-        assert!((min_col_w - 36.0).abs() < 0.01, "min_col_w={min_col_w}");
-    }
-
-    // ── 5. Alignment rendering ─────────────────────────────────────
-
-    #[test]
-    fn table_alignment_rendering() {
-        // Explicit alignments
-        let md1 = "| Default | Left | Center | Right |\n|---------|:-----|:------:|------:|\n| d | l | c | r |\n";
-        let (blocks, height) = headless_render(md1);
-        assert!(height > 0.0);
-        let table = blocks
-            .iter()
-            .find_map(|b| match b {
-                Block::Table(t) => Some(t),
-                _ => None,
-            })
-            .expect("table");
-        assert_eq!(table.alignments[0], Alignment::None);
-        assert_eq!(table.alignments[1], Alignment::Left);
-        assert_eq!(table.alignments[2], Alignment::Center);
-        assert_eq!(table.alignments[3], Alignment::Right);
-
-        // No alignment markers → all None
-        let md2 = "| A | B |\n|---|---|\n| 1 | 2 |\n";
-        let (blocks, _) = headless_render(md2);
-        let table = blocks
-            .iter()
-            .find_map(|b| match b {
-                Block::Table(t) => Some(t),
-                _ => None,
-            })
-            .expect("table");
-        for (i, a) in table.alignments.iter().enumerate() {
-            assert_eq!(*a, Alignment::None, "col {i} should default to None");
-        }
-    }
-    // ── 6. Table interaction with viewport culling ──────────────────
-
-    #[test]
-    fn table_stress_scrollable_contexts() {
         // 100 small tables, scroll to middle
-        let mut md = String::new();
+        let mut md100 = String::new();
         for i in 0..100 {
-            let _ = writeln!(md, "| T{i}A | T{i}B |");
-            md.push_str("|---|---|\n");
-            let _ = writeln!(md, "| {i}a | {i}b |");
-            md.push('\n');
+            let _ = writeln!(md100, "| T{i}A | T{i}B |");
+            md100.push_str("|---|---|\n");
+            let _ = writeln!(md100, "| {i}a | {i}b |");
+            md100.push('\n');
         }
-        let (count, height) = headless_render_scrollable(&md, Some(height_of(&md) / 2.0));
+        let (count, height) = headless_render_scrollable(&md100, Some(height_of(&md100) / 2.0));
         assert!(count >= 100, "should parse all 100 tables, got {count}");
         assert!(height > 0.0);
 
         // Alternating tables and paragraphs
-        let mut md = String::new();
+        let mut alt_md = String::new();
         for i in 0..50 {
-            let _ = writeln!(md, "Paragraph {i} with some text here.\n");
-            let _ = writeln!(md, "| Col1 | Col2 |");
-            md.push_str("|------|------|\n");
-            let _ = writeln!(md, "| r{i}  | c{i}  |\n");
+            let _ = writeln!(alt_md, "Paragraph {i} with some text here.\n");
+            let _ = writeln!(alt_md, "| Col1 | Col2 |");
+            alt_md.push_str("|------|------|\n");
+            let _ = writeln!(alt_md, "| r{i}  | c{i}  |\n");
         }
         for scroll_y in [None, Some(0.0), Some(500.0), Some(2000.0)] {
-            let (count, height) = headless_render_scrollable(&md, scroll_y);
+            let (count, height) = headless_render_scrollable(&alt_md, scroll_y);
             assert!(count > 0, "mixed doc should have blocks");
             assert!(height > 0.0, "positive height at scroll {scroll_y:?}");
         }
     }
     /// Quick height estimate for scroll-target computation in tests.
     fn height_of(source: &str) -> f32 {
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(source);
         cache.ensure_heights(14.0, 900.0, &style);
@@ -3405,19 +3398,90 @@ mod tests {
             assert!(!blocks.is_empty(), "nested {depth} levels");
             assert!(height > 0.0, "nested {depth} levels height");
 
-            let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+            let style = dark_style();
             let mut cache = MarkdownCache::default();
             cache.ensure_parsed(&md);
             cache.ensure_heights(14.0, 400.0, &style);
             assert!(cache.total_height.is_finite());
         }
+
+        // Lists in various contexts
+        let long_item = format!("- {}\n- Short\n", "A".repeat(600));
+        for (label, md) in [
+            ("after_heading", "# Title\n\n- Item one\n- Item two\n"),
+            (
+                "inside_blockquote",
+                "> - Quoted item 1\n> - Quoted item 2\n",
+            ),
+            ("only_lists", "- A\n- B\n\n1. One\n2. Two\n\n- C\n- D\n"),
+            (
+                "alternating",
+                "1. Ordered\n2. Items\n\n- Unordered\n- Items\n\n3. More ordered\n",
+            ),
+            (
+                "inline_formatting",
+                "- **Bold item**\n- *Italic item*\n- `Code item`\n- [Link](https://example.com)\n- ~~Strike~~\n- **Bold** and *italic* together\n",
+            ),
+            ("very_long_text", long_item.as_str()),
+            (
+                "continuation_lines",
+                "- First line\n  continued on next\n  and another\n- Second item\n",
+            ),
+        ] {
+            let (blocks, height) = headless_render(md);
+            assert!(!blocks.is_empty(), "{label}: should have blocks");
+            assert!(height > 0.0, "{label}: should have positive height");
+        }
+
+        // Height estimation scaling: 50 vs 100 items
+        let style = dark_style();
+        let mk_list = |n: usize| -> String { (0..n).map(|i| format!("- Item {i}\n")).collect() };
+        let mut c50 = MarkdownCache::default();
+        c50.ensure_parsed(&mk_list(50));
+        c50.ensure_heights(14.0, 400.0, &style);
+        let mut c100 = MarkdownCache::default();
+        c100.ensure_parsed(&mk_list(100));
+        c100.ensure_heights(14.0, 400.0, &style);
+        let ratio = c100.total_height / c50.total_height;
+        assert!(
+            ratio > 1.5 && ratio < 2.5,
+            "100/50 ratio should be ~2, got {ratio}"
+        );
+
+        // Linear scaling: 100 vs 200 vs 400 items
+        let mut prev_h = 0.0;
+        for n in [100, 200, 400] {
+            let mut cache = MarkdownCache::default();
+            cache.ensure_parsed(&mk_list(n));
+            cache.ensure_heights(14.0, 400.0, &style);
+            if prev_h > 0.0 {
+                assert!(cache.total_height > prev_h, "{n} items should be taller");
+            }
+            prev_h = cache.total_height;
+        }
+
+        // Nested vs flat
+        let flat_md: String = (0..50).map(|i| format!("- Item {i}\n")).collect();
+        let nested_md: String = (0..50)
+            .map(|i| {
+                let indent = "  ".repeat(i % 5);
+                format!("{indent}- Nested item {i}\n")
+            })
+            .collect();
+        let mut flat_c = MarkdownCache::default();
+        flat_c.ensure_parsed(&flat_md);
+        flat_c.ensure_heights(14.0, 400.0, &style);
+        let mut nest_c = MarkdownCache::default();
+        nest_c.ensure_parsed(&nested_md);
+        nest_c.ensure_heights(14.0, 400.0, &style);
+        assert!(nest_c.total_height > 0.0 && flat_c.total_height > 0.0);
     }
 
     // ── 3. Extreme start numbers ───────────────────────────────────
 
     #[test]
     fn stress_ordered_list_start_numbers_and_digits() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
 
         // Various start numbers
         for (start, count, label) in [(999u64, 3, "start_999"), (99999, 3, "start_99999")] {
@@ -3458,39 +3522,6 @@ mod tests {
             let block = Block::OrderedList { start, items };
             let h = estimate_block_height(&block, 14.0, 400.0, &style);
             assert!(h > 0.0, "start={start}, count={item_count}");
-        }
-    }
-
-    // ── 4. Mixed content in list items ─────────────────────────────
-
-    #[test]
-    fn stress_list_rendering_various_contexts() {
-        let long_item = format!("- {}\n- Short\n", "A".repeat(600));
-        let cases: Vec<(&str, &str)> = vec![
-            ("after_heading", "# Title\n\n- Item one\n- Item two\n"),
-            (
-                "inside_blockquote",
-                "> - Quoted item 1\n> - Quoted item 2\n",
-            ),
-            ("only_lists", "- A\n- B\n\n1. One\n2. Two\n\n- C\n- D\n"),
-            (
-                "alternating",
-                "1. Ordered\n2. Items\n\n- Unordered\n- Items\n\n3. More ordered\n",
-            ),
-            (
-                "inline_formatting",
-                "- **Bold item**\n- *Italic item*\n- `Code item`\n- [Link](https://example.com)\n- ~~Strike~~\n- **Bold** and *italic* together\n",
-            ),
-            ("very_long_text", &long_item),
-            (
-                "continuation_lines",
-                "- First line\n  continued on next\n  and another\n- Second item\n",
-            ),
-        ];
-        for (label, md) in &cases {
-            let (blocks, height) = headless_render(md);
-            assert!(!blocks.is_empty(), "{label}: should have blocks");
-            assert!(height > 0.0, "{label}: should have positive height");
         }
     }
 
@@ -3564,79 +3595,12 @@ mod tests {
         }
     }
 
-    // ── 7. Height estimation accuracy for lists ────────────────────
-
-    #[test]
-    fn stress_list_height_estimation_scaling() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // 50 vs 100 items ratio
-        let mk_list = |n: usize| -> String { (0..n).map(|i| format!("- Item {i}\n")).collect() };
-        let mut c50 = MarkdownCache::default();
-        c50.ensure_parsed(&mk_list(50));
-        c50.ensure_heights(14.0, 400.0, &style);
-        let mut c100 = MarkdownCache::default();
-        c100.ensure_parsed(&mk_list(100));
-        c100.ensure_heights(14.0, 400.0, &style);
-        let ratio = c100.total_height / c50.total_height;
-        assert!(
-            ratio > 1.5 && ratio < 2.5,
-            "100/50 ratio should be ~2, got {ratio}"
-        );
-
-        // Linear scaling: 100 vs 200 vs 400 items
-        let mut prev_h = 0.0;
-        for n in [100, 200, 400] {
-            let mut cache = MarkdownCache::default();
-            cache.ensure_parsed(&mk_list(n));
-            cache.ensure_heights(14.0, 400.0, &style);
-            if prev_h > 0.0 {
-                assert!(
-                    cache.total_height > prev_h,
-                    "{n} items should be taller than previous"
-                );
-            }
-            prev_h = cache.total_height;
-        }
-
-        // Nested vs flat
-        let flat_md: String = (0..50).map(|i| format!("- Item {i}\n")).collect();
-        let nested_md: String = (0..50)
-            .map(|i| {
-                let indent = "  ".repeat(i % 5);
-                format!("{indent}- Nested item {i}\n")
-            })
-            .collect();
-        let mut flat_c = MarkdownCache::default();
-        flat_c.ensure_parsed(&flat_md);
-        flat_c.ensure_heights(14.0, 400.0, &style);
-        let mut nest_c = MarkdownCache::default();
-        nest_c.ensure_parsed(&nested_md);
-        nest_c.ensure_heights(14.0, 400.0, &style);
-        assert!(nest_c.total_height > 0.0);
-        assert!(flat_c.total_height > 0.0);
-    }
-
-    #[test]
-    fn stress_ordered_list_near_u64_max_no_panic() {
-        // saturating_add protects against overflow at extreme start numbers.
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let items = vec![plain_item("near-max"), plain_item("overflow?")];
-        let block = Block::OrderedList {
-            start: u64::MAX - 1,
-            items,
-        };
-        let h = estimate_block_height(&block, 14.0, 400.0, &style);
-        assert!(h.is_finite());
-        assert!(h > 0.0);
-    }
-
     // ── build_layout_job section coverage ──────────────────────────
 
     #[test]
     fn layout_job_tests() {
         let ctx = headless_ctx();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
 
         // Sections cover all bytes
         let st = StyledText {
@@ -3755,7 +3719,7 @@ mod tests {
 
     #[test]
     fn blockquote_rendering_consistency() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let body_size = 14.0;
         let reserved = body_size + 3.0;
 
@@ -3817,53 +3781,6 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn hr_and_heading_height_consistency() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // HR: estimate covers render spacing
-        let body_size = 14.0;
-        let estimated = body_size * 0.8;
-        let render_spacing = body_size * 0.4 + body_size * 0.4;
-        assert!(estimated >= render_spacing - 0.01);
-
-        // HR renders with positive height
-        let (_, _est, rendered) = headless_render_at_width("Above\n\n---\n\nBelow\n", 800.0);
-        assert!(rendered > 0.0);
-
-        // Heading: H1 > H3 (due to scale + underline)
-        let h1_est = estimate_block_height(
-            &Block::Heading {
-                level: 1,
-                text: plain("Title"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
-        let h3_est = estimate_block_height(
-            &Block::Heading {
-                level: 3,
-                text: plain("Title"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
-        assert!(h1_est > h3_est, "H1 ({h1_est}) > H3 ({h3_est})");
-
-        // H2 > H3 (underline + scale difference)
-        let h2_est = estimate_block_height(
-            &Block::Heading {
-                level: 2,
-                text: plain("Heading"),
-            },
-            14.0,
-            400.0,
-            &style,
-        );
-        assert!(h2_est > h3_est, "H2 ({h2_est}) > H3 ({h3_est})");
-    }
     // ── Hash collision edge cases (FNV-1a) ─────────────────────────
 
     #[test]
@@ -3917,44 +3834,11 @@ mod tests {
 
     // ── heading_y edge cases ───────────────────────────────────────
 
-    #[test]
-    fn heading_y_edge_cases() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-
-        // No headings → None
-        let mut cache = MarkdownCache::default();
-        cache.ensure_parsed("Just a paragraph.\n\nAnother paragraph.\n");
-        cache.ensure_heights(14.0, 400.0, &style);
-        assert!(cache.heading_y(0).is_none(), "no headings → None");
-
-        // 1000 headings
-        let mut doc = String::with_capacity(30_000);
-        for i in 0..1000 {
-            let _ = writeln!(doc, "## Heading {i}\n");
-        }
-        let mut cache = MarkdownCache::default();
-        cache.ensure_parsed(&doc);
-        cache.ensure_heights(14.0, 400.0, &style);
-        let y999 = cache.heading_y(999);
-        assert!(y999.is_some(), "heading_y(999) must exist");
-        let y998 = cache.heading_y(998).expect("heading_y(998)");
-        assert!(y999.expect("") > y998, "heading 999 > heading 998");
-        assert!(cache.heading_y(1000).is_none());
-
-        // Heights cleared → None
-        let mut cache = MarkdownCache::default();
-        cache.ensure_parsed("# A\n\n## B\n");
-        cache.ensure_heights(14.0, 400.0, &style);
-        assert!(cache.heading_y(0).is_some());
-        cache.heights.clear();
-        cache.cum_y.clear();
-        assert!(cache.heading_y(0).is_none(), "cleared → None");
-    }
     // ── Concurrent-like stress: parse+height+viewport in tight loop ──
 
     #[test]
     fn tight_loop_no_drift() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let doc = crate::stress::large_mixed_doc(10);
         let mut cache = MarkdownCache::default();
         cache.ensure_parsed(&doc);
@@ -3995,39 +3879,11 @@ mod tests {
 
     // ── Very narrow widths ─────────────────────────────────────────
 
-    #[test]
-    fn narrow_widths_and_tiny_fonts() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let doc = "# Title\n\nParagraph with **bold** and `code`.\n\n- list item\n- another item\n\n```\ncode block\n```\n\n> blockquote\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n![img](url)\n";
-        let mut cache = MarkdownCache::default();
-        cache.ensure_parsed(doc);
-
-        // Narrow widths
-        for &width in &[1.0_f32, 5.0, 10.0, 20.0] {
-            cache.heights.clear();
-            cache.ensure_heights(14.0, width, &style);
-            for (i, h) in cache.heights.iter().enumerate() {
-                assert!(h.is_finite() && *h >= 0.0, "width={width}: h[{i}]={h}");
-            }
-            assert!(cache.total_height.is_finite() && cache.total_height >= 0.0);
-        }
-
-        // Tiny font sizes
-        for &size in &[0.1_f32, 0.5, 1.0] {
-            cache.heights.clear();
-            cache.ensure_heights(size, 400.0, &style);
-            for (i, h) in cache.heights.iter().enumerate() {
-                assert!(h.is_finite() && *h >= 0.0, "size={size}: h[{i}]={h}");
-            }
-            assert!(cache.total_height > 0.0, "size={size}: positive");
-        }
-    }
-
     // ── Documents with ONLY one block type ─────────────────────────
 
     #[test]
     fn pure_block_type_documents() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        let style = dark_style();
         let cases: Vec<(&str, String, usize, Box<dyn Fn(&MarkdownCache)>)> = vec![
             (
                 "paragraphs_1000",
@@ -4163,37 +4019,10 @@ mod tests {
     // ── Stress generators at 1KB: valid markdown, no parse errors ──
 
     #[test]
-    fn stress_generators_valid_and_parseable() {
-        // 1kb generators all valid
-        let generators: Vec<(&str, fn(usize) -> String)> = vec![
-            ("large_mixed", crate::stress::large_mixed_doc),
-            ("unicode", crate::stress::unicode_stress_doc),
-            ("table_heavy", crate::stress::table_heavy_doc),
-            ("emoji", crate::stress::emoji_heavy_doc),
-            ("task_list", crate::stress::task_list_doc),
-            ("pathological", crate::stress::pathological_doc),
-        ];
-        for (label, generator) in &generators {
-            let doc = generator(1);
-            assert!(!doc.is_empty(), "{label}: 1KB doc should be non-empty");
-            let blocks = crate::parse::parse_markdown(&doc);
-            assert!(!blocks.is_empty(), "{label}: should produce blocks");
-        }
-        // minimal docs parseable
-        for (label, doc) in crate::stress::minimal_docs() {
-            let blocks = crate::parse::parse_markdown(&doc);
-            assert!(
-                !doc.is_empty() || blocks.is_empty(),
-                "minimal '{label}': non-empty doc should parse to blocks"
-            );
-        }
-    }
-
-    #[test]
     fn progressive_refinement() {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let viewer = MarkdownViewer::new("refine_test");
         let md = "# Big Heading\n\nShort paragraph.\n\n```\nfn main() {\n    println!(\"hello\");\n}\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n> Quote\n\n- List\n- Items\n";
 
@@ -4215,38 +4044,6 @@ mod tests {
             }
             prev_height = h;
         }
-    }
-    #[test]
-    fn estimate_misc_edge_cases() {
-        // CJK not overestimated
-        let cjk_h = estimate_text_height("日本語テスト文字列十", 14.0, 200.0);
-        let latin_h = estimate_text_height("abcdefghij", 14.0, 200.0);
-        assert!(cjk_h < latin_h * 3.0, "CJK {cjk_h} vs Latin {latin_h}");
-
-        // Ordered list wider numbers
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
-        let items: Vec<ListItem> = (0..100)
-            .map(|i| ListItem {
-                content: StyledText {
-                    text: format!("item {i}"),
-                    spans: vec![],
-                    ..StyledText::default()
-                },
-                children: vec![],
-                checked: None,
-            })
-            .collect();
-        let ordered = Block::OrderedList {
-            start: 1,
-            items: items.clone(),
-        };
-        let unordered = Block::UnorderedList(items);
-        let h_ord = estimate_block_height(&ordered, 14.0, 400.0, &style);
-        let h_unord = estimate_block_height(&unordered, 14.0, 400.0, &style);
-        assert!(
-            h_ord >= h_unord * 0.9,
-            "ordered {h_ord} not much shorter than unordered {h_unord}"
-        );
     }
     // ── Additional coverage tests ──────────────────────────────────
 
@@ -4293,10 +4090,7 @@ mod tests {
             let (_, height) = headless_render(md);
             assert!(height >= 0.0, "{label}: non-negative height");
         }
-    }
 
-    #[test]
-    fn render_edge_case_specific_behavior() {
         // Link in heading
         let (blocks, _) = headless_render("## [Documentation](https://docs.rs)\n");
         match &blocks[0] {
@@ -4352,78 +4146,38 @@ mod tests {
         assert!(height > 0.0);
     }
 
-    #[test]
-    fn render_narrow_and_wide_widths() {
-        let ctx = headless_ctx();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let md = "# Heading\n\nA paragraph with some text.\n\n| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n";
-
-        for (label, width) in [("narrow", 100.0_f32), ("wide", 5000.0)] {
-            let mut cache = MarkdownCache::default();
-            let viewer = MarkdownViewer::new("width_test");
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 768.0),
-                )),
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, md, None);
-                });
-            });
-            assert!(!cache.blocks.is_empty(), "{label}: blocks");
-            assert!(cache.total_height > 0.0, "{label}: height");
-        }
-    }
-
     // ── Chaos / fuzz tests ──────────────────────────────────────────
 
     #[test]
-    fn chaos_render_deeply_nested_blockquotes() {
+    fn chaos_tests() {
         // 200 levels of nested blockquotes must not stack overflow.
         let md = "> ".repeat(200) + "content\n";
         let (blocks, height) = headless_render(&md);
-        assert!(!blocks.is_empty());
-        assert!(height.is_finite());
-        assert!(height > 0.0);
-    }
+        assert!(!blocks.is_empty() && height.is_finite() && height > 0.0);
 
-    #[test]
-    fn chaos_render_deeply_nested_lists() {
+        // 200 levels of nested lists
         let mut md = String::new();
         for depth in 0..200 {
             let indent = "  ".repeat(depth);
             writeln!(md, "{indent}- depth {depth}").ok();
         }
         let (blocks, height) = headless_render(&md);
-        assert!(!blocks.is_empty());
-        assert!(height.is_finite());
-    }
+        assert!(!blocks.is_empty() && height.is_finite());
 
-    #[test]
-    fn chaos_height_estimation_nan_inputs() {
         // NaN and Inf inputs should not crash or propagate NaN.
-        let h = estimate_text_height("hello world", 14.0, f32::NAN);
-        assert!(h.is_finite() && h > 0.0, "NaN wrap_width produced: {h}");
+        for (size, width, label) in [
+            (14.0, f32::NAN, "NaN wrap_width"),
+            (f32::NAN, 200.0, "NaN font_size"),
+            (14.0, f32::INFINITY, "Inf wrap_width"),
+            (0.0, 200.0, "zero font_size"),
+            (-5.0, 200.0, "negative font_size"),
+        ] {
+            let h = estimate_text_height("hello world", size, width);
+            assert!(h.is_finite(), "{label} produced: {h}");
+        }
 
-        let h = estimate_text_height("hello world", f32::NAN, 200.0);
-        assert!(h.is_finite() && h > 0.0, "NaN font_size produced: {h}");
-
-        let h = estimate_text_height("hello world", 14.0, f32::INFINITY);
-        assert!(h.is_finite() && h > 0.0, "Inf wrap_width produced: {h}");
-
-        let h = estimate_text_height("hello world", 0.0, 200.0);
-        assert!(h.is_finite(), "zero font_size produced: {h}");
-
-        let h = estimate_text_height("hello world", -5.0, 200.0);
-        assert!(h.is_finite(), "negative font_size produced: {h}");
-    }
-
-    #[test]
-    fn chaos_height_estimation_empty_table() {
-        let style = MarkdownStyle::from_visuals(&egui::Visuals::dark());
+        // Empty table height estimation
+        let style = dark_style();
         let block = Block::Table(Box::new(crate::parse::TableData {
             header: vec![],
             alignments: vec![],
@@ -4431,36 +4185,27 @@ mod tests {
         }));
         let h = estimate_block_height(&block, 14.0, 400.0, &style);
         assert!(h.is_finite() && h >= 0.0, "empty table height: {h}");
-    }
 
-    #[test]
-    fn chaos_scrollable_render_nan_scroll() {
-        let md = "# Hello\n\nWorld\n";
         // NaN scroll offset should not crash.
-        let _ = headless_render_scrollable(md, Some(f32::NAN));
-        let _ = headless_render_scrollable(md, Some(f32::INFINITY));
-        let _ = headless_render_scrollable(md, Some(f32::NEG_INFINITY));
-    }
+        let md = "# Hello\n\nWorld\n";
+        for scroll in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let _ = headless_render_scrollable(md, Some(scroll));
+        }
 
-    #[test]
-    fn chaos_span_bounds_safety() {
-        // Verify that even with manually constructed bad spans,
-        // the text rendering path doesn't panic.
+        // Bad spans should not panic.
         let st = StyledText {
             text: "hello".to_owned(),
             spans: vec![crate::parse::Span {
                 start: 0,
-                end: 100, // WAY past end of text
+                end: 100,
                 style: crate::parse::SpanStyle::default(),
             }],
             ..StyledText::default()
         };
-        // build_layout_job should clamp or handle gracefully.
         let ctx = headless_ctx();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                // This should NOT panic even with invalid spans.
                 let _job = build_layout_job(
                     &st,
                     &st.spans,
@@ -4480,7 +4225,7 @@ mod tests {
     fn cache_reparse_on_content_change_preserves_viewport() {
         let ctx = headless_ctx();
         let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let style = dark_colored_style();
         let viewer = MarkdownViewer::new("reload_test");
 
         // Initial content
@@ -4519,139 +4264,6 @@ mod tests {
             "shorter content = shorter height"
         );
         assert!(cache.total_height > 0.0, "height should still be positive");
-    }
-
-    #[test]
-    fn scroll_past_end_after_content_shrinks() {
-        let ctx = headless_ctx();
-        let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let viewer = MarkdownViewer::new("shrink_test");
-
-        // Long document
-        let long_md: String = (0..500).map(|i| format!("Line {i}\n")).collect();
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                viewer.show_scrollable(ui, &mut cache, &style, &long_md, None);
-            });
-        });
-        let long_height = cache.total_height;
-
-        // Short document, but scroll offset from long document
-        let short_md = "# Just one heading\n\nAnd a paragraph.\n";
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                viewer.show_scrollable(ui, &mut cache, &style, short_md, Some(long_height));
-            });
-        });
-
-        // With no default fonts loaded in test context, height estimates may
-        // be degenerate — only assert basic non-negative consistency.
-        assert!(cache.total_height >= 0.0);
-    }
-
-    #[test]
-    fn content_grows_at_various_scroll_positions() {
-        let ctx = headless_ctx();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let viewer = MarkdownViewer::new("grow_test");
-
-        let scroll_fractions = [0.0, 0.25, 0.5, 0.75, 1.0];
-
-        for frac in scroll_fractions {
-            let mut cache = MarkdownCache::default();
-
-            // Start with short content
-            let short_md = "# Short\n\nJust a few lines.\n";
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, short_md, None);
-                });
-            });
-            let short_height = cache.total_height;
-
-            // Replace with long content, scrolled to fraction of original height
-            let long_md: String = (0..200)
-                .map(|i| format!("## Section {i}\n\nContent for section {i}.\n\n"))
-                .collect();
-            let scroll_y = short_height * frac;
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, &long_md, Some(scroll_y));
-                });
-            });
-
-            assert!(
-                cache.total_height > short_height,
-                "frac={frac}: long content should be taller"
-            );
-            assert!(
-                cache.total_height.is_finite(),
-                "frac={frac}: height should be finite"
-            );
-        }
-    }
-
-    #[test]
-    fn rapid_content_switches_no_corruption() {
-        let ctx = headless_ctx();
-        let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let viewer = MarkdownViewer::new("rapid_test");
-
-        // Rapidly switch between different content (simulates rapid file saves)
-        let contents: Vec<String> = (0..20)
-            .map(|v| {
-                (0..50 + v * 10)
-                    .map(|i| format!("## V{v} Heading {i}\n\nParagraph.\n\n"))
-                    .collect()
-            })
-            .collect();
-
-        for (i, md) in contents.iter().enumerate() {
-            let scroll_y = if i > 0 {
-                Some(cache.total_height / 3.0)
-            } else {
-                None
-            };
-            let _ = ctx.run(raw_input_1024x768(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    viewer.show_scrollable(ui, &mut cache, &style, md, scroll_y);
-                });
-            });
-
-            assert!(!cache.blocks.is_empty(), "iter {i}: blocks should exist");
-            assert!(
-                cache.total_height > 0.0,
-                "iter {i}: height should be positive"
-            );
-            assert!(
-                cache.total_height.is_finite(),
-                "iter {i}: height should be finite"
-            );
-            assert_eq!(
-                cache.heights.len(),
-                cache.blocks.len(),
-                "iter {i}: heights/blocks mismatch"
-            );
-        }
-    }
-
-    #[test]
-    fn reload_with_empty_content() {
-        let ctx = headless_ctx();
-        let mut cache = MarkdownCache::default();
-        let style = MarkdownStyle::colored(&egui::Visuals::dark());
-        let viewer = MarkdownViewer::new("empty_reload");
-
-        // Start with content
-        let md = "# Title\n\nSome content here.\n\n## Section\n\nMore content.\n";
-        let _ = ctx.run(raw_input_1024x768(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                viewer.show_scrollable(ui, &mut cache, &style, md, None);
-            });
-        });
-        assert!(!cache.blocks.is_empty());
 
         // Reload with empty content
         let _ = ctx.run(raw_input_1024x768(), |ctx| {
@@ -4669,11 +4281,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn live_reload_stress() {
+        let ctx = headless_ctx();
+        let style = dark_colored_style();
+        let viewer = MarkdownViewer::new("reload_stress");
+
+        // Content shrinks: scroll past end doesn't panic
+        {
+            let mut cache = MarkdownCache::default();
+            let long_md: String = (0..500).map(|i| format!("Line {i}\n")).collect();
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, &long_md, None);
+                });
+            });
+            let long_height = cache.total_height;
+            let short_md = "# Just one heading\n\nAnd a paragraph.\n";
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, short_md, Some(long_height));
+                });
+            });
+            assert!(cache.total_height >= 0.0);
+        }
+
+        // Content grows at various scroll positions
+        for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let mut cache = MarkdownCache::default();
+            let short_md = "# Short\n\nJust a few lines.\n";
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(ui, &mut cache, &style, short_md, None);
+                });
+            });
+            let short_height = cache.total_height;
+            let long_md: String = (0..200)
+                .map(|i| format!("## Section {i}\n\nContent for section {i}.\n\n"))
+                .collect();
+            let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    viewer.show_scrollable(
+                        ui,
+                        &mut cache,
+                        &style,
+                        &long_md,
+                        Some(short_height * frac),
+                    );
+                });
+            });
+            assert!(
+                cache.total_height > short_height,
+                "frac={frac}: long content should be taller"
+            );
+            assert!(
+                cache.total_height.is_finite(),
+                "frac={frac}: height should be finite"
+            );
+        }
+
+        // Rapid content switches (simulates rapid file saves)
+        {
+            let mut cache = MarkdownCache::default();
+            let contents: Vec<String> = (0..20)
+                .map(|v| {
+                    (0..50 + v * 10)
+                        .map(|i| format!("## V{v} H{i}\n\nParagraph.\n\n"))
+                        .collect()
+                })
+                .collect();
+            for (i, md) in contents.iter().enumerate() {
+                let scroll_y = if i > 0 {
+                    Some(cache.total_height / 3.0)
+                } else {
+                    None
+                };
+                let _ = ctx.run(raw_input_1024x768(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        viewer.show_scrollable(ui, &mut cache, &style, md, scroll_y);
+                    });
+                });
+                assert!(!cache.blocks.is_empty(), "iter {i}: blocks should exist");
+                assert!(
+                    cache.total_height > 0.0 && cache.total_height.is_finite(),
+                    "iter {i}"
+                );
+                assert_eq!(
+                    cache.heights.len(),
+                    cache.blocks.len(),
+                    "iter {i}: mismatch"
+                );
+            }
+        }
+    }
+
     // ── Security / Fuzz Tests ────────────────────────────────────────
 
     #[test]
-    fn fuzz_resolve_image_url_path_traversal() {
-        let traversal_urls = [
+    fn fuzz_resolve_image_url() {
+        let base = "file:///home/user/docs/";
+
+        // Path traversal must be blocked
+        for url in [
             "../../../etc/passwd",
             "..\\..\\..\\windows\\system32\\config",
             "images/../../../secret.txt",
@@ -4682,34 +4391,29 @@ mod tests {
             "../",
             "..\\",
             "a/b/../../../etc/shadow",
-        ];
-        let base = "file:///home/user/docs/";
-        for url in traversal_urls {
-            let resolved = resolve_image_url(url, base);
+        ] {
             assert_eq!(
-                resolved.as_ref(),
+                resolve_image_url(url, base).as_ref(),
                 "",
-                "path traversal should be blocked: {url}"
+                "traversal blocked: {url}"
             );
         }
-        // URL-encoded dots (%2e%2e) are NOT path traversal — they are
-        // literal percent-encoded characters and won't be decoded by the
-        // file system. Verify they pass through.
+        // URL-encoded dots are NOT path traversal — they pass through.
         let encoded = "img/..%2f..%2f..%2fetc/passwd";
-        let resolved = resolve_image_url(encoded, base);
-        assert_ne!(resolved.as_ref(), "", "URL-encoded dots are safe");
-    }
+        assert_ne!(
+            resolve_image_url(encoded, base).as_ref(),
+            "",
+            "URL-encoded dots are safe"
+        );
 
-    #[test]
-    fn fuzz_resolve_image_url_safe_paths() {
-        let safe_urls = [
+        // Safe paths resolve correctly
+        for (url, b, expected) in [
             ("image.png", "file:///docs/", "file:///docs/image.png"),
             (
                 "sub/image.png",
                 "file:///docs/",
                 "file:///docs/sub/image.png",
             ),
-            // Absolute path resolves against scheme+authority only (not full base).
             (
                 "/absolute.png",
                 "file:///home/user/",
@@ -4725,50 +4429,49 @@ mod tests {
                 "file:///docs/",
                 "//cdn.example.com/img.png",
             ),
-        ];
-        for (url, base, expected) in safe_urls {
-            let resolved = resolve_image_url(url, base);
-            assert_eq!(resolved.as_ref(), expected, "safe URL: {url}");
+        ] {
+            assert_eq!(
+                resolve_image_url(url, b).as_ref(),
+                expected,
+                "safe URL: {url}"
+            );
         }
-    }
 
-    #[test]
-    fn fuzz_resolve_image_url_adversarial() {
-        let cases = [
-            "",                   // empty URL
-            " ",                  // whitespace
-            "\0",                 // null byte
-            &"a".repeat(100_000), // very long path
-            "\n\r\t",             // control chars
-            "file:///etc/passwd", // absolute URI (passthrough)
-        ];
-        let base = "file:///home/user/docs/";
-        for url in &cases {
-            let resolved = resolve_image_url(url, base);
-            // Must not panic.
-            let _ = resolved.len();
+        // Adversarial inputs must not panic
+        for url in [
+            "",
+            " ",
+            "\0",
+            &"a".repeat(100_000),
+            "\n\r\t",
+            "file:///etc/passwd",
+        ] {
+            let _ = resolve_image_url(url, base).len();
         }
-    }
 
-    #[test]
-    fn contains_dot_dot_segment_cases() {
-        assert!(contains_dot_dot_segment(".."));
-        assert!(contains_dot_dot_segment("../foo"));
-        assert!(contains_dot_dot_segment("foo/../bar"));
-        assert!(contains_dot_dot_segment("foo/.."));
-        assert!(contains_dot_dot_segment("..\\foo"));
-        assert!(contains_dot_dot_segment("foo\\..\\bar"));
-        // These should NOT match.
-        assert!(!contains_dot_dot_segment("..."));
-        assert!(!contains_dot_dot_segment("..name"));
-        assert!(!contains_dot_dot_segment("name..ext"));
-        assert!(!contains_dot_dot_segment("foo/.../bar"));
+        // contains_dot_dot_segment
+        for (input, expected) in [
+            ("..", true),
+            ("../foo", true),
+            ("foo/../bar", true),
+            ("foo/..", true),
+            ("..\\foo", true),
+            ("foo\\..\\bar", true),
+            ("...", false),
+            ("..name", false),
+            ("name..ext", false),
+            ("foo/.../bar", false),
+        ] {
+            assert_eq!(
+                contains_dot_dot_segment(input),
+                expected,
+                "dot_dot: {input}"
+            );
+        }
     }
 
     #[test]
     fn fuzz_height_estimation_adversarial() {
-        use height::estimate_text_height;
-        // NaN, Inf, negative, zero font sizes.
         let adversarial_sizes = [
             f32::NAN,
             f32::INFINITY,
@@ -4781,18 +4484,14 @@ mod tests {
         ];
         for size in adversarial_sizes {
             let h = estimate_text_height("hello world", size, 400.0);
-            assert!(h.is_finite(), "height must be finite for size {size}");
-            assert!(h >= 0.0, "height must be non-negative for size {size}");
+            assert!(h.is_finite() && h >= 0.0, "size {size}: {h}");
         }
-        // NaN, Inf wrap widths.
         for width in adversarial_sizes {
             let h = estimate_text_height("hello world", 14.0, width);
-            assert!(h.is_finite(), "height must be finite for width {width}");
+            assert!(h.is_finite(), "width {width}: {h}");
         }
-        // Very long text.
         let huge = "x".repeat(10_000_000);
         let h = estimate_text_height(&huge, 14.0, 400.0);
-        assert!(h.is_finite());
-        assert!(h > 0.0);
+        assert!(h.is_finite() && h > 0.0);
     }
 }

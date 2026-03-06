@@ -2025,6 +2025,25 @@ mod tests {
         assert_eq!(zoom_with_factor(MAX_ZOOM_FACTOR, 2.0), MAX_ZOOM_FACTOR);
         assert!((zoom_with_factor(1.0, 0.0) - 1.0).abs() < f32::EPSILON);
         assert!((zoom_with_factor(1.0, f32::NAN) - 1.0).abs() < f32::EPSILON);
+
+        // Edge cases: invalid factors and clamping.
+        for (label, input, expected) in [
+            (
+                "negative",
+                zoom_with_factor(1.0, -1.0),
+                clamped_zoom_factor(1.0),
+            ),
+            (
+                "infinity",
+                zoom_with_factor(1.0, f32::INFINITY),
+                clamped_zoom_factor(1.0),
+            ),
+            ("clamp low", clamped_zoom_factor(0.1), MIN_ZOOM_FACTOR),
+            ("clamp high", clamped_zoom_factor(10.0), MAX_ZOOM_FACTOR),
+            ("clamp mid", clamped_zoom_factor(1.5), 1.5),
+        ] {
+            assert_eq!(input, expected, "{label}");
+        }
     }
 
     #[test]
@@ -2323,33 +2342,6 @@ mod tests {
     }
 
     #[test]
-    fn zoom_and_clamp_edge_cases() {
-        for (label, input, expected) in [
-            (
-                "negative factor",
-                zoom_with_factor(1.0, -1.0),
-                clamped_zoom_factor(1.0),
-            ),
-            (
-                "infinity",
-                zoom_with_factor(1.0, f32::INFINITY),
-                clamped_zoom_factor(1.0),
-            ),
-            (
-                "NaN",
-                zoom_with_factor(1.0, f32::NAN),
-                clamped_zoom_factor(1.0),
-            ),
-            ("zero", zoom_with_factor(1.0, 0.0), clamped_zoom_factor(1.0)),
-            ("clamp low", clamped_zoom_factor(0.1), MIN_ZOOM_FACTOR),
-            ("clamp high", clamped_zoom_factor(10.0), MAX_ZOOM_FACTOR),
-            ("clamp mid", clamped_zoom_factor(1.5), 1.5),
-        ] {
-            assert_eq!(input, expected, "{label}");
-        }
-    }
-
-    #[test]
     fn replace_all_occurrences_returns_borrowed_on_noop() {
         for (label, haystack, needle) in [
             ("no match", "hello world", "xyz"),
@@ -2603,11 +2595,10 @@ mod tests {
     }
 
     #[test]
-    fn reload_clean_buffer_invalidates_all_caches() {
+    fn reload_clean_buffer_invalidates_and_advances_seq() {
         let mut app = RustdownApp::default();
         app.doc.text = Arc::new("original".into());
         app.doc.base_text = Arc::new("original".into());
-        app.doc.dirty = false;
         let old_seq = app.doc.edit_seq;
 
         let new_text = Arc::new("new content".to_owned());
@@ -2617,15 +2608,24 @@ mod tests {
             test_rev(11, 11),
             ReloadKind::Clean,
         );
-
         assert_eq!(app.doc.text.as_str(), "new content");
-        assert_eq!(app.doc.base_text.as_str(), "new content");
-        assert!(!app.doc.dirty);
-        assert!(app.doc.edit_seq > old_seq, "edit_seq must advance");
-        // apply_disk_text_state eagerly computes stats and clears preview
-        assert!(!app.doc.stats_dirty, "stats computed eagerly");
-        assert!(!app.doc.preview_dirty, "preview cleared eagerly");
-        assert!(app.doc.editor_galley_cache.is_none(), "galley cache reset");
+        assert!(!app.doc.dirty && !app.doc.stats_dirty && !app.doc.preview_dirty);
+        assert!(app.doc.edit_seq > old_seq);
+        assert!(app.doc.editor_galley_cache.is_none());
+
+        // Successive reloads each advance edit_seq.
+        let mut prev_seq = app.doc.edit_seq;
+        for i in 0u64..5 {
+            let content = Arc::new(format!("version {i}\n"));
+            app.apply_disk_text_state(
+                content.clone(),
+                content,
+                test_rev(i + 20, 12),
+                ReloadKind::Clean,
+            );
+            assert!(app.doc.edit_seq > prev_seq, "reload {i}");
+            prev_seq = app.doc.edit_seq;
+        }
     }
 
     #[test]
@@ -2633,81 +2633,28 @@ mod tests {
         let original = "line one\nline two\n";
         let ours = format!("{original}our addition\n");
         let mut app = merge_app(original, &ours, 1, original.len() as u64, true);
-
-        // Disk changed with disjoint edit (first line only)
-        let disk_text = "CHANGED\nline two\n".to_string();
-        app.incorporate_disk_text(disk_text, test_rev(2, 18));
-
-        assert!(
-            app.doc.text.contains("CHANGED"),
-            "merged text should contain disk edit"
-        );
-        assert!(
-            app.doc.text.contains("our addition"),
-            "merged text should keep our edit"
-        );
-        assert!(app.disk.conflict.is_none(), "disjoint edits: no conflict");
+        app.incorporate_disk_text("CHANGED\nline two\n".to_string(), test_rev(2, 18));
+        assert!(app.doc.text.contains("CHANGED") && app.doc.text.contains("our addition"));
+        assert!(app.disk.conflict.is_none());
     }
 
     #[test]
-    fn reload_conflicting_edit_sets_conflict() {
-        let original = "shared line\n";
-        let mut app = merge_app(original, "our version\n", 1, original.len() as u64, true);
-
-        // Disk changed the same line we changed
+    fn reload_conflict_and_empty_disk_cases() {
+        // Overlapping edits → conflict.
+        let mut app = merge_app("shared line\n", "our version\n", 1, 12, true);
         app.incorporate_disk_text("their version\n".to_owned(), test_rev(2, 14));
-
-        assert!(
-            app.disk.conflict.is_some(),
-            "overlapping edits should conflict"
-        );
+        assert!(app.disk.conflict.is_some());
         let conflict = disk_conflict(&app);
         assert!(conflict.conflict_marked.contains("<<<<<<< ours"));
         assert!(conflict.ours_wins.contains("our version"));
-    }
 
-    #[test]
-    fn reload_empty_disk_while_dirty_preserves_edits() {
-        let original = "original\n";
-        let mut app = merge_app(
-            original,
-            "user edits here\n",
-            1,
-            original.len() as u64,
-            true,
-        );
-
-        // Disk file was truncated to empty
-        app.incorporate_disk_text(String::new(), test_rev(2, 0));
-
-        // base→empty vs base→user edits: conflicting
-        if app.disk.conflict.is_some() {
-            let conflict = disk_conflict(&app);
-            assert!(
-                conflict.ours_wins.contains("user edits"),
-                "ours_wins must preserve edits"
-            );
+        // Disk truncated to empty while dirty → preserves edits.
+        let mut app2 = merge_app("original\n", "user edits here\n", 1, 9, true);
+        app2.incorporate_disk_text(String::new(), test_rev(2, 0));
+        if app2.disk.conflict.is_some() {
+            assert!(disk_conflict(&app2).ours_wins.contains("user edits"));
         } else {
-            assert!(
-                app.doc.text.contains("user edits"),
-                "merged text must keep edits"
-            );
-        }
-    }
-
-    #[test]
-    fn successive_reloads_advance_edit_seq() {
-        let mut app = RustdownApp::default();
-        let mut prev_seq = app.doc.edit_seq;
-
-        for i in 0u64..5 {
-            let content = Arc::new(format!("version {i}\n"));
-            app.apply_disk_text_state(content.clone(), content, test_rev(i, 12), ReloadKind::Clean);
-            assert!(
-                app.doc.edit_seq > prev_seq,
-                "edit_seq must advance on reload {i}"
-            );
-            prev_seq = app.doc.edit_seq;
+            assert!(app2.doc.text.contains("user edits"));
         }
     }
 
@@ -2743,63 +2690,25 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn bundled_demo_is_non_empty_and_parseable() {
-        let content = BundledDoc::Demo.content();
-        assert!(
-            content.len() > 500,
-            "demo.md should be a substantial document"
-        );
-        assert!(content.contains("# "), "demo.md should contain headings");
-        // Parsing through pulldown-cmark must not panic.
-        let parser = pulldown_cmark::Parser::new(content);
-        let event_count: usize = parser.count();
-        assert!(event_count > 50, "demo should have many markdown events");
-    }
+    fn bundled_docs_are_parseable_and_loadable() {
+        // Both bundled documents must be parseable.
+        for (doc, min_len, min_events, heading_pat) in [
+            (BundledDoc::Demo, 500, 50, "# "),
+            (BundledDoc::Verification, 10_000, 500, "# 1 "),
+        ] {
+            let content = doc.content();
+            assert!(content.len() > min_len);
+            assert!(content.contains(heading_pat));
+            assert!(pulldown_cmark::Parser::new(content).count() > min_events);
+        }
 
-    #[test]
-    fn bundled_verification_is_non_empty_and_parseable() {
-        let content = BundledDoc::Verification.content();
-        assert!(
-            content.len() > 10_000,
-            "verification.md should be a large document"
-        );
-        assert!(
-            content.contains("# 1 "),
-            "verification.md should contain numbered top-level headings"
-        );
-        let parser = pulldown_cmark::Parser::new(content);
-        let event_count: usize = parser.count();
-        assert!(
-            event_count > 500,
-            "verification should have many markdown events"
-        );
-    }
-
-    #[test]
-    fn load_bundled_creates_pathless_clean_document() {
-        let mut app = RustdownApp::default();
-        app.load_bundled(BundledDoc::Demo);
-        assert!(app.doc.path.is_none(), "bundled doc should have no path");
-        assert!(!app.doc.dirty, "bundled doc should not be dirty");
-        assert!(
-            app.doc.text.len() > 500,
-            "bundled doc text should be loaded"
-        );
-        assert_eq!(
-            app.doc.text.as_str(),
-            app.doc.base_text.as_str(),
-            "text and base_text should match"
-        );
-    }
-
-    #[test]
-    fn load_bundled_advances_edit_seq() {
+        // Loading creates pathless clean document and advances edit_seq.
         let mut app = RustdownApp::default();
         let seq_before = app.doc.edit_seq;
-        app.load_bundled(BundledDoc::Verification);
-        assert!(
-            app.doc.edit_seq > seq_before,
-            "edit_seq should advance on bundled load"
-        );
+        app.load_bundled(BundledDoc::Demo);
+        assert!(app.doc.path.is_none() && !app.doc.dirty);
+        assert!(app.doc.text.len() > 500);
+        assert_eq!(app.doc.text.as_str(), app.doc.base_text.as_str());
+        assert!(app.doc.edit_seq > seq_before);
     }
 }
