@@ -15,12 +15,16 @@ pub(super) fn estimate_block_height(
 ) -> f32 {
     match block {
         Block::Heading { level, text } => {
+            if text.text.is_empty() {
+                return 0.0;
+            }
             let idx = (*level as usize).saturating_sub(1).min(5);
             let size = body_size * style.headings[idx].font_scale;
             let text_h = estimate_styled_height(text, size, wrap_width);
             let sep = if *level <= 2 { 4.0 } else { 0.0 };
-            // Render adds top_space (0.3) + bottom_space (0.15).
-            size.mul_add(0.45, text_h) + sep
+            // Render adds top_space (0.3) + bottom_space max(0.15*size, 0.3*body).
+            let bottom = (size * 0.15).max(body_size * 0.3);
+            size.mul_add(0.3, bottom + text_h) + sep
         }
         Block::Paragraph(text) => {
             body_size.mul_add(0.4, estimate_styled_height(text, body_size, wrap_width))

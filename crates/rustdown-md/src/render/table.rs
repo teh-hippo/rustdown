@@ -149,9 +149,9 @@ pub(super) fn render_table_cell(
     is_header: bool,
 ) {
     let layout = match align {
-        Alignment::Right => egui::Layout::right_to_left(egui::Align::TOP),
+        Alignment::Right => egui::Layout::top_down(egui::Align::Max),
         Alignment::Center => egui::Layout::top_down(egui::Align::Center),
-        Alignment::Left | Alignment::None => egui::Layout::left_to_right(egui::Align::TOP),
+        Alignment::Left | Alignment::None => egui::Layout::top_down(egui::Align::Min),
     };
     ui.with_layout(layout, |ui| {
         if is_header {

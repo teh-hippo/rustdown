@@ -166,7 +166,7 @@ A small test image:
 
 A medium test image:
 
-![Medium test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/small.png)
+![Medium test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/medium.png)
 
 ---
 

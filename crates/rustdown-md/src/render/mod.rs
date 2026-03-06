@@ -437,13 +437,20 @@ fn render_heading(
     style: &MarkdownStyle,
     body_size: f32,
 ) {
+    // Skip empty headings entirely (matches nav panel which excludes them).
+    if text.text.is_empty() {
+        return;
+    }
+
     let idx = (level as usize).saturating_sub(1).min(5);
     let hs = &style.headings[idx];
     let size = body_size * hs.font_scale;
 
     ui.add_space(size * 0.3);
     render_styled_text_ex(ui, text, style, Some(size), Some(hs.color));
-    ui.add_space(size * 0.15);
+    // Ensure consistent bottom spacing: at least 0.3 em so content
+    // immediately after a heading (tables, code blocks) isn't cramped.
+    ui.add_space((size * 0.15).max(body_size * 0.3));
 
     if level <= 2 {
         draw_horizontal_rule(ui, style);
@@ -507,30 +514,37 @@ fn render_blockquote(
     let content_margin = body_size * 0.6; // space after the bar before content
     let reserved = bar_margin + bar_width + content_margin;
 
-    let rect_before = ui.available_rect_before_wrap();
-    let bar_x = rect_before.min.x + bar_margin + bar_width * 0.5;
+    let bar_x = ui.available_rect_before_wrap().min.x + bar_margin + bar_width * 0.5;
 
     // Use a unique salt per nesting depth so egui doesn't share layout state.
     let salt = ui.next_auto_id().with(indent);
 
     // Floor must match `estimate_quote_height` (40px) so that viewport
     // culling height estimates stay consistent with actual rendering.
-    let inner_response = ui
-        .allocate_ui_with_layout(
-            egui::vec2((ui.available_width() - reserved).max(40.0), 0.0),
-            egui::Layout::top_down(egui::Align::LEFT),
-            |ui| {
+    let content_width = (ui.available_width() - reserved).max(40.0);
+
+    // Horizontal wrapper offsets the content past the bar area so text
+    // doesn't overlap the vertical bar indicator.
+    let content_rect = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(reserved);
+            ui.vertical(|ui| {
+                ui.set_min_width(content_width);
                 ui.push_id(salt, |ui| {
                     render_blocks(ui, inner, style, indent + 1);
                 });
-            },
-        )
-        .response;
+            })
+            .response
+            .rect
+        })
+        .inner;
 
-    let bar_top = inner_response.rect.min.y;
-    let bar_bottom = inner_response.rect.max.y;
     ui.painter().line_segment(
-        [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
+        [
+            egui::pos2(bar_x, content_rect.min.y),
+            egui::pos2(bar_x, content_rect.max.y),
+        ],
         egui::Stroke::new(bar_width, bar_color),
     );
     ui.add_space(body_size * 0.3);
@@ -676,10 +690,8 @@ mod tests {
         cache.ensure_parsed("# \n\n## Real\n");
         cache.ensure_heights(14.0, 400.0, &style);
         let y = cache.heading_y(0);
-        assert!(
-            y.is_some() && y.unwrap_or(0.0) > 0.0,
-            "should skip empty heading"
-        );
+        assert!(y.is_some(), "should skip empty heading and find Real");
+        // Empty heading has zero height, so Real may start at y=0.
         assert!(cache.heading_y(1).is_none());
 
         // Empty heading between real ones
@@ -4203,24 +4215,22 @@ mod tests {
             .lines()
             .find(|l: &&str| l.contains("Medium test image"))
             .expect("demo.md should contain 'Medium test image'");
-        // The URL should reference medium.png, not small.png.
+        // The URL should reference medium.png (not small.png).
         assert!(
-            medium_line.contains("small.png"),
-            "BUG CONFIRMED: medium image line currently uses small.png: {medium_line}"
+            medium_line.contains("medium.png"),
+            "medium image line should reference medium.png: {medium_line}"
         );
-        // This is the wrong URL — it should be medium.png.
         assert!(
-            !medium_line.contains("medium.png"),
-            "BUG CONFIRMED: medium image line does NOT reference medium.png"
+            !medium_line.contains("small.png"),
+            "medium image line should NOT reference small.png: {medium_line}"
         );
     }
 
-    /// Issue 8: Empty heading still renders spacing and rule.
+    /// Issue 8: Empty heading now skipped in rendering.
     ///
-    /// CONFIRMED: `render_heading` does not early-return for empty text.
-    /// `render_styled_text_ex` returns early when `st.text.is_empty()`,
-    /// but `render_heading` unconditionally adds `size * 0.3` top space
-    /// and `size * 0.15` bottom space, plus H1/H2 horizontal rule.
+    /// Empty headings (just `##` with no text) are skipped by both the
+    /// render and height estimation, matching the nav panel's behavior
+    /// of excluding empty headings.
     #[test]
     fn issue8_empty_heading_renders_spacing() {
         // Parse an empty H2 heading.
@@ -4233,13 +4243,14 @@ mod tests {
             other => panic!("expected Heading, got {other:?}"),
         }
 
-        // Render it — should not panic. The heading still produces
-        // vertical space (top 0.3 + bottom 0.15 + rule + 4px) even
-        // though no text is drawn.
+        // Render it — should not panic, but produces no output.
         let (_, height) = headless_render("##\n");
-        assert!(height > 0.0, "empty heading still takes vertical space");
+        assert!(
+            height < 1.0,
+            "empty heading should produce ~zero height, got {height}"
+        );
 
-        // Height estimation also accounts for it.
+        // Height estimation also returns 0 for empty headings.
         let style = dark_style();
         let h = height::estimate_block_height(
             &Block::Heading {
@@ -4250,6 +4261,9 @@ mod tests {
             400.0,
             &style,
         );
-        assert!(h > 0.0, "empty heading height estimate should be > 0");
+        assert!(
+            h < f32::EPSILON,
+            "empty heading height estimate should be ~0"
+        );
     }
 }

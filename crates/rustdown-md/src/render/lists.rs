@@ -39,11 +39,11 @@ pub(super) fn render_unordered_list(
             ui.add_space(2.0);
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
+                if !item.children.is_empty() {
+                    render_blocks(ui, &item.children, style, indent + 1);
+                }
             });
         });
-        if !item.children.is_empty() {
-            render_blocks(ui, &item.children, style, indent + 1);
-        }
     }
 }
 
@@ -91,10 +91,10 @@ pub(super) fn render_ordered_list(
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
+                if !item.children.is_empty() {
+                    render_blocks(ui, &item.children, style, indent + 1);
+                }
             });
         });
-        if !item.children.is_empty() {
-            render_blocks(ui, &item.children, style, indent + 1);
-        }
     }
 }
