@@ -21,7 +21,7 @@ rfd = { version = "0.17", default-features = false }
 imara-diff = { version = "0.2.0", default-features = false }
 notify = { version = "8.0.0", default-features = false }
 dirs = "6"
-toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+toml = { version = "1.0", default-features = false, features = ["parse", "display"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
