@@ -208,9 +208,21 @@ fn estimate_text_height_inner(
     } else {
         400.0
     };
+    // Derive char count and ASCII-ness simultaneously to avoid redundant scans.
+    // When char_count_hint is provided (from StyledText.char_count), we can
+    // infer ASCII-ness: if char_count == byte_count, the text is ASCII.
+    let (char_count, is_ascii) = match char_count_hint {
+        Some(hint) => (hint, hint == text.len()),
+        None => {
+            if text.is_ascii() {
+                (text.len(), true)
+            } else {
+                (text.chars().count(), false)
+            }
+        }
+    };
     // Use wider average char width for non-ASCII text (CJK glyphs are roughly
     // square, so ≈0.7 em is a better estimate than the 0.55 em used for Latin).
-    let is_ascii = text.is_ascii();
     let avg_char_width = if is_ascii {
         font_size * 0.55
     } else {
@@ -220,13 +232,6 @@ fn estimate_text_height_inner(
     // Count newlines by scanning bytes (much faster than .lines() for large text).
     let newline_count = bytecount_newlines(text.as_bytes());
     let hard_lines = (newline_count + 1).max(1);
-    // Use character count (not byte count) for average line length to avoid
-    // inflating wrap estimates for multi-byte characters like CJK.
-    let char_count = match char_count_hint {
-        Some(hint) => hint,
-        None if is_ascii => text.len(),
-        None => text.chars().count(),
-    };
     let avg_line_len = char_count as f32 / hard_lines as f32;
     let wraps_per_line = (avg_line_len / chars_per_line).ceil().max(1.0);
     let total = hard_lines as f32 * wraps_per_line;

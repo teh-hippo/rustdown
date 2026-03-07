@@ -160,6 +160,15 @@ pub struct Span {
 }
 
 impl StyledText {
+    /// Pre-allocate both text and spans storage.
+    fn with_capacity(text_cap: usize, span_cap: usize) -> Self {
+        Self {
+            text: String::with_capacity(text_cap),
+            spans: Vec::with_capacity(span_cap),
+            ..Self::default()
+        }
+    }
+
     #[inline]
     #[allow(clippy::cast_possible_truncation)] // Saturates at u32::MAX
     fn push_text(&mut self, s: &str, style: SpanStyle) {
@@ -262,95 +271,123 @@ pub fn parse_markdown_into(source: &str, blocks: &mut Vec<Block>) {
     };
     blocks.reserve(events.len() / 4 + 4);
     let mut fmt = InlineState::new();
-    let mut i = 0;
-    while i < events.len() {
-        i += parse_block(&events[i..], blocks, &mut fmt);
+    let mut pos = 0;
+    while pos < events.len() {
+        parse_block(&events, &mut pos, blocks, &mut fmt);
     }
+}
+
+/// Lightweight scan: sum byte lengths of text/code events until `end_tag`.
+fn estimate_text_capacity(events: &[Event<'_>], end_tag: TagEnd) -> usize {
+    let mut cap = 0;
+    for ev in events {
+        match ev {
+            Event::End(tag) if *tag == end_tag => break,
+            Event::Text(t) | Event::Code(t) => cap += t.len(),
+            Event::SoftBreak | Event::HardBreak => cap += 1,
+            _ => {}
+        }
+    }
+    cap.max(16)
 }
 
 /// Collect alt text from inline events following a `Start(Image)`.
 ///
-/// Scans events starting at `offset`, consuming `Text`, `Code`, and break
-/// events until `End(Image)` is found.  Returns `(alt_text, events_consumed)`.
-fn collect_image_alt(events: &[Event<'_>], offset: usize) -> (String, usize) {
+/// Advances `pos` past the `End(Image)` event.
+fn collect_image_alt(events: &[Event<'_>], pos: &mut usize) -> String {
     let mut alt = String::with_capacity(64);
-    let mut i = offset;
-    while i < events.len() {
-        match &events[i] {
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::Image) => {
-                i += 1;
+                *pos += 1;
                 break;
             }
             Event::Text(t) => {
                 alt.push_str(t);
-                i += 1;
+                *pos += 1;
             }
             Event::Code(c) => {
                 alt.push_str(c);
-                i += 1;
+                *pos += 1;
             }
             Event::SoftBreak | Event::HardBreak => {
                 alt.push(' ');
-                i += 1;
+                *pos += 1;
             }
-            _ => i += 1,
+            _ => *pos += 1,
         }
     }
-    (alt, i)
+    alt
 }
 
-fn parse_block(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
-    match &events[0] {
-        Event::Start(Tag::Heading { level, .. }) => parse_heading(events, *level, blocks, fmt),
-        Event::Start(Tag::Paragraph) => parse_paragraph(events, blocks, fmt),
+fn parse_block(
+    events: &[Event<'_>],
+    pos: &mut usize,
+    blocks: &mut Vec<Block>,
+    fmt: &mut InlineState,
+) {
+    match &events[*pos] {
+        Event::Start(Tag::Heading { level, .. }) => {
+            let level = *level;
+            parse_heading(events, pos, level, blocks, fmt);
+        }
+        Event::Start(Tag::Paragraph) => parse_paragraph(events, pos, blocks, fmt),
         Event::Start(Tag::CodeBlock(kind)) => {
             let lang: Box<str> = match kind {
                 pulldown_cmark::CodeBlockKind::Fenced(l) if !l.is_empty() => l.as_ref().into(),
                 _ => Box::from(""),
             };
-            parse_code_block(events, lang, blocks)
+            parse_code_block(events, pos, lang, blocks);
         }
-        Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, blocks, fmt),
-        Event::Start(Tag::List(start)) => parse_list(events, *start, blocks, fmt),
-        Event::Start(Tag::Table(aligns)) => parse_table(events, aligns, blocks, fmt),
+        Event::Start(Tag::BlockQuote(_)) => parse_blockquote(events, pos, blocks, fmt),
+        Event::Start(Tag::List(start)) => {
+            let start = *start;
+            parse_list(events, pos, start, blocks, fmt);
+        }
+        Event::Start(Tag::Table(aligns)) => {
+            let aligns = aligns.clone();
+            parse_table(events, pos, &aligns, blocks, fmt);
+        }
         Event::Start(Tag::Image { dest_url, .. }) => {
-            let (alt, end) = collect_image_alt(events, 1);
+            let url: Box<str> = dest_url.as_ref().into();
+            *pos += 1;
+            let alt = collect_image_alt(events, pos);
             blocks.push(Block::Image {
-                url: dest_url.as_ref().into(),
+                url,
                 alt: alt.into_boxed_str(),
             });
-            end
         }
         Event::Rule => {
             blocks.push(Block::ThematicBreak);
-            1
+            *pos += 1;
         }
         // Skip events not handled at block level (e.g. stray End tags,
         // FootnoteDefinition, metadata blocks).  Consuming 1 event advances
         // the cursor past the unknown token.
-        _ => 1,
+        _ => *pos += 1,
     }
 }
 
 fn parse_heading(
     events: &[Event<'_>],
+    pos: &mut usize,
     level: HeadingLevel,
     blocks: &mut Vec<Block>,
     fmt: &mut InlineState,
-) -> usize {
+) {
     let lvl = heading_level_to_u8(level);
-    let mut styled = StyledText::default();
-    let mut consumed = 1;
+    let mut styled = StyledText::with_capacity(64, 4);
+    *pos += 1;
     fmt.clear();
-    while consumed < events.len() {
-        match &events[consumed] {
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::Heading(_)) => {
-                consumed += 1;
+                *pos += 1;
                 break;
             }
             ev => {
                 consume_inline(ev, &mut styled, fmt);
-                consumed += 1;
+                *pos += 1;
             }
         }
     }
@@ -358,124 +395,143 @@ fn parse_heading(
         level: lvl,
         text: styled,
     });
-    consumed
 }
 
-fn parse_paragraph(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
+fn parse_paragraph(
+    events: &[Event<'_>],
+    pos: &mut usize,
+    blocks: &mut Vec<Block>,
+    fmt: &mut InlineState,
+) {
     // Check if this paragraph is a standalone image (the only inline content
     // inside the paragraph is a single Image tag). If so, emit Block::Image
     // instead of a paragraph containing alt text.
-    if let Some(consumed) = try_parse_standalone_image(events, blocks) {
-        return consumed;
+    if try_parse_standalone_image(events, pos, blocks) {
+        return;
     }
 
-    let mut styled = StyledText::default();
-    let mut consumed = 1;
+    let text_cap = estimate_text_capacity(&events[*pos + 1..], TagEnd::Paragraph);
+    let mut styled = StyledText::with_capacity(text_cap, text_cap / 20 + 2);
+    *pos += 1;
     fmt.clear();
-    while consumed < events.len() {
-        match &events[consumed] {
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::Paragraph) => {
-                consumed += 1;
+                *pos += 1;
                 break;
             }
             ev => {
                 consume_inline(ev, &mut styled, fmt);
-                consumed += 1;
+                *pos += 1;
             }
         }
     }
     blocks.push(Block::Paragraph(styled));
-    consumed
 }
 
 /// If the paragraph's *only* child is a single `Image` tag, emit
-/// `Block::Image` and return the number of events consumed (including
-/// the opening `Start(Paragraph)` and closing `End(Paragraph)`).
-fn try_parse_standalone_image(events: &[Event<'_>], blocks: &mut Vec<Block>) -> Option<usize> {
-    // events[0] is Start(Paragraph). Expect:
-    //   [0] Start(Paragraph)
-    //   [1] Start(Image { dest_url, .. })
+/// `Block::Image` and advance `pos` past the closing `End(Paragraph)`.
+/// Returns `true` if consumed, `false` if the caller should parse normally.
+fn try_parse_standalone_image(
+    events: &[Event<'_>],
+    pos: &mut usize,
+    blocks: &mut Vec<Block>,
+) -> bool {
+    // events[*pos] is Start(Paragraph). Expect:
+    //   [pos+0] Start(Paragraph)
+    //   [pos+1] Start(Image { dest_url, .. })
     //   ... inline text events (alt text) ...
     //   [k] End(Image)
     //   [k+1] End(Paragraph)
-    if events.len() < 4 {
-        return None;
+    let start = *pos;
+    if events.len() - start < 4 {
+        return false;
     }
-    let dest_url: Box<str> = match &events[1] {
+    let dest_url: Box<str> = match &events[start + 1] {
         Event::Start(Tag::Image { dest_url, .. }) => dest_url.as_ref().into(),
-        _ => return None,
+        _ => return false,
     };
 
     // Reuse shared alt-text collector starting after Start(Image).
-    let (alt, end_idx) = collect_image_alt(events, 2);
+    let mut scan = start + 2;
+    let alt = collect_image_alt(events, &mut scan);
 
     // The very next event must be End(Paragraph).
-    if end_idx >= events.len() || !matches!(&events[end_idx], Event::End(TagEnd::Paragraph)) {
-        return None;
+    if scan >= events.len() || !matches!(&events[scan], Event::End(TagEnd::Paragraph)) {
+        return false;
     }
 
     blocks.push(Block::Image {
         url: dest_url,
         alt: alt.into_boxed_str(),
     });
-    Some(end_idx + 1) // +1 to consume End(Paragraph)
+    *pos = scan + 1; // +1 to consume End(Paragraph)
+    true
 }
 
-fn parse_code_block(events: &[Event<'_>], language: Box<str>, blocks: &mut Vec<Block>) -> usize {
+fn parse_code_block(
+    events: &[Event<'_>],
+    pos: &mut usize,
+    language: Box<str>,
+    blocks: &mut Vec<Block>,
+) {
     let mut code = String::with_capacity(256);
-    let mut consumed = 1;
-    while consumed < events.len() {
-        match &events[consumed] {
+    *pos += 1;
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::CodeBlock) => {
-                consumed += 1;
+                *pos += 1;
                 break;
             }
             Event::Text(t) => {
                 code.push_str(t);
-                consumed += 1;
+                *pos += 1;
             }
-            _ => consumed += 1,
+            _ => *pos += 1,
         }
     }
     blocks.push(Block::Code {
         language,
         code: code.into_boxed_str(),
     });
-    consumed
 }
 
-fn parse_blockquote(events: &[Event<'_>], blocks: &mut Vec<Block>, fmt: &mut InlineState) -> usize {
+fn parse_blockquote(
+    events: &[Event<'_>],
+    pos: &mut usize,
+    blocks: &mut Vec<Block>,
+    fmt: &mut InlineState,
+) {
     let mut inner = Vec::with_capacity(4);
-    let mut consumed = 1;
-    while consumed < events.len() {
-        if let Event::End(TagEnd::BlockQuote(_)) = &events[consumed] {
-            consumed += 1;
+    *pos += 1;
+    while *pos < events.len() {
+        if let Event::End(TagEnd::BlockQuote(_)) = &events[*pos] {
+            *pos += 1;
             break;
         }
-        let n = parse_block(&events[consumed..], &mut inner, fmt);
-        consumed += n;
+        parse_block(events, pos, &mut inner, fmt);
     }
     blocks.push(Block::Quote(inner));
-    consumed
 }
 
 fn parse_list(
     events: &[Event<'_>],
+    pos: &mut usize,
     start: Option<u64>,
     blocks: &mut Vec<Block>,
     fmt: &mut InlineState,
-) -> usize {
+) {
     let mut items = Vec::with_capacity(8);
-    let mut consumed = 1;
-    while consumed < events.len() {
-        match &events[consumed] {
+    *pos += 1;
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::List(_)) => {
-                consumed += 1;
+                *pos += 1;
                 break;
             }
             Event::Start(Tag::Item) => {
-                consumed += 1;
-                let mut item_text = StyledText::default();
+                *pos += 1;
+                let mut item_text = StyledText::with_capacity(128, 4);
                 let mut children = Vec::new();
                 fmt.clear();
                 let mut checked: Option<bool> = None;
@@ -487,8 +543,8 @@ fn parse_list(
                 // Collect inline text for a secondary paragraph inside the
                 // item, to be flushed as `Block::Paragraph` into `children`.
                 let mut extra_para: Option<StyledText> = None;
-                while consumed < events.len() {
-                    match &events[consumed] {
+                while *pos < events.len() {
+                    match &events[*pos] {
                         Event::End(TagEnd::Item) => {
                             // Flush any trailing extra paragraph.
                             if let Some(ep) = extra_para.take()
@@ -496,21 +552,21 @@ fn parse_list(
                             {
                                 children.push(Block::Paragraph(ep));
                             }
-                            consumed += 1;
+                            *pos += 1;
                             break;
                         }
                         Event::Start(Tag::Paragraph) => {
-                            consumed += 1;
+                            *pos += 1;
                             if first_para_done {
                                 // Start collecting a new paragraph into
                                 // `extra_para`; it will be flushed on
                                 // `End(Paragraph)` or `End(Item)`.
-                                extra_para = Some(StyledText::default());
+                                extra_para = Some(StyledText::with_capacity(128, 4));
                                 fmt.clear();
                             }
                         }
                         Event::End(TagEnd::Paragraph) => {
-                            consumed += 1;
+                            *pos += 1;
                             if let Some(ep) = extra_para.take()
                                 && !ep.text.is_empty()
                             {
@@ -533,8 +589,7 @@ fn parse_list(
                             {
                                 children.push(Block::Paragraph(ep));
                             }
-                            let n = parse_block(&events[consumed..], &mut children, fmt);
-                            consumed += n;
+                            parse_block(events, pos, &mut children, fmt);
                         }
                         Event::Rule => {
                             if let Some(ep) = extra_para.take()
@@ -543,11 +598,11 @@ fn parse_list(
                                 children.push(Block::Paragraph(ep));
                             }
                             children.push(Block::ThematicBreak);
-                            consumed += 1;
+                            *pos += 1;
                         }
                         Event::TaskListMarker(is_checked) => {
                             checked = Some(*is_checked);
-                            consumed += 1;
+                            *pos += 1;
                         }
                         ev => {
                             // Inline content: route to current paragraph
@@ -557,7 +612,7 @@ fn parse_list(
                             } else {
                                 consume_inline(ev, &mut item_text, fmt);
                             }
-                            consumed += 1;
+                            *pos += 1;
                         }
                     }
                 }
@@ -567,7 +622,7 @@ fn parse_list(
                     checked,
                 });
             }
-            _ => consumed += 1,
+            _ => *pos += 1,
         }
     }
     if let Some(s) = start {
@@ -575,15 +630,15 @@ fn parse_list(
     } else {
         blocks.push(Block::UnorderedList(items));
     }
-    consumed
 }
 
 fn parse_table(
     events: &[Event<'_>],
+    pos: &mut usize,
     aligns: &[pulldown_cmark::Alignment],
     blocks: &mut Vec<Block>,
     fmt: &mut InlineState,
-) -> usize {
+) {
     let alignments: Vec<Alignment> = aligns
         .iter()
         .map(|a| match a {
@@ -599,28 +654,28 @@ fn parse_table(
     let mut rows: Vec<Vec<StyledText>> = Vec::with_capacity(16);
     let mut in_head = false;
     let mut current_row: Vec<StyledText> = Vec::with_capacity(num_cols);
-    let mut current_cell = StyledText::default();
+    let mut current_cell = StyledText::with_capacity(32, 2);
     fmt.clear();
-    let mut consumed = 1;
+    *pos += 1;
 
-    while consumed < events.len() {
-        match &events[consumed] {
+    while *pos < events.len() {
+        match &events[*pos] {
             Event::End(TagEnd::Table) => {
-                consumed += 1;
+                *pos += 1;
                 break;
             }
             Event::Start(Tag::TableHead) => {
                 in_head = true;
-                consumed += 1;
+                *pos += 1;
             }
             Event::End(TagEnd::TableHead) => {
                 in_head = false;
                 header = std::mem::take(&mut current_row);
-                consumed += 1;
+                *pos += 1;
             }
             Event::Start(Tag::TableRow) => {
                 current_row.clear();
-                consumed += 1;
+                *pos += 1;
             }
             Event::End(TagEnd::TableRow) => {
                 if in_head {
@@ -628,20 +683,20 @@ fn parse_table(
                 } else {
                     rows.push(std::mem::take(&mut current_row));
                 }
-                consumed += 1;
+                *pos += 1;
             }
             Event::Start(Tag::TableCell) => {
-                current_cell = StyledText::default();
+                current_cell = StyledText::with_capacity(32, 2);
                 fmt.clear();
-                consumed += 1;
+                *pos += 1;
             }
             Event::End(TagEnd::TableCell) => {
                 current_row.push(std::mem::take(&mut current_cell));
-                consumed += 1;
+                *pos += 1;
             }
             ev => {
                 consume_inline(ev, &mut current_cell, fmt);
-                consumed += 1;
+                *pos += 1;
             }
         }
     }
@@ -651,7 +706,6 @@ fn parse_table(
         alignments,
         rows,
     })));
-    consumed
 }
 
 /// Formatting flag for the inline stack.
@@ -678,6 +732,8 @@ struct InlineState {
     link_count: u8,
     /// Cached link URL (topmost link on stack, or None).
     cached_link: Option<Rc<str>>,
+    /// Separate stack for link URLs — O(1) push/pop for `cached_link` refresh.
+    link_stack: Vec<Rc<str>>,
 }
 
 impl InlineState {
@@ -689,11 +745,13 @@ impl InlineState {
             strikethrough_count: 0,
             link_count: 0,
             cached_link: None,
+            link_stack: Vec::new(),
         }
     }
 
     fn clear(&mut self) {
         self.stack.clear();
+        self.link_stack.clear();
         self.strong_count = 0;
         self.emphasis_count = 0;
         self.strikethrough_count = 0;
@@ -724,6 +782,7 @@ impl InlineState {
             InlineFlag::Strikethrough => self.strikethrough_count += 1,
             InlineFlag::Link(url) => {
                 self.link_count += 1;
+                self.link_stack.push(Rc::clone(url));
                 self.cached_link = Some(Rc::clone(url));
             }
         }
@@ -743,9 +802,11 @@ impl InlineState {
             .iter()
             .rposition(|k| matches!(k, InlineFlag::Link(_)))
         {
-            let removed = self.stack.swap_remove(pos);
-            self.decrement(&removed);
+            self.stack.swap_remove(pos);
         }
+        self.link_stack.pop();
+        self.link_count = self.link_count.saturating_sub(1);
+        self.cached_link = self.link_stack.last().cloned();
     }
 
     /// Decrement the counter for a removed flag and refresh the link cache
@@ -758,16 +819,9 @@ impl InlineState {
                 self.strikethrough_count = self.strikethrough_count.saturating_sub(1);
             }
             InlineFlag::Link(_) => {
+                self.link_stack.pop();
                 self.link_count = self.link_count.saturating_sub(1);
-                if self.link_count == 0 {
-                    self.cached_link = None;
-                } else {
-                    // Find the new topmost link.
-                    self.cached_link = self.stack.iter().rev().find_map(|f| match f {
-                        InlineFlag::Link(url) => Some(Rc::clone(url)),
-                        _ => None,
-                    });
-                }
+                self.cached_link = self.link_stack.last().cloned();
             }
         }
     }
