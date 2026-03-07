@@ -109,7 +109,9 @@ pub(super) fn render_table(
                 for (i, cell) in header.iter().enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                     let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                    ui.set_min_width(w);
+                    // Pin both min and max width so the Grid cannot redistribute
+                    // space and cause unexpected text wrapping.
+                    ui.set_width(w);
                     render_table_cell(ui, cell, style, align, true);
                 }
                 ui.end_row();
@@ -118,10 +120,9 @@ pub(super) fn render_table(
                     for (i, cell) in row.iter().take(num_cols).enumerate() {
                         let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                         let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                        ui.set_min_width(w);
+                        ui.set_width(w);
                         render_table_cell(ui, cell, style, align, false);
                     }
-                    // Pad short rows with empty cells to keep grid rectangular.
                     for _ in row.len()..num_cols {
                         ui.label("");
                     }

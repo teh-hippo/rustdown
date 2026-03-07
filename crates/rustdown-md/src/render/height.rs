@@ -71,7 +71,7 @@ pub(super) fn estimate_quote_height(
         .iter()
         .map(|b| estimate_block_height(b, body_size, inner_w, style))
         .sum();
-    body_size.mul_add(0.3, inner_h)
+    body_size.mul_add(0.4, inner_h)
 }
 
 pub(super) fn estimate_list_height(

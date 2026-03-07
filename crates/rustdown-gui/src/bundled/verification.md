@@ -499,21 +499,27 @@ Another long line: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 # 7 — Images
 
-## 7.1 — Small Image
+> **Note**: Images are loaded from GitHub over HTTP. Network access is required.
+
+## 7.1 — Tiny Image (50×50)
 
 ![Tiny test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/tiny.png)
 
 Text continues after the image.
 
-## 7.2 — Medium Image
+## 7.2 — Small Image (200×150)
+
+![Small test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/small.png)
+
+## 7.3 — Medium Image (800×400)
 
 ![Medium test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/medium.png)
 
-## 7.3 — Large Image
+## 7.4 — Large Image (1920×1080)
 
 ![Large full-HD test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/large.png)
 
-## 7.4 — Tall Narrow Image
+## 7.5 — Tall Narrow Image (100×800)
 
 ![Tall narrow test image](https://raw.githubusercontent.com/teh-hippo/rustdown/main/test-assets/tall_narrow.png)
 

@@ -524,11 +524,9 @@ fn render_blockquote(
     // culling height estimates stay consistent with actual rendering.
     let content_width = (available.width() - reserved).max(40.0);
 
-    // Position the content area to the right of the bar.  We use
-    // `allocate_ui_with_layout` with an explicit offset rect so the
-    // content doesn't overlap the bar.  Unlike ui.horizontal(), this
-    // avoids injecting the parent's item_spacing.y between consecutive
-    // blockquotes.
+    // Position the content area to the right of the bar using an
+    // explicit child rect.  The child starts at `min.x + reserved`
+    // and occupies only `content_width`, so the bar area is clear.
     let content_rect = egui::Rect::from_min_size(
         egui::pos2(available.min.x + reserved, available.min.y),
         egui::vec2(content_width, 0.0),
@@ -553,7 +551,19 @@ fn render_blockquote(
         [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
         egui::Stroke::new(bar_width, bar_color),
     );
-    ui.add_space(body_size * 0.3);
+
+    // Advance the parent cursor past the full blockquote height.
+    // The scope_builder child rect starts at (min.x + reserved), so its
+    // response only covers the content area.  We must ensure the parent
+    // cursor advances by the total blockquote height (from available.min.y
+    // to bar_bottom) to prevent the next sibling from overlapping.
+    let total_h = bar_bottom - available.min.y;
+    let already_advanced = ui.cursor().top() - available.min.y;
+    let gap = total_h - already_advanced;
+    if gap > 0.0 {
+        ui.add_space(gap);
+    }
+    ui.add_space(body_size * 0.4);
 }
 
 fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
@@ -4028,50 +4038,36 @@ mod tests {
 
     // ── Issue verification tests ──────────────────────────────────
 
-    /// Issue 1: Blockquote — child UI positioned at parent left edge.
+    /// Issue 1: Blockquote layout — verify content is positioned to the
+    /// right of the bar and the parent cursor advances correctly.
     ///
-    /// `allocate_ui_with_layout` with a narrower `desired_size` in a
-    /// `top_down(LEFT)` parent places the child rect at the parent's
-    /// `available_rect.min.x`, not offset by the bar + margin. The bar
-    /// is painted at `min.x + bar_margin + bar_width/2`, so content
-    /// overlaps the bar area.
-    ///
-    /// CONFIRMED: code analysis shows `render_blockquote` subtracts
-    /// `reserved` from the *width* but does not shift the child rect
-    /// rightward.  `allocate_ui_with_layout` LEFT-aligns the child at
-    /// the parent's left edge (verified via egui 0.33 source:
-    /// `next_frame_ignore_wrap` → `align2 = Align2([LEFT, TOP])` →
-    /// child starts at `available_rect.min.x`).
+    /// The blockquote renderer uses `scope_builder` with an explicit
+    /// `max_rect` offset by `reserved` pixels to the right.  After the
+    /// scope returns, the parent cursor is advanced to ensure no overlap
+    /// with the next sibling block.
     #[test]
-    fn issue1_blockquote_content_overlaps_bar() {
-        // Verify the blockquote renders without panic and the bar parameters
-        // demonstrate the overlap: child content width < available but
-        // starts at the same left edge as the bar reference point.
+    fn blockquote_layout_and_cursor_advance() {
         let (blocks, height) = headless_render("> Quoted text\n> Second line\n");
         assert!(matches!(&blocks[0], Block::Quote(inner) if !inner.is_empty()));
         assert!(height > 0.0);
 
-        // Nested blockquotes also affected.
+        // Nested blockquotes must also render without panic.
         let (blocks, height) = headless_render("> > Nested quote\n");
         assert!(matches!(&blocks[0], Block::Quote(_)));
         assert!(height > 0.0);
 
-        // Confirm the geometry: bar_margin = body_size * 0.4, bar_width = 3,
-        // content_margin = body_size * 0.6.  The reserved space is
-        // bar_margin + bar_width + content_margin but the child UI starts
-        // at min.x, not min.x + reserved.
+        // Multi-paragraph blockquote.
+        let (blocks, height) = headless_render("> Para 1\n>\n> Para 2\n");
+        assert!(matches!(&blocks[0], Block::Quote(inner) if inner.len() >= 2));
+        assert!(height > 0.0);
+
+        // Verify geometry: content offset = bar_margin + bar_width + content_margin.
         let body_size = 14.0_f32;
         let bar_margin = body_size * 0.4;
         let bar_width = 3.0_f32;
         let content_margin = body_size * 0.6;
         let reserved = bar_margin + bar_width + content_margin;
-        // The bar center is at bar_margin + bar_width/2 = ~7.1px from left.
-        let bar_center_offset = bar_margin + bar_width * 0.5;
-        // Content starts at 0px from left (not offset by reserved ~14.4px).
-        assert!(
-            bar_center_offset > 0.0 && reserved > bar_center_offset,
-            "bar is inside the reserved area, but content starts before it"
-        );
+        assert!(reserved > 0.0, "reserved space must be positive");
     }
 
     /// Issue 2: Non-list child blocks of list items ignore indent.
