@@ -13,6 +13,33 @@ const fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
     text.floor_char_boundary(pos)
 }
 
+#[inline]
+fn effective_is_ascii(st: &StyledText) -> bool {
+    st.text.is_empty()
+        || if st.char_count > 0 {
+            st.is_ascii
+        } else {
+            st.text.is_ascii()
+        }
+}
+
+#[inline]
+fn span_byte_range(
+    text: &str,
+    span: &crate::parse::Span,
+    is_ascii: bool,
+) -> Option<std::ops::Range<usize>> {
+    let len = text.len();
+    let start = (span.start as usize).min(len);
+    let end = (span.end as usize).min(len);
+    let range = if is_ascii {
+        start..end
+    } else {
+        snap_to_char_boundary(text, start)..snap_to_char_boundary(text, end)
+    };
+    (range.start < range.end).then_some(range)
+}
+
 /// Inline formatting properties resolved from a composite `SpanStyle`.
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct SpanFormat {
@@ -119,16 +146,15 @@ pub(super) fn render_text_with_links(
     let base_color = color_override
         .or(style.body_color)
         .unwrap_or_else(|| ui.visuals().text_color());
+    let is_ascii = effective_is_ascii(st);
 
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for span in &st.spans {
-            let start = snap_to_char_boundary(&st.text, (span.start as usize).min(st.text.len()));
-            let end = snap_to_char_boundary(&st.text, (span.end as usize).min(st.text.len()));
-            if start >= end {
+            let Some(range) = span_byte_range(&st.text, span, is_ascii) else {
                 continue;
-            }
-            let text = &st.text[start..end];
+            };
+            let text = &st.text[range];
             let is_code = span.style.code();
             let span_size = if is_code { size * 0.9 } else { size };
             let font_family = if is_code {
@@ -185,13 +211,12 @@ pub(super) fn build_layout_job(
         },
         ..Default::default()
     };
+    let is_ascii = effective_is_ascii(st);
 
     for span in spans {
-        let start = snap_to_char_boundary(&st.text, (span.start as usize).min(st.text.len()));
-        let end = snap_to_char_boundary(&st.text, (span.end as usize).min(st.text.len()));
-        if start >= end {
+        let Some(range) = span_byte_range(&st.text, span, is_ascii) else {
             continue;
-        }
+        };
         let sf = SpanFormat::resolve(span.style, style, base_color, ui);
         let span_size = if span.style.code() { size * 0.9 } else { size };
         let color = if sf.strong {
@@ -208,7 +233,7 @@ pub(super) fn build_layout_job(
         };
         job.sections.push(egui::text::LayoutSection {
             leading_space: 0.0,
-            byte_range: start..end,
+            byte_range: range,
             format: egui::TextFormat {
                 font_id: egui::FontId::new(span_size, sf.font_family),
                 color,
@@ -310,5 +335,51 @@ mod tests {
             );
             assert!(snapped <= pos, "snapped {snapped} > original {pos}");
         }
+    }
+
+    #[test]
+    fn effective_is_ascii_handles_manual_styled_text() {
+        let ascii = StyledText {
+            text: "plain".to_owned(),
+            ..StyledText::default()
+        };
+        assert!(effective_is_ascii(&ascii));
+
+        let unicode = StyledText {
+            text: "éx".to_owned(),
+            ..StyledText::default()
+        };
+        assert!(!effective_is_ascii(&unicode));
+    }
+
+    #[test]
+    fn span_byte_range_respects_ascii_fast_path_and_unicode_fallback() {
+        let ascii = StyledText {
+            text: "hello".to_owned(),
+            ..StyledText::default()
+        };
+        let span = crate::parse::Span {
+            start: 1,
+            end: 4,
+            style: SpanStyle::default(),
+        };
+        assert_eq!(
+            span_byte_range(&ascii.text, &span, effective_is_ascii(&ascii)),
+            Some(1..4)
+        );
+
+        let unicode = StyledText {
+            text: "éx".to_owned(),
+            ..StyledText::default()
+        };
+        let span = crate::parse::Span {
+            start: 1,
+            end: 3,
+            style: SpanStyle::default(),
+        };
+        assert_eq!(
+            span_byte_range(&unicode.text, &span, effective_is_ascii(&unicode)),
+            Some(0..3)
+        );
     }
 }

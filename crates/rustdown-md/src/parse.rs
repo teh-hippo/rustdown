@@ -212,6 +212,22 @@ impl StyledText {
         }
     }
 
+    /// Return the displayed character count, reusing the parser-populated cache
+    /// when available and falling back safely for manually-constructed values.
+    #[inline]
+    #[must_use]
+    pub(crate) fn char_len(&self) -> usize {
+        if self.text.is_empty() {
+            0
+        } else if self.char_count > 0 {
+            self.char_count as usize
+        } else if self.text.is_ascii() {
+            self.text.len()
+        } else {
+            self.text.chars().count()
+        }
+    }
+
     /// Intern a link URL, reusing an existing entry if the same URL is already stored.
     #[inline]
     fn intern_link(&mut self, url: Rc<str>) -> u8 {
@@ -1761,11 +1777,25 @@ mod tests {
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.text, "aaabbbccc");
         assert!(st.is_ascii);
+        assert_eq!(st.char_len(), 9);
 
         let mut st = StyledText::default();
         st.push_text("hello", SpanStyle::plain());
         st.push_text("世界", SpanStyle::plain());
         assert!(!st.is_ascii);
+        assert_eq!(st.char_len(), 7);
+
+        let st = StyledText {
+            text: "hello".to_owned(),
+            ..StyledText::default()
+        };
+        assert_eq!(st.char_len(), 5);
+
+        let st = StyledText {
+            text: "世界".to_owned(),
+            ..StyledText::default()
+        };
+        assert_eq!(st.char_len(), 2);
 
         // Active links resolve their interned index once per link span.
         let mut state = InlineState::new();

@@ -30,10 +30,10 @@ pub(super) fn compute_table_col_widths(
     let mut widths = Vec::with_capacity(num_cols);
     let mut total_est = 0.0_f32;
     for ci in 0..num_cols {
-        let hdr_len = header.get(ci).map_or(0, |c| c.text.chars().count());
+        let hdr_len = header.get(ci).map_or(0, StyledText::char_len);
         let max_row_len = rows
             .iter()
-            .map(|r| r.get(ci).map_or(0, |c| c.text.chars().count()))
+            .map(|r| r.get(ci).map_or(0, StyledText::char_len))
             .max()
             .unwrap_or(0);
         let char_len = hdr_len.max(max_row_len).max(3) as f32;
@@ -75,10 +75,10 @@ fn cap_single_column(
     usable: f32,
 ) {
     if let Some(w) = widths.first_mut() {
-        let hdr_chars = header.first().map_or(0, |c| c.text.chars().count());
+        let hdr_chars = header.first().map_or(0, StyledText::char_len);
         let max_row_chars = rows
             .iter()
-            .map(|r| r.first().map_or(0, |c| c.text.chars().count()))
+            .map(|r| r.first().map_or(0, StyledText::char_len))
             .max()
             .unwrap_or(0);
         let max_chars = hdr_chars.max(max_row_chars);
