@@ -109,10 +109,7 @@ pub(super) fn render_table(
                 for (i, cell) in header.iter().enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                     let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                    // Pin both min and max width so the Grid cannot redistribute
-                    // space and cause unexpected text wrapping.
-                    ui.set_width(w);
-                    render_table_cell(ui, cell, style, align, true);
+                    render_table_cell(ui, cell, style, align, true, w);
                 }
                 ui.end_row();
 
@@ -120,8 +117,7 @@ pub(super) fn render_table(
                     for (i, cell) in row.iter().take(num_cols).enumerate() {
                         let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                         let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                        ui.set_width(w);
-                        render_table_cell(ui, cell, style, align, false);
+                        render_table_cell(ui, cell, style, align, false, w);
                     }
                     for _ in row.len()..num_cols {
                         ui.label("");
@@ -146,13 +142,17 @@ pub(super) fn render_table_cell(
     style: &MarkdownStyle,
     align: Alignment,
     is_header: bool,
+    width: f32,
 ) {
     let layout = match align {
         Alignment::Right => egui::Layout::top_down(egui::Align::Max),
         Alignment::Center => egui::Layout::top_down(egui::Align::Center),
         Alignment::Left | Alignment::None => egui::Layout::top_down(egui::Align::Min),
     };
-    ui.with_layout(layout, |ui| {
+    let width = width.max(1.0);
+    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), layout, |ui| {
+        ui.set_width(width);
+        ui.set_min_width(width);
         if is_header {
             let body_size = ui.text_style_height(&egui::TextStyle::Body);
             let color = strengthen_color(
@@ -172,6 +172,7 @@ pub(super) fn render_table_cell(
 mod tests {
     use super::*;
     use crate::parse::StyledText;
+    use crate::style::MarkdownStyle;
 
     fn empty_styled() -> StyledText {
         StyledText::default()
@@ -345,5 +346,28 @@ mod tests {
                 "col {i} width ({w}) should be >= min_col_w ({min_col_w})"
             );
         }
+    }
+
+    #[test]
+    fn render_table_cell_reserves_requested_width_for_64_example() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let mut allocated_width = 0.0_f32;
+        let style = MarkdownStyle::colored(&egui::Visuals::dark());
+        let cell = styled("***Bold and italic***");
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let rendered = ui.scope(|ui| {
+                    render_table_cell(ui, &cell, &style, Alignment::None, false, 180.0);
+                });
+                allocated_width = rendered.response.rect.width();
+            });
+        });
+
+        assert!(
+            allocated_width >= 170.0,
+            "table cells should reserve nearly all of the requested width, got {allocated_width:.1}"
+        );
     }
 }

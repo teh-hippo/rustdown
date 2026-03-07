@@ -209,8 +209,20 @@ impl StyledText {
     }
 
     /// Intern a link URL, reusing an existing entry if the same URL is already stored.
+    #[inline]
     fn intern_link(&mut self, url: Rc<str>) -> u8 {
-        for (i, existing) in self.links.iter().enumerate() {
+        if let Some((last, rest)) = self.links.split_last() {
+            let idx = rest.len();
+            if Rc::ptr_eq(last, &url) || **last == *url {
+                return idx as u8;
+            }
+        }
+        for (i, existing) in self
+            .links
+            .iter()
+            .enumerate()
+            .take(self.links.len().saturating_sub(1))
+        {
             if Rc::ptr_eq(existing, &url) || **existing == *url {
                 return i as u8;
             }
@@ -717,23 +729,26 @@ enum InlineFlag {
     Link(Rc<str>),
 }
 
-/// Maintains the inline formatting stack with counter-based cache rebuild.
+#[derive(Clone, Debug)]
+struct ActiveLink {
+    url: Rc<str>,
+    idx: u8,
+}
+
+/// Maintains the inline formatting stack with counter-based state updates.
 ///
-/// Instead of rescanning the full stack on every pop (O(n)), we track
-/// reference counts for each flag type.  This makes push, pop, and
-/// style queries all O(1).
+/// Balanced markdown closes inline tags in stack order, so the hot path is a
+/// plain `Vec::pop()` plus counter updates. We keep a fallback search for
+/// malformed or unexpected nesting so parsing remains resilient.
 struct InlineState {
     stack: Vec<InlineFlag>,
     /// Per-flag reference counts — avoids O(n) rebuild on pop.
     strong_count: u8,
     emphasis_count: u8,
     strikethrough_count: u8,
-    /// Number of Link entries on the stack.
-    link_count: u8,
-    /// Cached link URL (topmost link on stack, or None).
-    cached_link: Option<Rc<str>>,
-    /// Separate stack for link URLs — O(1) push/pop for `cached_link` refresh.
-    link_stack: Vec<Rc<str>>,
+    /// Active links in nesting order. The cached `idx` avoids repeatedly
+    /// interning the same URL for every text fragment inside one link span.
+    link_stack: Vec<ActiveLink>,
 }
 
 impl InlineState {
@@ -743,8 +758,6 @@ impl InlineState {
             strong_count: 0,
             emphasis_count: 0,
             strikethrough_count: 0,
-            link_count: 0,
-            cached_link: None,
             link_stack: Vec::new(),
         }
     }
@@ -755,8 +768,6 @@ impl InlineState {
         self.strong_count = 0;
         self.emphasis_count = 0;
         self.strikethrough_count = 0;
-        self.link_count = 0;
-        self.cached_link = None;
     }
 
     /// Compute the flags bitfield from counters — O(1).
@@ -775,29 +786,41 @@ impl InlineState {
         f
     }
 
+    #[inline]
     fn push(&mut self, flag: InlineFlag) {
         match &flag {
             InlineFlag::Strong => self.strong_count += 1,
             InlineFlag::Emphasis => self.emphasis_count += 1,
             InlineFlag::Strikethrough => self.strikethrough_count += 1,
             InlineFlag::Link(url) => {
-                self.link_count += 1;
-                self.link_stack.push(Rc::clone(url));
-                self.cached_link = Some(Rc::clone(url));
+                self.link_stack.push(ActiveLink {
+                    url: Rc::clone(url),
+                    idx: NO_LINK,
+                });
             }
         }
         self.stack.push(flag);
     }
 
+    #[inline]
     fn pop(&mut self, flag: &InlineFlag) {
+        if self.stack.last().is_some_and(|last| last == flag) {
+            if let Some(removed) = self.stack.pop() {
+                self.decrement(&removed);
+            }
+            return;
+        }
         if let Some(pos) = self.stack.iter().rposition(|k| k == flag) {
             let removed = self.stack.swap_remove(pos);
             self.decrement(&removed);
         }
     }
 
+    #[inline]
     fn pop_link(&mut self) {
-        if let Some(pos) = self
+        if matches!(self.stack.last(), Some(InlineFlag::Link(_))) {
+            self.stack.pop();
+        } else if let Some(pos) = self
             .stack
             .iter()
             .rposition(|k| matches!(k, InlineFlag::Link(_)))
@@ -805,12 +828,21 @@ impl InlineState {
             self.stack.swap_remove(pos);
         }
         self.link_stack.pop();
-        self.link_count = self.link_count.saturating_sub(1);
-        self.cached_link = self.link_stack.last().cloned();
     }
 
-    /// Decrement the counter for a removed flag and refresh the link cache
-    /// only when necessary.
+    #[inline]
+    fn current_link_idx(&mut self, styled: &mut StyledText) -> u8 {
+        let Some(link) = self.link_stack.last_mut() else {
+            return NO_LINK;
+        };
+        if link.idx == NO_LINK {
+            link.idx = styled.intern_link(Rc::clone(&link.url));
+        }
+        link.idx
+    }
+
+    /// Decrement the counter for a removed flag.
+    #[inline]
     fn decrement(&mut self, flag: &InlineFlag) {
         match flag {
             InlineFlag::Strong => self.strong_count = self.strong_count.saturating_sub(1),
@@ -820,24 +852,19 @@ impl InlineState {
             }
             InlineFlag::Link(_) => {
                 self.link_stack.pop();
-                self.link_count = self.link_count.saturating_sub(1);
-                self.cached_link = self.link_stack.last().cloned();
             }
         }
     }
 }
 
+#[inline]
 fn consume_inline(event: &Event<'_>, styled: &mut StyledText, state: &mut InlineState) {
     /// Build the current `SpanStyle` with optional extra flags.
     #[inline]
-    fn current_style(state: &InlineState, styled: &mut StyledText, extra: u8) -> SpanStyle {
-        let link_idx = match state.cached_link.as_ref() {
-            Some(url) => styled.intern_link(Rc::clone(url)),
-            None => NO_LINK,
-        };
+    fn current_style(state: &mut InlineState, styled: &mut StyledText, extra: u8) -> SpanStyle {
         SpanStyle {
             flags: state.flags() | extra,
-            link_idx,
+            link_idx: state.current_link_idx(styled),
         }
     }
 
@@ -1679,7 +1706,7 @@ mod tests {
         state.pop(&InlineFlag::Strong);
         assert!(state.stack.is_empty());
         assert_eq!(state.flags(), 0);
-        assert!(state.cached_link.is_none());
+        assert!(state.link_stack.is_empty());
 
         // Adjacent same-style spans merge
         let mut st = StyledText::default();
@@ -1713,6 +1740,16 @@ mod tests {
         st.push_text("ccc", SpanStyle::plain());
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.text, "aaabbbccc");
+
+        // Active links resolve their interned index once per link span.
+        let mut state = InlineState::new();
+        state.push(InlineFlag::Link(Rc::from("https://example.com")));
+        let mut st = StyledText::default();
+        assert_eq!(state.current_link_idx(&mut st), 0);
+        assert_eq!(state.current_link_idx(&mut st), 0);
+        assert_eq!(st.links.len(), 1);
+        state.pop_link();
+        assert!(state.link_stack.is_empty());
     }
 
     #[test]

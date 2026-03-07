@@ -4,24 +4,25 @@
 /// Default heading font scales (H1-H6).
 pub const HEADING_FONT_SCALES: [f32; 6] = [2.0, 1.5, 1.25, 1.1, 1.05, 1.0];
 
-/// Dracula-inspired heading colours for dark themes.
+/// Dracula heading palette for dark themes, ordered from the primary
+/// accent (H1) down to warmer secondary accents (H6).
 pub const DARK_HEADING_COLORS: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(0xFF, 0xB8, 0x6C), // orange
-    egui::Color32::from_rgb(0x8B, 0xE9, 0xFD), // cyan
-    egui::Color32::from_rgb(0x50, 0xFA, 0x7B), // green
     egui::Color32::from_rgb(0xBD, 0x93, 0xF9), // purple
     egui::Color32::from_rgb(0xFF, 0x79, 0xC6), // pink
+    egui::Color32::from_rgb(0x8B, 0xE9, 0xFD), // cyan
+    egui::Color32::from_rgb(0x50, 0xFA, 0x7B), // green
     egui::Color32::from_rgb(0xF1, 0xFA, 0x8C), // yellow
+    egui::Color32::from_rgb(0xFF, 0xB8, 0x6C), // orange
 ];
 
-/// Heading colours for light themes.
+/// Light-theme companions to the Dracula heading palette.
 pub const LIGHT_HEADING_COLORS: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(0x9C, 0x3D, 0x00),
-    egui::Color32::from_rgb(0x00, 0x5F, 0x9A),
-    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
     egui::Color32::from_rgb(0x6A, 0x1B, 0x9A),
     egui::Color32::from_rgb(0xAD, 0x14, 0x57),
-    egui::Color32::from_rgb(0x5D, 0x40, 0x37),
+    egui::Color32::from_rgb(0x00, 0x5F, 0x9A),
+    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+    egui::Color32::from_rgb(0x8C, 0x6D, 0x00),
+    egui::Color32::from_rgb(0x9C, 0x3D, 0x00),
 ];
 
 /// Per-heading-level style: font scale relative to body and colour.

@@ -197,11 +197,6 @@ fn render_heading(
     // Ensure consistent bottom spacing: at least 0.3 em so content
     // immediately after a heading (tables, code blocks) isn't cramped.
     ui.add_space((size * 0.15).max(body_size * 0.3));
-
-    if level <= 2 {
-        draw_horizontal_rule(ui, style);
-        ui.add_space(4.0);
-    }
 }
 
 fn render_code_block(

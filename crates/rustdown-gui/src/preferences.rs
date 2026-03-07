@@ -11,6 +11,7 @@ pub const AUTO_NAV_MIN_HEADINGS: usize = 5;
 pub struct UserPreferences {
     pub nav_visible: bool,
     pub heading_color_mode: bool,
+    pub side_by_side_scroll_sync: bool,
     pub zoom_factor: f32,
     pub mode: String,
 }
@@ -20,6 +21,7 @@ impl Default for UserPreferences {
         Self {
             nav_visible: false,
             heading_color_mode: true,
+            side_by_side_scroll_sync: true,
             zoom_factor: 1.0,
             mode: String::new(),
         }
@@ -74,6 +76,7 @@ mod tests {
         let prefs = UserPreferences::default();
         assert!(!prefs.nav_visible);
         assert!(prefs.heading_color_mode);
+        assert!(prefs.side_by_side_scroll_sync);
     }
 
     #[test]
@@ -81,6 +84,7 @@ mod tests {
         let prefs = UserPreferences {
             nav_visible: true,
             heading_color_mode: false,
+            side_by_side_scroll_sync: false,
             zoom_factor: 1.5,
             mode: "preview".to_owned(),
         };
@@ -89,6 +93,7 @@ mod tests {
         let deserialized: UserPreferences = toml::from_str(&serialized).unwrap_or_default();
         assert!(deserialized.nav_visible);
         assert!(!deserialized.heading_color_mode);
+        assert!(!deserialized.side_by_side_scroll_sync);
     }
 
     #[test]
@@ -107,6 +112,7 @@ mod tests {
         let prefs: UserPreferences = toml::from_str(toml_str).unwrap_or_default();
         assert!(prefs.nav_visible);
         assert!(prefs.heading_color_mode); // default
+        assert!(prefs.side_by_side_scroll_sync);
     }
 
     #[test]
@@ -114,6 +120,7 @@ mod tests {
         let prefs: UserPreferences = toml::from_str("").unwrap_or_default();
         assert!(!prefs.nav_visible);
         assert!(prefs.heading_color_mode);
+        assert!(prefs.side_by_side_scroll_sync);
     }
 
     #[test]
@@ -140,6 +147,7 @@ mod tests {
         let prefs = UserPreferences {
             nav_visible: true,
             heading_color_mode: false,
+            side_by_side_scroll_sync: false,
             zoom_factor: 1.5,
             mode: "preview".to_owned(),
         };
@@ -151,6 +159,7 @@ mod tests {
             let loaded: UserPreferences = toml::from_str(&raw).unwrap_or_default();
             assert!(loaded.nav_visible);
             assert!(!loaded.heading_color_mode);
+            assert!(!loaded.side_by_side_scroll_sync);
         }
 
         let _ = fs::remove_dir_all(&dir);

@@ -49,6 +49,8 @@ pub struct NavState {
     expanded_gen: u64,
     /// The generation at which visible headings were last recomputed.
     visible_expanded_gen: u64,
+    /// Cached toggle-slot usage per heading level (index = heading level).
+    cached_level_slots: [bool; 7],
     /// Cached min heading level for the current outline + `max_depth`.
     cached_min_level: u8,
     /// The `outline_seq` and `max_depth` when `cached_min_level` was computed.
@@ -75,6 +77,7 @@ impl Default for NavState {
             visible_max_depth: 0,
             expanded_gen: 0,
             visible_expanded_gen: u64::MAX,
+            cached_level_slots: [false; 7],
             cached_min_level: 1,
             min_level_seq: u64::MAX,
             min_level_depth: 0,
@@ -85,6 +88,7 @@ impl Default for NavState {
 const NAV_PANEL_MIN_WIDTH: f32 = 140.0;
 const NAV_PANEL_DEFAULT_WIDTH: f32 = 220.0;
 const NAV_INDENT_PX: f32 = 12.0;
+const NAV_TOGGLE_SLOT_PX: f32 = 12.0;
 
 /// Compute the scroll-area [`egui::Id`] used by the code editor.
 pub fn editor_scroll_id() -> egui::Id {
@@ -332,6 +336,8 @@ impl NavState {
         {
             self.cached_visible =
                 compute_visible_headings(&self.outline, &self.expanded, max_depth, min_level);
+            self.cached_level_slots =
+                compute_level_toggle_slots(&self.outline, &self.cached_visible);
             self.visible_seq = self.outline_seq;
             self.visible_expanded_gen = self.expanded_gen;
             self.visible_max_depth = max_depth;
@@ -352,6 +358,7 @@ impl NavState {
                         min_level,
                         expanded: &self.expanded,
                         active_index: self.active_index,
+                        level_slots: &self.cached_level_slots,
                         source: &source,
                         heading_color_mode,
                     },
@@ -398,11 +405,13 @@ struct ClickAction {
     toggle_idx: Option<usize>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct RowStyle {
     indent: f32,
     is_active: bool,
     has_children: bool,
     is_expanded: bool,
+    show_toggle_slot: bool,
 }
 
 /// All data needed to render the heading list (avoids too-many-arguments).
@@ -412,6 +421,7 @@ struct RenderContext<'a> {
     min_level: u8,
     expanded: &'a [bool],
     active_index: Option<usize>,
+    level_slots: &'a [bool; 7],
     source: &'a str,
     heading_color_mode: bool,
 }
@@ -478,6 +488,19 @@ fn compute_visible_headings(
     visible
 }
 
+fn compute_level_toggle_slots(outline: &[HeadingEntry], visible: &[(usize, bool)]) -> [bool; 7] {
+    let mut slots = [false; 7];
+    for &(idx, has_children) in visible {
+        if has_children {
+            let level = outline[idx].level as usize;
+            if level < slots.len() {
+                slots[level] = true;
+            }
+        }
+    }
+    slots
+}
+
 fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickAction> {
     let mut result = None;
 
@@ -490,6 +513,11 @@ fn render_entries(ui: &mut egui::Ui, cx: &RenderContext<'_>) -> Option<ClickActi
             is_active: cx.active_index == Some(gi),
             has_children,
             is_expanded,
+            show_toggle_slot: cx
+                .level_slots
+                .get(h.level as usize)
+                .copied()
+                .unwrap_or(false),
         };
 
         if render_heading_row(ui, h, &style, cx.source, cx.heading_color_mode).clicked() {
@@ -510,34 +538,65 @@ fn render_heading_row(
     source: &str,
     heading_color_mode: bool,
 ) -> egui::Response {
-    ui.horizontal(|ui| {
-        ui.add_space(style.indent);
+    let selection = ui.visuals().selection.bg_fill;
+    let active_fill = egui::Color32::from_rgba_premultiplied(
+        selection.r(),
+        selection.g(),
+        selection.b(),
+        if ui.visuals().dark_mode { 40 } else { 24 },
+    );
+    let row_fill = if style.is_active {
+        active_fill
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let row_width = ui.available_width();
+    let inner = egui::Frame::new()
+        .fill(row_fill)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.set_min_width(row_width);
+            ui.horizontal(|ui| {
+                ui.add_space(style.indent);
 
-        if style.has_children {
-            let arrow = if style.is_expanded { "▾" } else { "▸" };
-            ui.label(egui::RichText::new(arrow).small());
-        } else if style.indent > 0.0 {
-            ui.label(egui::RichText::new("·").small().weak());
-        }
+                if style.show_toggle_slot {
+                    if style.has_children {
+                        let arrow = if style.is_expanded { "▾" } else { "▸" };
+                        ui.add_sized(
+                            [NAV_TOGGLE_SLOT_PX, 0.0],
+                            egui::Label::new(egui::RichText::new(arrow).small()),
+                        );
+                    } else {
+                        ui.add_space(NAV_TOGGLE_SLOT_PX);
+                    }
+                }
 
-        let label = heading.label(source);
-        let mut text = egui::RichText::new(label).small();
-        if style.is_active {
-            text = text.strong();
-        }
-        if heading_color_mode {
-            let color = highlight::heading_color(ui.visuals(), heading.level as usize, true);
-            text = text.color(color);
-        }
+                let label = heading.label(source);
+                let mut text = egui::RichText::new(label).small();
+                if style.is_active {
+                    text = text.strong();
+                }
+                if heading_color_mode {
+                    let color =
+                        highlight::heading_color(ui.visuals(), heading.level as usize, true);
+                    text = text.color(color);
+                }
 
-        ui.add(
-            egui::Label::new(text)
-                .truncate()
-                .selectable(false)
-                .sense(egui::Sense::click()),
-        )
-    })
-    .inner
+                ui.add(
+                    egui::Label::new(text)
+                        .truncate()
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
+                )
+            })
+            .inner
+        });
+    ui.interact(
+        inner.response.rect,
+        ui.id().with(("nav-heading", heading.byte_offset)),
+        egui::Sense::click(),
+    )
 }
 
 #[cfg(test)]
@@ -822,6 +881,29 @@ mod tests {
             .map(|&(i, _)| outline[i].level)
             .collect();
         assert_eq!(levels, vec![1, 2]);
+    }
+
+    #[test]
+    fn compute_level_toggle_slots_only_reserve_space_when_needed() {
+        let outline = outline::extract_headings("## A\n## B\n## C\n");
+        let visible = compute_visible_headings(&outline, &[false; 3], 6, 2);
+        let slots = compute_level_toggle_slots(&outline, &visible);
+        assert!(
+            !slots[2],
+            "all-leaf levels should stay flush without tree slots"
+        );
+
+        let outline = outline::extract_headings("# Parent\n## Child\n# Leaf\n");
+        let visible = compute_visible_headings(&outline, &[true, false, false], 6, 1);
+        let slots = compute_level_toggle_slots(&outline, &visible);
+        assert!(
+            slots[1],
+            "mixed parent/leaf rows should line up at a shared slot"
+        );
+        assert!(
+            !slots[2],
+            "child levels without expandable peers keep text flush"
+        );
     }
 
     #[test]

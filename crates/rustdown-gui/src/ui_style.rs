@@ -3,6 +3,16 @@ use std::{fs, sync::Arc};
 use eframe::egui;
 
 const UI_FONT_NAME: &str = "rustdown-ui-font";
+const BUNDLED_FONT_FALLBACKS: &[(&str, &[u8])] = &[
+    (
+        "rustdown-symbola-subset",
+        include_bytes!("../../../assets/fonts/rustdown-symbola-subset.ttf"),
+    ),
+    (
+        "rustdown-noto-symbols2-subset",
+        include_bytes!("../../../assets/fonts/rustdown-noto-symbols2-subset.ttf"),
+    ),
+];
 
 #[cfg(target_os = "linux")]
 const UI_FONT_CANDIDATE_PATHS: &[&str] = &[
@@ -49,6 +59,7 @@ const UI_FONT_FALLBACK_PATHS: &[&str] = &[];
 const DEFAULT_BODY_BUTTON_FONT_SIZE: f32 = 19.0;
 const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 18.0;
 const DEFAULT_SMALL_FONT_SIZE: f32 = 13.0;
+const DEFAULT_SCROLL_ANIMATION_POINTS_PER_SECOND: f32 = 1150.0;
 
 /// Load the primary system font and any available fallback fonts.
 pub fn configure_fonts(ctx: &egui::Context) -> Result<(), String> {
@@ -63,6 +74,12 @@ pub fn configure_fonts(ctx: &egui::Context) -> Result<(), String> {
     );
     let mut proportional = vec![primary_font_name.clone()];
     let mut monospace = vec![primary_font_name];
+    append_embedded_fallbacks(
+        &mut fonts,
+        &mut proportional,
+        &mut monospace,
+        BUNDLED_FONT_FALLBACKS,
+    );
     append_font_fallbacks(
         &mut fonts,
         &mut proportional,
@@ -99,9 +116,29 @@ pub fn configure_style(ctx: &egui::Context) {
         if let Some(font_id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
             font_id.size = DEFAULT_SMALL_FONT_SIZE;
         }
+        style.scroll_animation.points_per_second = DEFAULT_SCROLL_ANIMATION_POINTS_PER_SECOND;
         // Visible column separators in markdown tables rendered by egui_commonmark.
         style.visuals.widgets.noninteractive.bg_stroke.width = 1.0;
     });
+}
+
+fn append_embedded_fallbacks(
+    fonts: &mut egui::FontDefinitions,
+    proportional: &mut Vec<String>,
+    monospace: &mut Vec<String>,
+    embedded_fonts: &[(&str, &'static [u8])],
+) -> usize {
+    let mut loaded = 0usize;
+    for (name, data) in embedded_fonts {
+        fonts.font_data.insert(
+            (*name).to_owned(),
+            Arc::new(egui::FontData::from_static(data)),
+        );
+        proportional.push((*name).to_owned());
+        monospace.push((*name).to_owned());
+        loaded += 1;
+    }
+    loaded
 }
 
 fn append_font_fallbacks(
@@ -198,6 +235,25 @@ mod tests {
     }
 
     #[test]
+    fn append_embedded_fallbacks_adds_named_fonts() {
+        let mut fonts = egui::FontDefinitions::default();
+        let mut proportional = Vec::new();
+        let mut monospace = Vec::new();
+        let loaded = append_embedded_fallbacks(
+            &mut fonts,
+            &mut proportional,
+            &mut monospace,
+            BUNDLED_FONT_FALLBACKS,
+        );
+        assert_eq!(loaded, BUNDLED_FONT_FALLBACKS.len());
+        for (name, _) in BUNDLED_FONT_FALLBACKS {
+            assert!(fonts.font_data.contains_key(*name));
+            assert!(proportional.iter().any(|entry| entry == name));
+            assert!(monospace.iter().any(|entry| entry == name));
+        }
+    }
+
+    #[test]
     fn append_font_fallbacks_empty_list() {
         let mut fonts = egui::FontDefinitions::default();
         let mut proportional = Vec::new();
@@ -246,6 +302,12 @@ mod tests {
                 "table column separator stroke should be 1.0"
             );
         }
+        assert!(
+            (style.scroll_animation.points_per_second - DEFAULT_SCROLL_ANIMATION_POINTS_PER_SECOND)
+                .abs()
+                < f32::EPSILON,
+            "scroll animation speed should be nudged up slightly"
+        );
     }
 
     #[test]
@@ -268,5 +330,25 @@ mod tests {
         let style = ctx.style();
         let size_of = |ts: &egui::TextStyle| style.text_styles.get(ts).map_or(0.0, |f| f.size);
         assert!(size_of(&egui::TextStyle::Heading) > size_of(&egui::TextStyle::Body));
+    }
+
+    #[test]
+    fn configure_fonts_loads_bundled_fallback_glyphs() {
+        let ctx = egui::Context::default();
+        let configured = configure_fonts(&ctx);
+        assert!(
+            configured.is_ok(),
+            "configure_fonts should load bundled glyph fallbacks"
+        );
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let body_font = egui::TextStyle::Body.resolve(&ctx.style());
+        let has_glyphs = ctx.fonts_mut(|fonts| {
+            let mut font = fonts.fonts.font(&body_font.family);
+            font.has_glyphs("🔬🎉✨🟢")
+        });
+        assert!(
+            has_glyphs,
+            "bundled font fallbacks should cover the bundled-doc emoji set"
+        );
     }
 }

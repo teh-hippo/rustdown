@@ -20,6 +20,8 @@ use blocks::{render_block, render_blocks};
 pub use height::bytecount_newlines;
 use height::estimate_block_height;
 
+const PREVIEW_WHEEL_SCROLL_MULTIPLIER: f32 = 1.15;
+
 // ── Cache ──────────────────────────────────────────────────────────
 
 /// Cached pre-parsed blocks, height estimates, and the source hash.
@@ -184,7 +186,8 @@ impl MarkdownViewer {
 
         let mut scroll_area = egui::ScrollArea::vertical()
             .id_salt(self.id_salt)
-            .auto_shrink([false, false]);
+            .auto_shrink([false, false])
+            .wheel_scroll_multiplier(egui::vec2(1.0, PREVIEW_WHEEL_SCROLL_MULTIPLIER));
 
         if let Some(y) = scroll_to_y
             && y.is_finite()
@@ -229,12 +232,11 @@ impl MarkdownViewer {
                 }
 
                 // ── Progressive height refinement ──────────────────
-                // Measure the actual rendered height via cursor delta
-                // and update the estimate if it drifted significantly.
-                let before_y = ui.cursor().top();
-                render_block(ui, &cache.blocks[idx], style, 0, 0);
-                let after_y = ui.cursor().top();
-                let actual_h = after_y - before_y;
+                // Measure the full child-ui rect instead of cursor deltas;
+                // labels/galleys can extend without advancing the parent
+                // cursor in the same way spaces do.
+                let rendered = ui.scope(|ui| render_block(ui, &cache.blocks[idx], style, 0, 0));
+                let actual_h = rendered.response.rect.height();
 
                 if actual_h > 0.0 && (cache.heights[idx] - actual_h).abs() > 2.0 {
                     cache.heights[idx] = actual_h;
@@ -281,13 +283,11 @@ pub(crate) fn simple_hash(s: &str) -> u64 {
     const PRIME: u64 = 0x0100_0000_01b3;
 
     let bytes = s.as_bytes();
-    let chunks = bytes.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = bytes.as_chunks::<8>();
     let mut h: u64 = BASIS;
 
     for chunk in chunks {
-        // chunks_exact(8) guarantees exactly 8 bytes.
-        let word = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+        let word = u64::from_le_bytes(*chunk);
         h ^= word;
         h = h.wrapping_mul(PRIME);
     }

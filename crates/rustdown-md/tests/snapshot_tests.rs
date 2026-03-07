@@ -106,7 +106,6 @@ const fn block_name(block: &rustdown_md::Block) -> &'static str {
 //
 // Expected rendering:
 //   - 6 headings in decreasing font size (H1 largest, H6 smallest)
-//   - H1 and H2 have a horizontal rule beneath them
 //   - Each heading uses a distinct colour from the Dracula palette
 //   - Headings are vertically separated with consistent spacing
 

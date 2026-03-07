@@ -11,9 +11,10 @@ coverage, nesting depth, heights, positions). These reference files contain the
 **exact same markdown** so you can open them in Rustdown and visually confirm
 that the rendering matches the structural assertions.
 
-Together, structural tests + visual references give full coverage:
-tests catch regressions in the parse/layout pipeline, while screenshots
-catch rendering issues (colours, fonts, spacing) that structure alone cannot.
+Together, structural tests + visual references give broader coverage:
+tests catch regressions in the parse/layout pipeline, while the screenshots
+remain a manual spot-check for rendering issues (colours, fonts, spacing)
+that structure alone cannot guarantee.
 
 ## Generating reference screenshots
 
@@ -36,7 +37,7 @@ When the renderer changes intentionally:
 
 | File | Tests | What to check |
 |------|-------|---------------|
-| `01-headings.md` | `headings_all_levels` | 6 decreasing sizes, H1/H2 rules, palette colours |
+| `01-headings.md` | `headings_all_levels` | 6 decreasing sizes, palette colours |
 | `02-inline-styles.md` | `inline_styles_spans_cover_text` | Bold, italic, strikethrough, code, combined |
 | `03-links.md` | `links_parsed_with_urls` | Hyperlink colour, underline, clickable |
 | `04-blockquotes.md` | `blockquote_structure`, `blockquote_nested_depth` | Left bar, indentation, 4-level nesting |

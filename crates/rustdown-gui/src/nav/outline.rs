@@ -91,7 +91,7 @@ pub fn extract_headings(source: &str) -> Vec<HeadingEntry> {
                         let slice = source.get(label_start..label_end).unwrap_or("");
                         let trimmed = slice.trim();
                         if !trimmed.is_empty() {
-                            let trim_off = label_start + (slice.len() - slice.trim_start().len());
+                            let trim_off = label_start + slice.find(trimmed).unwrap_or_default();
                             let trim_len = trimmed.len();
                             entries.push(HeadingEntry {
                                 level,
@@ -231,6 +231,12 @@ mod tests {
         assert_eq!(headings.len(), 4);
         assert_eq!(headings[0].label(md), "café");
         assert_eq!(headings[3].label(md), "🦀 Rust");
+
+        // Leading emoji survives trimming when it is the first visible glyph.
+        let md = "#   🔬 Rustdown Verification Document\n";
+        let headings = extract_headings(md);
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].label(md), "🔬 Rustdown Verification Document");
 
         // HeadingEntry is compact.
         assert!(std::mem::size_of::<HeadingEntry>() <= 40);
@@ -526,6 +532,11 @@ mod tests {
                 "verification.md missing heading level {level}"
             );
         }
+        assert_eq!(
+            headings.first().map(|heading| heading.label(verif)),
+            Some("🔬 Rustdown Verification Document"),
+            "verification.md should keep the leading emoji in its first heading"
+        );
     }
 
     #[test]

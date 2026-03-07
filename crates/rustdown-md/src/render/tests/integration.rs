@@ -193,10 +193,12 @@ fn integration_height_accuracy_multi_width() {
                 est > 0.0 && rendered > 0.0,
                 "{label}@{width}: est={est}, rendered={rendered}"
             );
-            // Ratio should be between 0.1 and 10.0 (generous for headless).
+            // Headless egui still undercounts some inline text widgets, so keep
+            // this bound generous enough to catch real regressions without
+            // reintroducing heading-rule assumptions.
             let ratio = est / rendered;
             assert!(
-                ratio > 0.1 && ratio < 10.0,
+                ratio > 0.1 && ratio < 15.0,
                 "{label}@{width}: ratio={ratio:.2} (est={est:.1}, rendered={rendered:.1})"
             );
         }

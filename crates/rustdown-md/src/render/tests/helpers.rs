@@ -153,28 +153,27 @@ pub(super) fn headless_render_at_width(source: &str, width: f32) -> (usize, f32,
     let mut cache = MarkdownCache::default();
     let style = dark_colored_style();
     let viewer = MarkdownViewer::new("test_width");
+    let body_size = 14.0;
+    let wrap_width = (width - 16.0).max(10.0); // approximate panel margin
+    cache.ensure_parsed(source);
+    cache.ensure_heights(body_size, wrap_width, &style);
+    let estimated_height = cache.total_height;
 
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(width, 768.0),
+            egui::vec2(width, 2_048.0),
         )),
         ..Default::default()
     };
 
-    let mut rendered_height = 0.0_f32;
     let _ = ctx.run(input, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let before = ui.cursor().min.y;
-            viewer.show(ui, &mut cache, &style, source);
-            rendered_height = ui.cursor().min.y - before;
+            viewer.show_scrollable(ui, &mut cache, &style, source, None);
         });
     });
 
-    let body_size = 14.0;
-    let wrap_width = (width - 16.0).max(10.0); // approximate panel margin
-    cache.ensure_heights(body_size, wrap_width, &style);
-    (cache.blocks.len(), cache.total_height, rendered_height)
+    (cache.blocks.len(), estimated_height, cache.total_height)
 }
 
 pub(super) fn build_table_md(
