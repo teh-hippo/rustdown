@@ -2,7 +2,8 @@
 
 #![allow(clippy::cast_precision_loss)] // UI math — indent values are small
 
-use super::{render_blocks, text::render_styled_text};
+use super::blocks::render_blocks;
+use super::text::render_styled_text;
 use crate::parse::ListItem;
 use crate::style::MarkdownStyle;
 
