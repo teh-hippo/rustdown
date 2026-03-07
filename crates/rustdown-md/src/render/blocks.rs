@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use super::layout::{RenderContext, RenderMetrics};
 use super::lists::{render_ordered_list, render_unordered_list};
 use super::table::render_table;
 use super::text::{render_styled_text, render_styled_text_ex};
@@ -17,14 +18,13 @@ pub(super) fn render_blocks(
     ui: &mut egui::Ui,
     blocks: &[Block],
     style: &MarkdownStyle,
-    indent: usize,
-    list_depth: usize,
+    ctx: RenderContext,
 ) {
-    if indent > MAX_RENDER_DEPTH {
+    if ctx.indent() > MAX_RENDER_DEPTH {
         return;
     }
     for block in blocks {
-        render_block(ui, block, style, indent, list_depth);
+        render_block(ui, block, style, ctx);
     }
 }
 
@@ -33,50 +33,55 @@ pub(super) fn render_block(
     ui: &mut egui::Ui,
     block: &Block,
     style: &MarkdownStyle,
-    indent: usize,
-    list_depth: usize,
+    ctx: RenderContext,
 ) {
-    let body_size = ui.text_style_height(&egui::TextStyle::Body);
-
+    let metrics = ctx.metrics();
     match block {
         Block::Heading { level, text } => {
-            render_heading(ui, *level, text, style, body_size);
+            render_heading(ui, *level, text, style, metrics);
         }
 
         Block::Paragraph(text) => {
             render_styled_text(ui, text, style);
-            ui.add_space(body_size * 0.4);
+            ui.add_space(metrics.paragraph_spacing());
         }
 
         Block::Code { language, code } => {
-            render_code_block(ui, language, code, style, body_size);
+            render_code_block(ui, language, code, style, metrics);
         }
 
         Block::Quote(inner) => {
-            render_blockquote(ui, inner, style, indent, body_size);
+            render_blockquote(ui, inner, style, ctx);
         }
 
         Block::UnorderedList(items) => {
-            render_unordered_list(ui, items, style, indent, list_depth);
-            ui.add_space(body_size * 0.2);
+            render_unordered_list(ui, items, style, ctx);
+            ui.add_space(metrics.list_spacing());
         }
 
         Block::OrderedList { start, items } => {
-            render_ordered_list(ui, *start, items, style, indent, list_depth);
-            ui.add_space(body_size * 0.2);
+            render_ordered_list(ui, *start, items, style, ctx);
+            ui.add_space(metrics.list_spacing());
         }
 
         Block::ThematicBreak => {
-            render_hr(ui, style, body_size);
+            render_hr(ui, style, metrics);
         }
 
         Block::Table(table) => {
-            render_table(ui, &table.header, &table.alignments, &table.rows, style);
-            ui.add_space(body_size * 0.4);
+            render_table(
+                ui,
+                &table.header,
+                &table.alignments,
+                &table.rows,
+                style,
+                metrics,
+            );
+            ui.add_space(metrics.paragraph_spacing());
         }
 
         Block::Image { url, alt } => {
-            render_image(ui, url, alt, style, body_size);
+            render_image(ui, url, alt, style, metrics);
         }
     }
 }
@@ -146,7 +151,13 @@ pub(super) fn contains_dot_dot_segment(path: &str) -> bool {
     path.split(['/', '\\']).any(|seg| seg == "..")
 }
 
-fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, body_size: f32) {
+fn render_image(
+    ui: &mut egui::Ui,
+    url: &str,
+    alt: &str,
+    style: &MarkdownStyle,
+    metrics: RenderMetrics,
+) {
     let resolved = resolve_image_url(url, &style.image_base_uri);
 
     let max_width = ui.available_width();
@@ -160,7 +171,7 @@ fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, style: &MarkdownStyle, 
     let hover_text = if alt.is_empty() { url } else { alt };
     response.on_hover_text(hover_text);
 
-    ui.add_space(body_size * 0.4);
+    ui.add_space(metrics.paragraph_spacing());
 }
 
 /// Draw a full-width horizontal rule at the current cursor position.
@@ -181,7 +192,7 @@ fn render_heading(
     level: u8,
     text: &StyledText,
     style: &MarkdownStyle,
-    body_size: f32,
+    metrics: RenderMetrics,
 ) {
     // Skip empty headings entirely (matches nav panel which excludes them).
     if text.text.is_empty() {
@@ -190,13 +201,12 @@ fn render_heading(
 
     let idx = (level as usize).saturating_sub(1).min(5);
     let hs = &style.headings[idx];
+    let body_size = metrics.body_size();
     let size = body_size * hs.font_scale;
 
-    ui.add_space(size * 0.3);
+    ui.add_space(RenderMetrics::heading_top_spacing(size));
     render_styled_text_ex(ui, text, style, Some(size), Some(hs.color));
-    // Ensure consistent bottom spacing: at least 0.3 em so content
-    // immediately after a heading (tables, code blocks) isn't cramped.
-    ui.add_space((size * 0.15).max(body_size * 0.3));
+    ui.add_space(metrics.heading_bottom_spacing(size));
 }
 
 fn render_code_block(
@@ -204,7 +214,7 @@ fn render_code_block(
     language: &str,
     code: &str,
     style: &MarkdownStyle,
-    body_size: f32,
+    metrics: RenderMetrics,
 ) {
     let bg = style.code_bg.unwrap_or_else(|| ui.visuals().faint_bg_color);
     let available = ui.available_width();
@@ -214,11 +224,11 @@ fn render_code_block(
     egui::Frame::NONE
         .fill(bg)
         .corner_radius(4.0)
-        .inner_margin(egui::Margin::same(6))
+        .inner_margin(egui::Margin::same(RenderMetrics::code_block_inner_margin()))
         .show(ui, |ui| {
-            ui.set_min_width(available - 12.0);
+            ui.set_min_width(available - RenderMetrics::code_block_horizontal_padding());
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                let mono = egui::FontId::new(body_size * 0.9, egui::FontFamily::Monospace);
+                let mono = egui::FontId::new(metrics.code_font_size(), egui::FontFamily::Monospace);
                 // Only strip trailing newlines, not whitespace — intentional
                 // trailing spaces in code should be preserved.
                 let trimmed = code.trim_end_matches('\n');
@@ -236,34 +246,30 @@ fn render_code_block(
                 );
             });
         });
-    ui.add_space(body_size * 0.4);
+    ui.add_space(metrics.paragraph_spacing());
 }
 
 fn render_blockquote(
     ui: &mut egui::Ui,
     inner: &[Block],
     style: &MarkdownStyle,
-    indent: usize,
-    body_size: f32,
+    ctx: RenderContext,
 ) {
+    let metrics = ctx.metrics();
     let bar_color = style
         .blockquote_bar
         .unwrap_or_else(|| ui.visuals().weak_text_color());
 
-    let bar_width = 3.0;
-    let bar_margin = body_size * 0.4; // space before the bar
-    let content_margin = body_size * 0.6; // space after the bar before content
-    let reserved = bar_margin + bar_width + content_margin;
+    let bar_width = RenderMetrics::blockquote_bar_width();
+    let bar_margin = metrics.blockquote_bar_margin();
+    let reserved = metrics.blockquote_reserved_width();
 
     let available = ui.available_rect_before_wrap();
-    let bar_x = available.min.x + bar_margin + bar_width * 0.5;
+    let bar_x = bar_width.mul_add(0.5, available.min.x + bar_margin);
 
     // Use a unique salt per nesting depth so egui doesn't share layout state.
-    let salt = ui.next_auto_id().with(indent);
-
-    // Floor must match `estimate_quote_height` (40px) so that viewport
-    // culling height estimates stay consistent with actual rendering.
-    let content_width = (available.width() - reserved).max(40.0);
+    let salt = ui.next_auto_id().with(ctx.indent());
+    let content_width = metrics.blockquote_content_width(available.width());
 
     // Position the content area to the right of the bar using an
     // explicit child rect.  The child starts at `min.x + reserved`
@@ -279,7 +285,7 @@ fn render_blockquote(
                 .layout(egui::Layout::top_down(egui::Align::LEFT)),
             |ui| {
                 ui.push_id(salt, |ui| {
-                    render_blocks(ui, inner, style, indent + 1, 0);
+                    render_blocks(ui, inner, style, ctx.quote_inner());
                 });
             },
         )
@@ -304,11 +310,11 @@ fn render_blockquote(
     if gap > 0.0 {
         ui.add_space(gap);
     }
-    ui.add_space(body_size * 0.4);
+    ui.add_space(metrics.paragraph_spacing());
 }
 
-fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, body_size: f32) {
-    ui.add_space(body_size * 0.4);
+fn render_hr(ui: &mut egui::Ui, style: &MarkdownStyle, metrics: RenderMetrics) {
+    ui.add_space(metrics.paragraph_spacing());
     draw_horizontal_rule(ui, style);
-    ui.add_space(body_size * 0.4);
+    ui.add_space(metrics.paragraph_spacing());
 }

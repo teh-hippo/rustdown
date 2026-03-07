@@ -5,6 +5,7 @@ pub(super) use crate::render::blocks::{
 pub(super) use crate::render::height::{
     self, estimate_block_height, estimate_table_height, estimate_text_height,
 };
+pub(super) use crate::render::layout::RenderContext;
 pub(super) use crate::render::table::compute_table_col_widths;
 pub(super) use crate::render::text::{build_layout_job, strengthen_color};
 pub(super) use crate::render::*;

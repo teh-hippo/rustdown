@@ -3,6 +3,7 @@ use crate::cli::{LaunchOptions, parse_launch_options};
 use crate::disk::io::{DiskRevision, atomic_write_utf8};
 use crate::disk::sync::{DiskConflict, ReloadKind};
 use crate::document::{EditorGalleyCache, TrackedTextBuffer, bytecount_newlines};
+use crate::scroll_math;
 use crate::search::replace_all_occurrences;
 use std::{
     borrow::Cow,
@@ -572,7 +573,7 @@ fn animate_side_by_side_scroll_advances_preview_and_snaps() {
     assert!(app.side_by_side_scroll_source.is_none());
     assert_eq!(
         app.last_sync_preview_byte,
-        Some(nav::panel::preview_scroll_y_to_byte(
+        Some(scroll_math::preview_scroll_y_to_byte(
             &outline,
             120.0,
             app.doc.preview_cache.total_height

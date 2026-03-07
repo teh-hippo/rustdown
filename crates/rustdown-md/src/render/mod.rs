@@ -6,6 +6,7 @@
 
 mod blocks;
 mod height;
+mod layout;
 mod lists;
 mod table;
 mod text;
@@ -19,6 +20,7 @@ use crate::style::MarkdownStyle;
 use blocks::{render_block, render_blocks};
 pub use height::bytecount_newlines;
 use height::estimate_block_height;
+use layout::RenderContext;
 
 const PREVIEW_WHEEL_SCROLL_MULTIPLIER: f32 = 1.15;
 
@@ -235,7 +237,9 @@ impl MarkdownViewer {
                 // Measure the full child-ui rect instead of cursor deltas;
                 // labels/galleys can extend without advancing the parent
                 // cursor in the same way spaces do.
-                let rendered = ui.scope(|ui| render_block(ui, &cache.blocks[idx], style, 0, 0));
+                let rendered = ui.scope(|ui| {
+                    render_block(ui, &cache.blocks[idx], style, RenderContext::root(ui));
+                });
                 let actual_h = rendered.response.rect.height();
 
                 if actual_h > 0.0 && (cache.heights[idx] - actual_h).abs() > 2.0 {
@@ -272,7 +276,7 @@ impl MarkdownViewer {
         source: &str,
     ) {
         cache.ensure_parsed(source);
-        render_blocks(ui, &cache.blocks, style, 0, 0);
+        render_blocks(ui, &cache.blocks, style, RenderContext::root(ui));
     }
 }
 

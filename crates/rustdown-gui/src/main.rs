@@ -32,6 +32,7 @@ mod live_merge;
 mod markdown_fence;
 mod nav;
 mod preferences;
+mod scroll_math;
 mod search;
 mod ui_style;
 

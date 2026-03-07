@@ -3,6 +3,8 @@
 #![allow(clippy::cast_precision_loss)] // UI math — indent values are small
 
 use super::blocks::render_blocks;
+use super::layout::RenderContext;
+use super::layout::RenderMetrics;
 use super::text::render_styled_text;
 use crate::parse::ListItem;
 use crate::style::MarkdownStyle;
@@ -27,16 +29,12 @@ pub(super) fn render_unordered_list(
     ui: &mut egui::Ui,
     items: &[ListItem],
     style: &MarkdownStyle,
-    indent: usize,
-    list_depth: usize,
+    ctx: RenderContext,
 ) {
-    let bullet = match list_depth {
-        0 => "\u{2022}",
-        1 => "\u{25E6}",
-        _ => "\u{25AA}",
-    };
-    let indent_px = 16.0 * list_depth as f32;
-    let body_size = ui.text_style_height(&egui::TextStyle::Body);
+    let metrics = ctx.metrics();
+    let bullet = metrics.bullet_text();
+    let indent_px = metrics.list_indent_px();
+    let body_size = metrics.body_size();
 
     for item in items {
         ui.horizontal(|ui| {
@@ -48,17 +46,17 @@ pub(super) fn render_unordered_list(
             };
             // Fixed-width bullet column: 1.5 em gives room for checkboxes.
             ui.allocate_ui_with_layout(
-                egui::vec2(body_size * 1.5, body_size),
+                egui::vec2(metrics.unordered_bullet_column_width(), body_size),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     ui.label(bullet_text);
                 },
             );
-            ui.add_space(2.0);
+            ui.add_space(RenderMetrics::unordered_gap_px());
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
                 if !item.children.is_empty() {
-                    render_blocks(ui, &item.children, style, indent + 1, list_depth + 1);
+                    render_blocks(ui, &item.children, style, ctx.nested_list());
                 }
             });
         });
@@ -70,11 +68,11 @@ pub(super) fn render_ordered_list(
     start: u64,
     items: &[ListItem],
     style: &MarkdownStyle,
-    indent: usize,
-    list_depth: usize,
+    ctx: RenderContext,
 ) {
-    let indent_px = 16.0 * list_depth as f32;
-    let body_size = ui.text_style_height(&egui::TextStyle::Body);
+    let metrics = ctx.metrics();
+    let indent_px = metrics.list_indent_px();
+    let body_size = metrics.body_size();
     let mut num_buf = String::with_capacity(8);
     let num_width = ordered_num_width(start, items.len(), body_size);
 
@@ -98,11 +96,11 @@ pub(super) fn render_ordered_list(
                     };
                 },
             );
-            ui.add_space(4.0);
+            ui.add_space(RenderMetrics::ordered_gap_px());
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
                 if !item.children.is_empty() {
-                    render_blocks(ui, &item.children, style, indent + 1, list_depth + 1);
+                    render_blocks(ui, &item.children, style, ctx.nested_list());
                 }
             });
         });

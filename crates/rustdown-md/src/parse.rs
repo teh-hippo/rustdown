@@ -65,7 +65,7 @@ pub struct ListItem {
 }
 
 /// Styled text: a string with inline formatting spans.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct StyledText {
     pub text: String,
     pub spans: Vec<Span>,
@@ -75,6 +75,8 @@ pub struct StyledText {
     pub char_count: u32,
     /// Whether any span has a link (avoids linear scan in render path).
     pub has_links: bool,
+    /// Whether the accumulated text is entirely ASCII.
+    pub is_ascii: bool,
 }
 
 /// Inline formatting flags that can be combined (e.g., bold + italic).
@@ -175,12 +177,14 @@ impl StyledText {
         let start = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
         self.text.push_str(s);
         let end = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
-        let char_count = if s.is_ascii() {
+        let fragment_is_ascii = s.is_ascii();
+        let char_count = if fragment_is_ascii {
             s.len()
         } else {
             s.chars().count()
         };
         self.char_count = self.char_count.saturating_add(char_count as u32);
+        self.is_ascii &= fragment_is_ascii;
         if style.has_link() {
             self.has_links = true;
         }
@@ -233,6 +237,19 @@ impl StyledText {
         }
         self.links.push(url);
         idx as u8
+    }
+}
+
+impl Default for StyledText {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            spans: Vec::new(),
+            links: Vec::new(),
+            char_count: 0,
+            has_links: false,
+            is_ascii: true,
+        }
     }
 }
 
@@ -682,7 +699,7 @@ fn parse_table(
             }
             Event::End(TagEnd::TableHead) => {
                 in_head = false;
-                header = std::mem::take(&mut current_row);
+                header = std::mem::replace(&mut current_row, Vec::with_capacity(num_cols));
                 *pos += 1;
             }
             Event::Start(Tag::TableRow) => {
@@ -693,7 +710,10 @@ fn parse_table(
                 if in_head {
                     current_row.clear();
                 } else {
-                    rows.push(std::mem::take(&mut current_row));
+                    rows.push(std::mem::replace(
+                        &mut current_row,
+                        Vec::with_capacity(num_cols),
+                    ));
                 }
                 *pos += 1;
             }
@@ -1740,6 +1760,12 @@ mod tests {
         st.push_text("ccc", SpanStyle::plain());
         assert_eq!(st.spans.len(), 1);
         assert_eq!(st.text, "aaabbbccc");
+        assert!(st.is_ascii);
+
+        let mut st = StyledText::default();
+        st.push_text("hello", SpanStyle::plain());
+        st.push_text("世界", SpanStyle::plain());
+        assert!(!st.is_ascii);
 
         // Active links resolve their interned index once per link span.
         let mut state = InlineState::new();

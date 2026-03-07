@@ -5,6 +5,8 @@
 use crate::parse::{Block, ListItem, StyledText, TableData};
 use crate::style::MarkdownStyle;
 
+use super::layout::RenderMetrics;
+
 /// Estimate pixel height for a top-level block without actually laying it out.
 /// Errs on the side of *over*-estimating so that blocks are never clipped.
 pub(super) fn estimate_block_height(
@@ -13,19 +15,14 @@ pub(super) fn estimate_block_height(
     wrap_width: f32,
     style: &MarkdownStyle,
 ) -> f32 {
-    estimate_block_height_at_depth(block, body_size, wrap_width, style, 0)
+    estimate_block_height_with_metrics(block, RenderMetrics::new(body_size), wrap_width, style)
 }
 
-/// Inner height estimation that tracks list nesting depth.
-///
-/// `list_depth` counts how many list levels deep we are (reset to 0
-/// inside blockquotes, since blockquotes handle their own visual offset).
-fn estimate_block_height_at_depth(
+fn estimate_block_height_with_metrics(
     block: &Block,
-    body_size: f32,
+    metrics: RenderMetrics,
     wrap_width: f32,
     style: &MarkdownStyle,
-    list_depth: usize,
 ) -> f32 {
     match block {
         Block::Heading { level, text } => {
@@ -33,114 +30,97 @@ fn estimate_block_height_at_depth(
                 return 0.0;
             }
             let idx = (*level as usize).saturating_sub(1).min(5);
-            let size = body_size * style.headings[idx].font_scale;
+            let size = metrics.body_size() * style.headings[idx].font_scale;
             let text_h = estimate_styled_height(text, size, wrap_width);
-            // Render adds top_space (0.3) + bottom_space max(0.15*size, 0.3*body).
-            let bottom = (size * 0.15).max(body_size * 0.3);
-            size.mul_add(0.3, bottom + text_h)
+            RenderMetrics::heading_top_spacing(size) + metrics.heading_bottom_spacing(size) + text_h
         }
         Block::Paragraph(text) => {
-            body_size.mul_add(0.4, estimate_styled_height(text, body_size, wrap_width))
+            metrics.paragraph_spacing()
+                + estimate_styled_height(text, metrics.body_size(), wrap_width)
         }
         Block::Code { language, code, .. } => {
-            let mono_size = body_size * 0.9;
+            let mono_size = metrics.code_font_size();
             // Match render_code_block: trailing newlines are stripped before display.
             let trimmed = code.trim_end_matches('\n');
             let lines = (bytecount_newlines(trimmed.as_bytes()) + 1).max(1) as f32;
-            // 12.0 for Frame inner_margin (6px each side), 1.4 line spacing.
-            // Add language label height when present.
-            let lang_h = if language.is_empty() { 0.0 } else { body_size };
-            body_size.mul_add(0.4, (lines * mono_size).mul_add(1.4, 12.0) + lang_h)
+            let lang_h = if language.is_empty() {
+                0.0
+            } else {
+                metrics.body_size()
+            };
+            metrics.paragraph_spacing()
+                + (lines * mono_size).mul_add(1.4, RenderMetrics::code_block_horizontal_padding())
+                + lang_h
         }
-        Block::Quote(inner) => estimate_quote_height(inner, body_size, wrap_width, style),
+        Block::Quote(inner) => estimate_quote_height(inner, metrics, wrap_width, style),
         Block::UnorderedList(items) => {
-            estimate_list_height_at_depth(items, body_size, wrap_width, style, None, list_depth)
+            estimate_list_height_with_metrics(items, metrics, wrap_width, style, None)
         }
-        Block::OrderedList { start, items } => estimate_list_height_at_depth(
-            items,
-            body_size,
-            wrap_width,
-            style,
-            Some(*start),
-            list_depth,
-        ),
-        Block::ThematicBreak => body_size * 0.8,
-        Block::Table(table) => estimate_table_height(table, body_size, wrap_width),
+        Block::OrderedList { start, items } => {
+            estimate_list_height_with_metrics(items, metrics, wrap_width, style, Some(*start))
+        }
+        Block::ThematicBreak => metrics.thematic_break_height(),
+        Block::Table(table) => estimate_table_height(table, metrics.body_size(), wrap_width),
         Block::Image { .. } => {
-            // Images vary wildly — use a generous overestimate so viewport
-            // culling never clips them. max_width constrains width to the
-            // available area, so assume roughly a 4:3 aspect ratio at full width.
-            let max_image_h = wrap_width * 0.75;
-            body_size.mul_add(0.4, max_image_h.max(body_size * 8.0))
+            metrics.paragraph_spacing()
+                + RenderMetrics::image_max_height(wrap_width).max(metrics.image_fallback_height())
         }
     }
 }
 
-pub(super) fn estimate_quote_height(
+fn estimate_quote_height(
     inner: &[Block],
-    body_size: f32,
+    metrics: RenderMetrics,
     wrap_width: f32,
     style: &MarkdownStyle,
 ) -> f32 {
-    // Reserve: bar_margin (0.4em) + bar_width (3px) + content_margin (0.6em) ≈ 1em + 3px.
-    let reserved = body_size + 3.0;
-    let inner_w = (wrap_width - reserved).max(40.0);
-    // Blockquotes reset list depth — they handle their own visual offset
-    // via scope_builder, so lists inside don't need extra indent.
+    let inner_w = metrics.blockquote_content_width(wrap_width);
     let inner_h: f32 = inner
         .iter()
-        .map(|b| estimate_block_height_at_depth(b, body_size, inner_w, style, 0))
+        .map(|b| estimate_block_height_with_metrics(b, metrics.with_list_depth(0), inner_w, style))
         .sum();
-    body_size.mul_add(0.4, inner_h)
+    metrics.paragraph_spacing() + inner_h
 }
 
-/// Inner list height estimation that tracks list nesting depth.
-///
-/// `list_depth` mirrors the renderer's indent calculation:
-/// `indent_px = 16.0 * list_depth` is deducted from the available width.
-fn estimate_list_height_at_depth(
+fn estimate_list_height_with_metrics(
     items: &[ListItem],
-    body_size: f32,
+    metrics: RenderMetrics,
     wrap_width: f32,
     style: &MarkdownStyle,
     ordered_start: Option<u64>,
-    list_depth: usize,
 ) -> f32 {
-    // Match the bullet/number column width used in the actual renderers.
     let bullet_col = match ordered_start {
         Some(start) => {
-            // Mirrors render_ordered_list: num_width + 4px gap.
-            super::lists::ordered_num_width(start, items.len(), body_size) + 4.0
+            super::lists::ordered_num_width(start, items.len(), metrics.body_size())
+                + RenderMetrics::ordered_gap_px()
         }
-        None => body_size.mul_add(1.5, 2.0),
+        None => metrics.unordered_bullet_column_width() + RenderMetrics::unordered_gap_px(),
     };
-    // Deduct indent_px — mirrors the renderer's `16.0 * list_depth` indent.
-    let indent_px = 16.0 * list_depth as f32;
-    let content_w = (wrap_width - bullet_col - indent_px).max(40.0);
+    let content_w = (wrap_width - bullet_col - metrics.list_indent_px()).max(40.0);
     let item_h: f32 = items
         .iter()
         .map(|item| {
-            let text_h = estimate_styled_height(&item.content, body_size, content_w);
+            let text_h = estimate_styled_height(&item.content, metrics.body_size(), content_w);
             let child_h: f32 = item
                 .children
                 .iter()
                 .map(|b| {
-                    estimate_block_height_at_depth(b, body_size, content_w, style, list_depth + 1)
+                    estimate_block_height_with_metrics(b, metrics.nested_list(), content_w, style)
                 })
                 .sum();
-            // ui.horizontal adds ~body_size vertical per item.
-            body_size.mul_add(0.3, text_h + child_h)
+            metrics.list_item_overhead() + text_h + child_h
         })
         .sum();
-    body_size.mul_add(0.2, item_h)
+    metrics.list_spacing() + item_h
 }
 
 pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> f32 {
+    let metrics = RenderMetrics::new(body_size);
     let num_cols = table.header.len().max(1);
-    let min_col_w = (body_size * 2.5).max(36.0);
+    let min_col_w = metrics.table_min_col_width();
     let col_width = (wrap_width / num_cols as f32).max(40.0);
-    let base_row_h = body_size * 1.4;
-    let row_spacing = 3.0;
+    let base_row_h = metrics.table_base_row_height();
+    let row_spacing = RenderMetrics::table_row_spacing();
 
     let row_height = |cells: &[StyledText]| -> f32 {
         cells.iter().fold(base_row_h, |max, c| {
@@ -157,19 +137,19 @@ pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_widt
     // Account for horizontal scrollbar when columns exceed available width.
     // Include inter-column spacing (~8px per gap) in the overflow check.
     let spacing = 8.0 * num_cols.saturating_sub(1) as f32;
-    let scrollbar_h = if min_col_w * num_cols as f32 + spacing > wrap_width {
-        14.0
+    let scrollbar_h = if min_col_w.mul_add(num_cols as f32, spacing) > wrap_width {
+        RenderMetrics::table_scrollbar_height()
     } else {
         0.0
     };
-    body_size.mul_add(0.4, hdr + rows_h + scrollbar_h)
+    metrics.paragraph_spacing() + hdr + rows_h + scrollbar_h
 }
 
 /// Rough text height estimate using byte-level newline counting.
 /// Avoids `.lines()` iteration for better throughput on large texts.
 #[cfg(test)]
 pub(super) fn estimate_text_height(text: &str, font_size: f32, wrap_width: f32) -> f32 {
-    estimate_text_height_inner(text, font_size, wrap_width, None)
+    estimate_text_height_inner(text, font_size, wrap_width, None, None)
 }
 
 /// Like [`estimate_text_height`], but uses a pre-computed character count
@@ -182,7 +162,7 @@ pub(super) fn estimate_styled_height(st: &StyledText, font_size: f32, wrap_width
     } else {
         None
     };
-    estimate_text_height_inner(&st.text, font_size, wrap_width, hint)
+    estimate_text_height_inner(&st.text, font_size, wrap_width, hint, Some(st.is_ascii))
 }
 
 fn estimate_text_height_inner(
@@ -190,6 +170,7 @@ fn estimate_text_height_inner(
     font_size: f32,
     wrap_width: f32,
     char_count_hint: Option<usize>,
+    is_ascii_hint: Option<bool>,
 ) -> f32 {
     // Guard against NaN / Inf / non-positive / absurdly large font_size.
     // Clamp to a sane range: no real font exceeds ~1000px.
@@ -208,11 +189,11 @@ fn estimate_text_height_inner(
         400.0
     };
     // Derive char count and ASCII-ness simultaneously to avoid redundant scans.
-    // When char_count_hint is provided (from StyledText.char_count), we can
-    // infer ASCII-ness: if char_count == byte_count, the text is ASCII.
-    let (char_count, is_ascii) = match char_count_hint {
-        Some(hint) => (hint, hint == text.len()),
-        None => {
+    let (char_count, is_ascii) = match (char_count_hint, is_ascii_hint) {
+        (Some(hint), Some(is_ascii)) => (hint, is_ascii),
+        (Some(hint), None) => (hint, hint == text.len()),
+        (None, Some(is_ascii)) if is_ascii => (text.len(), true),
+        (None, _) => {
             if text.is_ascii() {
                 (text.len(), true)
             } else {

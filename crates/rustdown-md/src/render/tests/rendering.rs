@@ -2067,7 +2067,7 @@ fn ordered_list_huge_start_no_overflow() {
     // Render must not panic — previous code used `start + i` which overflows.
     let _ = ctx.run(raw_input_1024x768(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            render_blocks(ui, &cache.blocks, &style, 0, 0);
+            render_blocks(ui, &cache.blocks, &style, RenderContext::root(ui));
         });
     });
 

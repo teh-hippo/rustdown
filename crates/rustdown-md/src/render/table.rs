@@ -2,6 +2,7 @@
 
 #![allow(clippy::cast_precision_loss)] // UI math — column count is small
 
+use super::layout::RenderMetrics;
 use super::text::{render_styled_text, render_styled_text_ex, strengthen_color};
 use crate::parse::{Alignment, StyledText};
 use crate::style::MarkdownStyle;
@@ -21,8 +22,9 @@ pub(super) fn compute_table_col_widths(
     avg_char_w: f32,
     body_size: f32,
 ) -> (Vec<f32>, f32, bool) {
+    let metrics = RenderMetrics::new(body_size);
     let num_cols = header.len().max(1);
-    let min_col_w = (body_size * 2.5).max(36.0);
+    let min_col_w = metrics.table_min_col_width();
 
     // Estimate each column's natural width from content length.
     let mut widths = Vec::with_capacity(num_cols);
@@ -35,7 +37,9 @@ pub(super) fn compute_table_col_widths(
             .max()
             .unwrap_or(0);
         let char_len = hdr_len.max(max_row_len).max(3) as f32;
-        let w = avg_char_w.mul_add(char_len, 12.0).max(min_col_w);
+        let w = avg_char_w
+            .mul_add(char_len, RenderMetrics::table_content_padding())
+            .max(min_col_w);
         total_est += w;
         widths.push(w);
     }
@@ -78,8 +82,9 @@ fn cap_single_column(
             .max()
             .unwrap_or(0);
         let max_chars = hdr_chars.max(max_row_chars);
-        let content_est = (max_chars as f32).mul_add(avg_char_w, 24.0);
-        let max_single = (usable * 0.6).max(content_est.min(usable));
+        let content_est =
+            (max_chars as f32).mul_add(avg_char_w, RenderMetrics::table_content_padding() * 2.0);
+        let max_single = RenderMetrics::table_single_column_cap(usable, content_est);
         *w = (*w).min(max_single);
     }
 }
@@ -90,11 +95,12 @@ pub(super) fn render_table(
     alignments: &[Alignment],
     rows: &[Vec<StyledText>],
     style: &MarkdownStyle,
+    metrics: RenderMetrics,
 ) {
     let num_cols = header.len().max(1);
     let available = ui.available_width();
-    let body_size = ui.text_style_height(&egui::TextStyle::Body);
-    let avg_char_w = body_size * 0.55;
+    let body_size = metrics.body_size();
+    let avg_char_w = metrics.table_avg_char_width();
     let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
     let usable = (available - spacing).max(0.0);
 
@@ -109,7 +115,7 @@ pub(super) fn render_table(
                 for (i, cell) in header.iter().enumerate() {
                     let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                     let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                    render_table_cell(ui, cell, style, align, true, w);
+                    render_table_cell(ui, cell, style, align, true, w, metrics);
                 }
                 ui.end_row();
 
@@ -117,7 +123,7 @@ pub(super) fn render_table(
                     for (i, cell) in row.iter().take(num_cols).enumerate() {
                         let align = alignments.get(i).copied().unwrap_or(Alignment::None);
                         let w = col_widths.get(i).copied().unwrap_or(min_col_w);
-                        render_table_cell(ui, cell, style, align, false, w);
+                        render_table_cell(ui, cell, style, align, false, w, metrics);
                     }
                     for _ in row.len()..num_cols {
                         ui.label("");
@@ -143,6 +149,7 @@ pub(super) fn render_table_cell(
     align: Alignment,
     is_header: bool,
     width: f32,
+    metrics: RenderMetrics,
 ) {
     let layout = match align {
         Alignment::Right => egui::Layout::top_down(egui::Align::Max),
@@ -154,7 +161,7 @@ pub(super) fn render_table_cell(
         ui.set_width(width);
         ui.set_min_width(width);
         if is_header {
-            let body_size = ui.text_style_height(&egui::TextStyle::Body);
+            let body_size = metrics.body_size();
             let color = strengthen_color(
                 style
                     .body_color
@@ -359,7 +366,15 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let rendered = ui.scope(|ui| {
-                    render_table_cell(ui, &cell, &style, Alignment::None, false, 180.0);
+                    render_table_cell(
+                        ui,
+                        &cell,
+                        &style,
+                        Alignment::None,
+                        false,
+                        180.0,
+                        RenderMetrics::new(ui.text_style_height(&egui::TextStyle::Body)),
+                    );
                 });
                 allocated_width = rendered.response.rect.width();
             });

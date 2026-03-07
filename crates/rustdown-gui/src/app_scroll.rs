@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::{Mode, RustdownApp, SIDE_BY_SIDE_SCROLL_LERP, SideBySideScrollSource};
-use crate::{editor, nav};
+use crate::{editor, nav, scroll_math};
 
 impl RustdownApp {
     /// Convert a heading byte offset to a preview scroll-y value.
@@ -18,7 +18,7 @@ impl RustdownApp {
         {
             return y;
         }
-        nav::panel::preview_byte_to_scroll_y(
+        scroll_math::preview_byte_to_scroll_y(
             &self.nav.outline,
             byte_offset,
             self.doc.preview_cache.total_height,
@@ -30,10 +30,10 @@ impl RustdownApp {
     pub(crate) fn current_scroll_byte_offset(&mut self, ctx: &egui::Context) -> Option<usize> {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
-            let state = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id())?;
+            let state = egui::scroll_area::State::load(ctx, scroll_math::editor_scroll_id())?;
             self.editor_y_to_byte(state.offset.y)
         } else {
-            Some(nav::panel::preview_scroll_y_to_byte(
+            Some(scroll_math::preview_scroll_y_to_byte(
                 &self.nav.outline,
                 self.doc.preview_cache.last_scroll_y,
                 self.doc.preview_cache.total_height,
@@ -43,12 +43,12 @@ impl RustdownApp {
 
     pub(crate) fn current_editor_scroll_y(&mut self, ctx: &egui::Context) -> Option<f32> {
         self.ensure_row_byte_offsets();
-        let state = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id())?;
+        let state = egui::scroll_area::State::load(ctx, scroll_math::editor_scroll_id())?;
         Some(state.offset.y)
     }
 
     pub(crate) fn current_preview_scroll_byte(&self) -> usize {
-        nav::panel::preview_scroll_y_to_byte(
+        scroll_math::preview_scroll_y_to_byte(
             &self.nav.outline,
             self.doc.preview_cache.last_scroll_y,
             self.doc.preview_cache.total_height,
@@ -110,7 +110,7 @@ impl RustdownApp {
                 // override the precise nav-driven positions on the next frame.
                 self.last_sync_editor_byte = editor_target_y.and_then(|y| self.editor_y_to_byte(y));
                 self.last_sync_preview_byte = preview_target_y.map(|y| {
-                    nav::panel::preview_scroll_y_to_byte(
+                    scroll_math::preview_scroll_y_to_byte(
                         &self.nav.outline,
                         y,
                         self.doc.preview_cache.total_height,
@@ -127,14 +127,15 @@ impl RustdownApp {
     pub(crate) fn sync_nav_active_heading(&mut self, ctx: &egui::Context) {
         if self.uses_editor() {
             self.ensure_row_byte_offsets();
-            if let Some(state) = egui::scroll_area::State::load(ctx, nav::panel::editor_scroll_id())
+            if let Some(state) =
+                egui::scroll_area::State::load(ctx, scroll_math::editor_scroll_id())
                 && let Some(byte_pos) = self.editor_y_to_byte(state.offset.y)
             {
                 self.nav.update_active_from_position(byte_pos);
             }
         } else {
             // Preview mode: convert cached scroll-y to byte offset via outline.
-            let byte_pos = nav::panel::preview_scroll_y_to_byte(
+            let byte_pos = scroll_math::preview_scroll_y_to_byte(
                 &self.nav.outline,
                 self.doc.preview_cache.last_scroll_y,
                 self.doc.preview_cache.total_height,
@@ -224,7 +225,7 @@ impl RustdownApp {
                     self.nav.pending_preview_scroll_y = Some(target);
                     self.side_by_side_scroll_target = None;
                     self.side_by_side_scroll_source = None;
-                    self.last_sync_preview_byte = Some(nav::panel::preview_scroll_y_to_byte(
+                    self.last_sync_preview_byte = Some(scroll_math::preview_scroll_y_to_byte(
                         &self.nav.outline,
                         target,
                         self.doc.preview_cache.total_height,
