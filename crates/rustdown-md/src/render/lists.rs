@@ -27,13 +27,14 @@ pub(super) fn render_unordered_list(
     items: &[ListItem],
     style: &MarkdownStyle,
     indent: usize,
+    list_depth: usize,
 ) {
-    let bullet = match indent {
+    let bullet = match list_depth {
         0 => "\u{2022}",
         1 => "\u{25E6}",
         _ => "\u{25AA}",
     };
-    let indent_px = 16.0 * indent as f32;
+    let indent_px = 16.0 * list_depth as f32;
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
 
     for item in items {
@@ -56,7 +57,7 @@ pub(super) fn render_unordered_list(
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
                 if !item.children.is_empty() {
-                    render_blocks(ui, &item.children, style, indent + 1);
+                    render_blocks(ui, &item.children, style, indent + 1, list_depth + 1);
                 }
             });
         });
@@ -69,8 +70,9 @@ pub(super) fn render_ordered_list(
     items: &[ListItem],
     style: &MarkdownStyle,
     indent: usize,
+    list_depth: usize,
 ) {
-    let indent_px = 16.0 * indent as f32;
+    let indent_px = 16.0 * list_depth as f32;
     let body_size = ui.text_style_height(&egui::TextStyle::Body);
     let mut num_buf = String::with_capacity(8);
     let num_width = ordered_num_width(start, items.len(), body_size);
@@ -99,7 +101,7 @@ pub(super) fn render_ordered_list(
             ui.vertical(|ui| {
                 render_styled_text(ui, &item.content, style);
                 if !item.children.is_empty() {
-                    render_blocks(ui, &item.children, style, indent + 1);
+                    render_blocks(ui, &item.children, style, indent + 1, list_depth + 1);
                 }
             });
         });

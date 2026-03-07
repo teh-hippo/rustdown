@@ -13,6 +13,20 @@ pub(super) fn estimate_block_height(
     wrap_width: f32,
     style: &MarkdownStyle,
 ) -> f32 {
+    estimate_block_height_at_depth(block, body_size, wrap_width, style, 0)
+}
+
+/// Inner height estimation that tracks list nesting depth.
+///
+/// `list_depth` counts how many list levels deep we are (reset to 0
+/// inside blockquotes, since blockquotes handle their own visual offset).
+fn estimate_block_height_at_depth(
+    block: &Block,
+    body_size: f32,
+    wrap_width: f32,
+    style: &MarkdownStyle,
+    list_depth: usize,
+) -> f32 {
     match block {
         Block::Heading { level, text } => {
             if text.text.is_empty() {
@@ -41,11 +55,16 @@ pub(super) fn estimate_block_height(
         }
         Block::Quote(inner) => estimate_quote_height(inner, body_size, wrap_width, style),
         Block::UnorderedList(items) => {
-            estimate_list_height(items, body_size, wrap_width, style, None)
+            estimate_list_height_at_depth(items, body_size, wrap_width, style, None, list_depth)
         }
-        Block::OrderedList { start, items } => {
-            estimate_list_height(items, body_size, wrap_width, style, Some(*start))
-        }
+        Block::OrderedList { start, items } => estimate_list_height_at_depth(
+            items,
+            body_size,
+            wrap_width,
+            style,
+            Some(*start),
+            list_depth,
+        ),
         Block::ThematicBreak => body_size * 0.8,
         Block::Table(table) => estimate_table_height(table, body_size, wrap_width),
         Block::Image { .. } => {
@@ -67,19 +86,26 @@ pub(super) fn estimate_quote_height(
     // Reserve: bar_margin (0.4em) + bar_width (3px) + content_margin (0.6em) ≈ 1em + 3px.
     let reserved = body_size + 3.0;
     let inner_w = (wrap_width - reserved).max(40.0);
+    // Blockquotes reset list depth — they handle their own visual offset
+    // via scope_builder, so lists inside don't need extra indent.
     let inner_h: f32 = inner
         .iter()
-        .map(|b| estimate_block_height(b, body_size, inner_w, style))
+        .map(|b| estimate_block_height_at_depth(b, body_size, inner_w, style, 0))
         .sum();
     body_size.mul_add(0.4, inner_h)
 }
 
-pub(super) fn estimate_list_height(
+/// Inner list height estimation that tracks list nesting depth.
+///
+/// `list_depth` mirrors the renderer's indent calculation:
+/// `indent_px = 16.0 * list_depth` is deducted from the available width.
+fn estimate_list_height_at_depth(
     items: &[ListItem],
     body_size: f32,
     wrap_width: f32,
     style: &MarkdownStyle,
     ordered_start: Option<u64>,
+    list_depth: usize,
 ) -> f32 {
     // Match the bullet/number column width used in the actual renderers.
     let bullet_col = match ordered_start {
@@ -89,7 +115,9 @@ pub(super) fn estimate_list_height(
         }
         None => body_size.mul_add(1.5, 2.0),
     };
-    let content_w = (wrap_width - bullet_col).max(40.0);
+    // Deduct indent_px — mirrors the renderer's `16.0 * list_depth` indent.
+    let indent_px = 16.0 * list_depth as f32;
+    let content_w = (wrap_width - bullet_col - indent_px).max(40.0);
     let item_h: f32 = items
         .iter()
         .map(|item| {
@@ -97,7 +125,9 @@ pub(super) fn estimate_list_height(
             let child_h: f32 = item
                 .children
                 .iter()
-                .map(|b| estimate_block_height(b, body_size, content_w, style))
+                .map(|b| {
+                    estimate_block_height_at_depth(b, body_size, content_w, style, list_depth + 1)
+                })
                 .sum();
             // ui.horizontal adds ~body_size vertical per item.
             body_size.mul_add(0.3, text_h + child_h)
@@ -108,6 +138,7 @@ pub(super) fn estimate_list_height(
 
 pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_width: f32) -> f32 {
     let num_cols = table.header.len().max(1);
+    let min_col_w = (body_size * 2.5).max(36.0);
     let col_width = (wrap_width / num_cols as f32).max(40.0);
     let base_row_h = body_size * 1.4;
     let row_spacing = 3.0;
@@ -124,7 +155,15 @@ pub(super) fn estimate_table_height(table: &TableData, body_size: f32, wrap_widt
         row_height(&table.header)
     };
     let rows_h: f32 = table.rows.iter().map(|r| row_height(r)).sum();
-    body_size.mul_add(0.4, hdr + rows_h)
+    // Account for horizontal scrollbar when columns exceed available width.
+    // Include inter-column spacing (~8px per gap) in the overflow check.
+    let spacing = 8.0 * num_cols.saturating_sub(1) as f32;
+    let scrollbar_h = if min_col_w * num_cols as f32 + spacing > wrap_width {
+        14.0
+    } else {
+        0.0
+    };
+    body_size.mul_add(0.4, hdr + rows_h + scrollbar_h)
 }
 
 /// Rough text height estimate using byte-level newline counting.
