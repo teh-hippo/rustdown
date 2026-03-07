@@ -6,74 +6,82 @@ use super::text::{render_styled_text, render_styled_text_ex, strengthen_color};
 use crate::parse::{Alignment, StyledText};
 use crate::style::MarkdownStyle;
 
-/// Compute normalised column widths for a table, balancing content-proportional
-/// sizing with a per-column minimum and a total budget.
+/// Compute column widths for a table from content, with optional
+/// normalisation to fill available space.
 ///
-/// Returns `(col_widths, min_col_w)`.
+/// Returns `(col_widths, min_col_w, needs_scroll)`.
+///
+/// **Algorithm:** First compute natural content-proportional widths.
+/// If the total exceeds `usable`, keep the natural widths and signal
+/// horizontal scroll.  Otherwise, scale up to fill the available space.
 pub(super) fn compute_table_col_widths(
     header: &[StyledText],
     rows: &[Vec<StyledText>],
     usable: f32,
     avg_char_w: f32,
     body_size: f32,
-) -> (Vec<f32>, f32) {
+) -> (Vec<f32>, f32, bool) {
     let num_cols = header.len().max(1);
     let min_col_w = (body_size * 2.5).max(36.0);
 
-    // Initial estimates from content length (header + rows).
-    let col_cap = usable / num_cols as f32 * 3.0;
+    // Estimate each column's natural width from content length.
     let mut widths = Vec::with_capacity(num_cols);
     let mut total_est = 0.0_f32;
     for ci in 0..num_cols {
-        let hdr_len = header.get(ci).map_or(0, |c| c.text.len());
+        let hdr_len = header.get(ci).map_or(0, |c| c.text.chars().count());
         let max_row_len = rows
             .iter()
-            .map(|r| r.get(ci).map_or(0, |c| c.text.len()))
+            .map(|r| r.get(ci).map_or(0, |c| c.text.chars().count()))
             .max()
             .unwrap_or(0);
         let char_len = hdr_len.max(max_row_len).max(3) as f32;
-        let w = (avg_char_w.mul_add(char_len, 12.0)).min(col_cap);
+        let w = avg_char_w.mul_add(char_len, 12.0).max(min_col_w);
         total_est += w;
         widths.push(w);
     }
 
-    // Normalise: scale to budget, clamp to minimum, redistribute overflow.
+    // If natural widths exceed the budget, use them as-is and scroll.
+    if total_est > usable {
+        return (widths, min_col_w, true);
+    }
+
+    // Content fits — scale up proportionally to fill the usable width.
     if total_est > 0.0 {
-        let scale = (usable / total_est).min(1e6);
-        let mut clamped_total = 0.0_f32;
-        let mut free_total = 0.0_f32;
+        let scale = usable / total_est;
         for w in &mut widths {
-            let scaled = *w * scale;
-            if scaled < min_col_w {
-                *w = min_col_w;
-                clamped_total += min_col_w;
-            } else {
-                *w = scaled;
-                free_total += scaled;
-            }
-        }
-        let remaining = usable - clamped_total;
-        if remaining > 0.0 && free_total > 0.0 {
-            let redistribute = remaining / free_total;
-            for w in &mut widths {
-                if *w > min_col_w {
-                    *w = (*w * redistribute).max(min_col_w);
-                }
-            }
+            *w = (*w * scale).max(min_col_w);
         }
     }
 
-    // Cap single-column tables to 60% of usable width for a reasonable appearance.
-    if num_cols == 1
-        && let Some(w) = widths.first_mut()
-    {
-        let content_est =
-            (header.first().map_or(0, |c| c.text.len()) as f32).mul_add(avg_char_w, 24.0);
+    // Cap single-column tables to 60% of usable width.
+    if num_cols == 1 {
+        cap_single_column(&mut widths, header, rows, avg_char_w, usable);
+    }
+
+    (widths, min_col_w, false)
+}
+
+/// Limit a single-column table's width to 60% of usable, unless
+/// content requires more.
+fn cap_single_column(
+    widths: &mut [f32],
+    header: &[StyledText],
+    rows: &[Vec<StyledText>],
+    avg_char_w: f32,
+    usable: f32,
+) {
+    if let Some(w) = widths.first_mut() {
+        let hdr_chars = header.first().map_or(0, |c| c.text.chars().count());
+        let max_row_chars = rows
+            .iter()
+            .map(|r| r.first().map_or(0, |c| c.text.chars().count()))
+            .max()
+            .unwrap_or(0);
+        let max_chars = hdr_chars.max(max_row_chars);
+        let content_est = (max_chars as f32).mul_add(avg_char_w, 24.0);
         let max_single = (usable * 0.6).max(content_est.min(usable));
         *w = (*w).min(max_single);
     }
-
-    (widths, min_col_w)
 }
 
 pub(super) fn render_table(
@@ -90,12 +98,8 @@ pub(super) fn render_table(
     let spacing = ui.spacing().item_spacing.x * (num_cols.saturating_sub(1)) as f32;
     let usable = (available - spacing).max(0.0);
 
-    let (col_widths, min_col_w) =
+    let (col_widths, min_col_w, needs_scroll) =
         compute_table_col_widths(header, rows, usable, avg_char_w, body_size);
-
-    // Wrap in horizontal scroll when table is wider than available space.
-    let total_width: f32 = col_widths.iter().sum::<f32>() + spacing;
-    let needs_scroll = total_width > available + 1.0;
 
     let render_grid = |ui: &mut egui::Ui| {
         egui::Grid::new(ui.next_auto_id())
@@ -175,7 +179,7 @@ mod tests {
     #[test]
     fn compute_col_widths_empty_header() {
         // 0 columns → treated as max(0, 1) = 1 column
-        let (widths, _) = compute_table_col_widths(&[], &[], 500.0, 8.0, 16.0);
+        let (widths, _, _) = compute_table_col_widths(&[], &[], 500.0, 8.0, 16.0);
         assert_eq!(widths.len(), 1);
         assert!(widths[0].is_finite());
     }
@@ -183,7 +187,7 @@ mod tests {
     #[test]
     fn compute_col_widths_single_col() {
         let header = vec![empty_styled()];
-        let (widths, _) = compute_table_col_widths(&header, &[], 500.0, 8.0, 16.0);
+        let (widths, _, _) = compute_table_col_widths(&header, &[], 500.0, 8.0, 16.0);
         assert_eq!(widths.len(), 1);
         assert!(widths[0].is_finite());
         assert!(widths[0] > 0.0);
@@ -193,7 +197,7 @@ mod tests {
     fn compute_col_widths_tiny_usable() {
         // Very small usable width should not produce Inf/NaN
         let header = vec![empty_styled(), empty_styled(), empty_styled()];
-        let (widths, min_w) = compute_table_col_widths(&header, &[], 1.0, 8.0, 16.0);
+        let (widths, min_w, _) = compute_table_col_widths(&header, &[], 1.0, 8.0, 16.0);
         assert_eq!(widths.len(), 3);
         for w in &widths {
             assert!(w.is_finite(), "width should be finite, got {w}");
@@ -205,7 +209,7 @@ mod tests {
     fn compute_col_widths_zero_avg_char() {
         // avg_char_w = 0 should not cause issues
         let header = vec![empty_styled()];
-        let (widths, _) = compute_table_col_widths(&header, &[], 500.0, 0.0, 16.0);
+        let (widths, _, _) = compute_table_col_widths(&header, &[], 500.0, 0.0, 16.0);
         assert_eq!(widths.len(), 1);
         assert!(widths[0].is_finite());
     }
@@ -214,7 +218,7 @@ mod tests {
     fn compute_col_widths_many_columns() {
         // 100 columns in tight space
         let header: Vec<StyledText> = (0..100).map(|_| empty_styled()).collect();
-        let (widths, min_w) = compute_table_col_widths(&header, &[], 200.0, 8.0, 16.0);
+        let (widths, min_w, _) = compute_table_col_widths(&header, &[], 200.0, 8.0, 16.0);
         assert_eq!(widths.len(), 100);
         for w in &widths {
             assert!(w.is_finite());
@@ -248,29 +252,27 @@ mod tests {
     /// Suggested fix: Compute content_est from max(header_len, max_row_len)
     ///   instead of header_len only.
     #[test]
-    fn diag_single_col_cap_ignores_row_content() {
+    fn diag_single_col_cap_includes_row_content() {
         let short_header = vec![styled("ID")];
         let long_body = vec![vec![styled(
             "This is a very long description that should influence the width cap",
         )]];
         let short_body = vec![vec![styled("x")]];
 
-        let (w_long, _) = compute_table_col_widths(&short_header, &long_body, 600.0, 7.7, 14.0);
-        let (w_short, _) = compute_table_col_widths(&short_header, &short_body, 600.0, 7.7, 14.0);
+        let (w_long, _, _) = compute_table_col_widths(&short_header, &long_body, 600.0, 7.7, 14.0);
+        let (w_short, _, _) =
+            compute_table_col_widths(&short_header, &short_body, 600.0, 7.7, 14.0);
 
-        // Both should be finite and positive.
         assert!(w_long[0].is_finite() && w_long[0] > 0.0);
         assert!(w_short[0].is_finite() && w_short[0] > 0.0);
 
-        // BUG EVIDENCE: The cap is based on header only, so both long and
-        // short body produce the SAME column width.  A correct
-        // implementation would give the long-body column more width.
-        let same_width = (w_long[0] - w_short[0]).abs() < 1.0;
+        // FIX VERIFIED: The cap now considers row content, so the
+        // long-body column should be wider than the short-body column.
         assert!(
-            same_width,
-            "BUG CONFIRMED: long body ({:.1}) vs short body ({:.1}) \
-             yield the same width because the 60% cap only checks the header",
-            w_long[0], w_short[0],
+            w_long[0] > w_short[0] + 1.0,
+            "long body ({:.1}) should be wider than short body ({:.1})",
+            w_long[0],
+            w_short[0],
         );
     }
 
@@ -289,29 +291,26 @@ mod tests {
     /// Suggested fix: Use `text.chars().count()` or the cached
     ///   `StyledText::char_count` instead of `text.len()`.
     #[test]
-    fn diag_col_width_byte_vs_char_non_ascii() {
-        // 10 ASCII chars vs 10 CJK chars (30 bytes).
+    fn diag_col_width_char_count_for_non_ascii() {
         let ascii_header = vec![styled("AAAAAAAAAA"), styled("BBBBBBBBBB")];
         let ascii_rows = vec![vec![styled("aaaaaaaaaa"), styled("bbbbbbbbbb")]];
 
         let cjk_header = vec![styled("AAAAAAAAAA"), styled("你好世界你好世界你好")];
         let cjk_rows = vec![vec![styled("aaaaaaaaaa"), styled("你好世界你好世界你好")]];
 
-        let (w_ascii, _) = compute_table_col_widths(&ascii_header, &ascii_rows, 800.0, 7.7, 14.0);
-        let (w_cjk, _) = compute_table_col_widths(&cjk_header, &cjk_rows, 800.0, 7.7, 14.0);
+        let (w_ascii, _, _) =
+            compute_table_col_widths(&ascii_header, &ascii_rows, 800.0, 7.7, 14.0);
+        let (w_cjk, _, _) = compute_table_col_widths(&cjk_header, &cjk_rows, 800.0, 7.7, 14.0);
 
-        // Both are 2-column tables with equal visual char count per column.
-        // In a correct implementation, widths should be roughly equal.
         let ascii_ratio = w_ascii[1] / w_ascii[0];
         let cjk_ratio = w_cjk[1] / w_cjk[0];
 
-        // BUG EVIDENCE: The CJK column's byte length (30) is 3× the ASCII
-        // column's byte length (10), so the CJK column gets proportionally
-        // more space than it should.
+        // FIX VERIFIED: Using chars().count() instead of byte length,
+        // CJK and ASCII columns with equal char counts get equal widths.
         assert!(
-            (cjk_ratio - ascii_ratio).abs() > 0.1,
-            "BUG CONFIRMED: CJK col ratio ({cjk_ratio:.2}) differs from \
-             ASCII col ratio ({ascii_ratio:.2}) due to byte-length estimation",
+            (cjk_ratio - ascii_ratio).abs() < 0.1,
+            "CJK col ratio ({cjk_ratio:.2}) should match \
+             ASCII col ratio ({ascii_ratio:.2}) using char count",
         );
     }
 
@@ -331,17 +330,18 @@ mod tests {
     ///   `total_est > 0` guard, or early-return min_col_w widths when
     ///   usable is non-positive.
     #[test]
-    fn diag_zero_usable_bypasses_min_col_w() {
+    fn zero_usable_still_respects_min_col_w() {
         let header = vec![styled("A"), styled("B")];
         let rows = vec![vec![styled("x"), styled("y")]];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 0.0, 7.7, 14.0);
+        let (widths, min_col_w, needs_scroll) =
+            compute_table_col_widths(&header, &rows, 0.0, 7.7, 14.0);
 
-        // When usable = 0, total_est = 0, normalization is skipped, widths stay 0.
+        // With zero usable, natural widths exceed budget → scroll mode.
+        assert!(needs_scroll, "zero usable should trigger scroll");
         for (i, w) in widths.iter().enumerate() {
             assert!(
-                *w < min_col_w,
-                "BUG CONFIRMED: col {i} width ({w}) < min_col_w ({min_col_w}) \
-                 because zero-usable bypasses the min clamp"
+                *w >= min_col_w,
+                "col {i} width ({w}) should be >= min_col_w ({min_col_w})"
             );
         }
     }

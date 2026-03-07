@@ -514,37 +514,43 @@ fn render_blockquote(
     let content_margin = body_size * 0.6; // space after the bar before content
     let reserved = bar_margin + bar_width + content_margin;
 
-    let bar_x = ui.available_rect_before_wrap().min.x + bar_margin + bar_width * 0.5;
+    let available = ui.available_rect_before_wrap();
+    let bar_x = available.min.x + bar_margin + bar_width * 0.5;
 
     // Use a unique salt per nesting depth so egui doesn't share layout state.
     let salt = ui.next_auto_id().with(indent);
 
     // Floor must match `estimate_quote_height` (40px) so that viewport
     // culling height estimates stay consistent with actual rendering.
-    let content_width = (ui.available_width() - reserved).max(40.0);
+    let content_width = (available.width() - reserved).max(40.0);
 
-    // Horizontal wrapper offsets the content past the bar area so text
-    // doesn't overlap the vertical bar indicator.
-    let content_rect = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(reserved);
-            ui.vertical(|ui| {
-                ui.set_min_width(content_width);
+    // Position the content area to the right of the bar.  We use
+    // `allocate_ui_with_layout` with an explicit offset rect so the
+    // content doesn't overlap the bar.  Unlike ui.horizontal(), this
+    // avoids injecting the parent's item_spacing.y between consecutive
+    // blockquotes.
+    let content_rect = egui::Rect::from_min_size(
+        egui::pos2(available.min.x + reserved, available.min.y),
+        egui::vec2(content_width, 0.0),
+    );
+    let inner_response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(content_rect)
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            |ui| {
                 ui.push_id(salt, |ui| {
                     render_blocks(ui, inner, style, indent + 1);
                 });
-            })
-            .response
-            .rect
-        })
-        .inner;
+            },
+        )
+        .response;
 
+    // Paint the vertical bar spanning the full content height.
+    let bar_top = inner_response.rect.min.y;
+    let bar_bottom = inner_response.rect.max.y;
     ui.painter().line_segment(
-        [
-            egui::pos2(bar_x, content_rect.min.y),
-            egui::pos2(bar_x, content_rect.max.y),
-        ],
+        [egui::pos2(bar_x, bar_top), egui::pos2(bar_x, bar_bottom)],
         egui::Stroke::new(bar_width, bar_color),
     );
     ui.add_space(body_size * 0.3);
@@ -1563,7 +1569,7 @@ mod tests {
     #[test]
     fn table_col_widths_via_helper() {
         // Equal-length columns → roughly equal
-        let (widths, _) = compute_table_col_widths(
+        let (widths, _, _) = compute_table_col_widths(
             &make_cells(&["Name", "City"]),
             &[make_cells(&["Alice", "Tokyo"])],
             800.0,
@@ -1577,7 +1583,7 @@ mod tests {
         );
 
         // One long column → gets more space
-        let (widths, _) = compute_table_col_widths(
+        let (widths, _, _) = compute_table_col_widths(
             &make_cells(&["A", "B", "Description"]),
             &[make_cells(&[
                 "x",
@@ -1594,7 +1600,7 @@ mod tests {
         );
 
         // Single column
-        let (widths, _) = compute_table_col_widths(
+        let (widths, _, _) = compute_table_col_widths(
             &make_cells(&["Only"]),
             &[make_cells(&["data"])],
             600.0,
@@ -1605,7 +1611,7 @@ mod tests {
         assert!(widths[0] > 100.0, "single col wide: {widths:?}");
 
         // Empty cells → all above minimum
-        let (widths, min_col_w) = compute_table_col_widths(
+        let (widths, min_col_w, _) = compute_table_col_widths(
             &make_cells(&["A", "B", "C"]),
             &[make_cells(&["", "", ""]), make_cells(&["x", "", ""])],
             800.0,
@@ -1617,7 +1623,7 @@ mod tests {
         }
 
         // Edge cases: zero usable space
-        let (widths, _) = compute_table_col_widths(
+        let (widths, _, _) = compute_table_col_widths(
             &[plain("A"), plain("B")],
             &[vec![plain("x"), plain("y")]],
             0.0,
@@ -1630,7 +1636,7 @@ mod tests {
         }
 
         // Very small usable → clamped to min_col_w
-        let (widths, min_col_w) = compute_table_col_widths(
+        let (widths, min_col_w, _) = compute_table_col_widths(
             &[plain("A"), plain("B"), plain("C")],
             &[vec![plain("x"), plain("y"), plain("z")]],
             10.0,
@@ -1642,7 +1648,7 @@ mod tests {
         }
 
         // One much longer column → gets more space
-        let (widths, _) = compute_table_col_widths(
+        let (widths, _, _) = compute_table_col_widths(
             &[plain("A"), plain(&"X".repeat(300))],
             &[vec![plain("a"), plain(&"Y".repeat(300))]],
             600.0,
@@ -1652,7 +1658,7 @@ mod tests {
         assert!(widths[1] > widths[0], "longer column wider: {widths:?}");
 
         // body_size = 0 → min_col_w = 36
-        let (_, min_col_w) = compute_table_col_widths(
+        let (_, min_col_w, _) = compute_table_col_widths(
             &[plain("A"), plain("B")],
             &[vec![plain("x"), plain("y")]],
             200.0,
@@ -1664,7 +1670,7 @@ mod tests {
         // Single column capped at ~60%
         let header = make_cells(&["Status"]);
         let rows = vec![make_cells(&["OK"]), make_cells(&["Error"])];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        let (widths, _, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
         assert_eq!(widths.len(), 1);
         assert!(
             widths[0] <= 600.0 * 0.61,
@@ -1678,7 +1684,7 @@ mod tests {
             make_cells(&["1", "Alice Johnson, Software Engineer"]),
             make_cells(&["2", "Bob Smith, Product Manager"]),
         ];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        let (widths, _, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
         assert!(
             widths[1] > widths[0] * 1.5,
             "wide col should be wider: {widths:?}"
@@ -1687,7 +1693,7 @@ mod tests {
         // Three equal columns
         let header = make_cells(&["Left", "Center", "Right"]);
         let rows = vec![make_cells(&["data", "data", "data"])];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        let (widths, min_col_w, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
         for (i, w) in widths.iter().enumerate() {
             assert!(*w >= min_col_w - 0.01, "col {i}: {w} >= {min_col_w}");
         }
@@ -1698,7 +1704,7 @@ mod tests {
         let rows = vec![make_cells(&[
             "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
         ])];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
+        let (widths, min_col_w, _) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
         for (i, w) in widths.iter().enumerate() {
             assert!(
                 *w >= min_col_w - 0.01,
@@ -1706,18 +1712,22 @@ mod tests {
             );
         }
 
-        // One dominant column capped
+        // One dominant column — gets natural width (scroll mode)
         let header = make_cells(&["Tiny", "Medium text", &"x".repeat(200)]);
         let rows = vec![make_cells(&["a", "something", "y"])];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
-        assert!(widths[2] < 500.0, "dominant capped: {}", widths[2]);
+        let (widths, _, needs_scroll) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        assert!(needs_scroll, "200-char column should trigger scroll");
+        assert!(
+            widths[2] > widths[0] && widths[2] > widths[1],
+            "dominant col should be widest: {widths:?}"
+        );
 
         // 12 cols respect minimum
         let header = make_cells(&["H", "H", "H", "H", "H", "H", "H", "H", "H", "H", "H", "H"]);
         let rows = vec![make_cells(&[
             "v", "v", "v", "v", "v", "v", "v", "v", "v", "v", "v", "v",
         ])];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 800.0, 7.7, 14.0);
+        let (widths, min_col_w, _) = compute_table_col_widths(&header, &rows, 800.0, 7.7, 14.0);
         for (i, w) in widths.iter().enumerate() {
             assert!(
                 *w >= min_col_w - 0.01,
@@ -2688,7 +2698,7 @@ mod tests {
         // Single column width reasonable
         let header = vec![plain("Header")];
         let rows = vec![vec![plain("val")]];
-        let (widths, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
+        let (widths, _, _) = compute_table_col_widths(&header, &rows, 600.0, 7.7, 14.0);
         assert!(
             widths[0] > 40.0 && widths[0] < 600.0,
             "single col width: {}",
@@ -2698,7 +2708,7 @@ mod tests {
         // Redistribution respects min_col_width
         let header: Vec<StyledText> = (0..10).map(|i| plain(&format!("H{i}"))).collect();
         let rows = vec![(0..10).map(|i| plain(&format!("d{i}"))).collect()];
-        let (widths, min_col_w) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
+        let (widths, min_col_w, _) = compute_table_col_widths(&header, &rows, 400.0, 7.7, 14.0);
         for (i, w) in widths.iter().enumerate() {
             assert!(*w >= min_col_w - 0.01, "col {i}: {w} >= {min_col_w}");
         }
@@ -4403,7 +4413,7 @@ mod tests {
 
         // Verify the table would trigger scrolling.
         let avg_char_w = body_size * 0.55;
-        let (col_widths, _) = compute_table_col_widths(
+        let (col_widths, _, _) = compute_table_col_widths(
             &wide_table.header,
             &wide_table.rows,
             narrow_width,
