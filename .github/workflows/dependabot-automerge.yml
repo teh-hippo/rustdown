@@ -1,4 +1,4 @@
-name: Dependabot auto-merge
+name: Dependabot Auto-Merge
 
 on: pull_request
 
@@ -7,19 +7,20 @@ permissions:
   pull-requests: write
 
 jobs:
-  auto-merge:
-    if: github.actor == 'dependabot[bot]'
+  automerge:
+    name: Auto-Merge
     runs-on: ubuntu-latest
-
+    if: github.actor == 'dependabot[bot]'
     steps:
-      - name: Approve PR
-        run: gh pr review --approve "$PR_URL"
+      - name: Request Copilot review
+        run: gh pr edit "$PR_URL" --add-reviewer "copilot-pull-request-reviewer"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Enable auto-merge (squash)
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Approve and auto-merge
+        uses: fastify/github-action-merge-dependabot@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-method: rebase
+          target: major
