@@ -87,6 +87,7 @@ impl Default for NavState {
 
 const NAV_PANEL_MIN_WIDTH: f32 = 140.0;
 const NAV_PANEL_DEFAULT_WIDTH: f32 = 220.0;
+const NAV_PANEL_MAX_WIDTH: f32 = 296.0;
 const NAV_INDENT_PX: f32 = 12.0;
 const NAV_TOGGLE_SLOT_PX: f32 = 12.0;
 
@@ -160,8 +161,8 @@ impl NavState {
 
         egui::SidePanel::left("navigation")
             .resizable(true)
-            .min_width(NAV_PANEL_MIN_WIDTH)
             .default_width(NAV_PANEL_DEFAULT_WIDTH)
+            .width_range(NAV_PANEL_MIN_WIDTH..=NAV_PANEL_MAX_WIDTH)
             .frame(panel_frame)
             .show(ctx, |ui| self.panel_contents(ui));
     }
@@ -491,6 +492,45 @@ mod tests {
         let source = Arc::new(md.to_owned());
         state.refresh_outline(&source, 1);
         state
+    }
+
+    #[test]
+    fn nav_panel_width_is_clamped_to_a_sane_maximum() {
+        const EXPECTED_VISIBLE_WIDTH: f32 = 320.0;
+
+        let mut state = make_state("# A\n## B\n");
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(2000.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+
+        ctx.data_mut(|d| {
+            d.insert_persisted(
+                egui::Id::new("navigation"),
+                egui::containers::panel::PanelState {
+                    rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0)),
+                },
+            );
+        });
+
+        let _ = ctx.run(input, |ctx| {
+            state.show(ctx);
+        });
+        let persisted = ctx.data_mut(|d| {
+            d.get_persisted::<egui::containers::panel::PanelState>(egui::Id::new("navigation"))
+        });
+        let Some(persisted) = persisted else {
+            unreachable!("navigation panel should persist width state");
+        };
+        assert!(
+            (persisted.rect.width() - EXPECTED_VISIBLE_WIDTH).abs() < 0.5,
+            "expected width to clamp to {EXPECTED_VISIBLE_WIDTH}, got {}",
+            persisted.rect.width()
+        );
     }
 
     #[test]
