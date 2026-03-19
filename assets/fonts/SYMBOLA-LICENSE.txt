@@ -1,0 +1,13 @@
+Copyright (c) 2013-2017 George Douros
+
+In lieu of a licence:
+
+Fonts and samples in the Symbola page (https://dn-works.com/ufas/)
+are free for any use; they may be opened, edited, modified,
+regenerated, posted, packaged and redistributed.
+
+---
+
+Note: This applies to Symbola version 9.17 and earlier. Starting with
+version 11.00 (March 2018), the license was changed to personal,
+non-commercial use only. The subset bundled here is from version 9.17.

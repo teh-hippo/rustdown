@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir staging
           cp target/release/rustdown staging/
-          cp LICENSE README.md staging/
+          cp LICENSE README.md THIRD-PARTY-NOTICES.md staging/
           cd staging
           tar czf ../${{ matrix.artifact }}.tar.gz *
           cd ..
@@ -59,7 +59,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path staging
           Copy-Item target/release/rustdown.exe staging/
-          Copy-Item LICENSE, README.md staging/
+          Copy-Item LICENSE, README.md, THIRD-PARTY-NOTICES.md staging/
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.artifact }}.zip
           (Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii ${{ matrix.artifact }}.zip.sha256
 

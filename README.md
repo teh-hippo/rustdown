@@ -98,3 +98,5 @@ rustdown -p                 # start in Preview mode
 ## License
 
 [MIT](LICENSE)
+
+Bundled fonts are licensed separately — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

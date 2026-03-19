@@ -2325,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "rustdown"
-version = "0.24.2"
+version = "0.25.0"
 dependencies = [
  "dirs",
  "eframe",
@@ -2343,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "rustdown-md"
-version = "0.24.2"
+version = "0.25.0"
 dependencies = [
  "egui",
  "memchr",
