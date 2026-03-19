@@ -20,6 +20,8 @@ mod app_scroll;
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 #[allow(clippy::wildcard_imports)]
+#[allow(clippy::field_reassign_with_default)]
+#[allow(clippy::unchecked_time_subtraction)]
 mod app_tests;
 mod cli;
 mod diagnostics;
@@ -52,6 +54,8 @@ const SCROLL_WHEEL_MULTIPLIER: f32 = 1.15;
 const SIDE_BY_SIDE_SCROLL_LERP: f32 = 0.35;
 const DIAGNOSTICS_DEFAULT_ITERATIONS: usize = 200;
 const DIAGNOSTICS_DEFAULT_RUNS: usize = 1;
+const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(30);
+const AUTO_SAVE_RETRY: Duration = Duration::from_secs(5);
 
 use cli::{DiagnosticsMode, app_version, parse_launch_options};
 
@@ -186,9 +190,13 @@ struct RustdownApp {
     focus_search: bool,
     heading_color_mode: bool,
     side_by_side_scroll_sync: bool,
+    auto_save: bool,
 
     /// Zoom factor loaded from preferences, applied on first frame.
     persisted_zoom: f32,
+
+    /// When the next auto-save should fire (`None` while doc is clean).
+    auto_save_due_at: Option<std::time::Instant>,
 
     /// Last editor scroll byte offset observed by the side-by-side sync loop.
     last_sync_editor_byte: Option<usize>,
@@ -340,6 +348,7 @@ impl eframe::App for RustdownApp {
             self.persisted_zoom = 0.0;
         }
         self.tick_disk_sync(ctx);
+        self.tick_auto_save(ctx);
         self.refresh_stats_if_due(ctx);
         self.handle_keyboard_shortcuts(ctx);
         self.show_status_bar(ctx);

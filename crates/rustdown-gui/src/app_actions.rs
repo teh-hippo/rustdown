@@ -8,8 +8,9 @@ use std::{
 use eframe::egui;
 
 use super::{
-    BundledDoc, ConflictChoice, Mode, PendingAction, RustdownApp, STATS_RECALC_DEBOUNCE,
-    default_image_uri_scheme, markdown_file_dialog, zoom_with_factor, zoom_with_step,
+    AUTO_SAVE_INTERVAL, AUTO_SAVE_RETRY, BundledDoc, ConflictChoice, Mode, PendingAction,
+    RustdownApp, STATS_RECALC_DEBOUNCE, default_image_uri_scheme, markdown_file_dialog,
+    zoom_with_factor, zoom_with_step,
 };
 use crate::{
     cli::{LaunchOptions, app_version},
@@ -38,6 +39,7 @@ impl RustdownApp {
             mode,
             heading_color_mode: prefs.heading_color_mode,
             side_by_side_scroll_sync: prefs.side_by_side_scroll_sync,
+            auto_save: prefs.auto_save,
             persisted_zoom: prefs.zoom_factor,
             ..Self::default()
         };
@@ -121,6 +123,7 @@ impl RustdownApp {
             side_by_side_scroll_sync: self.side_by_side_scroll_sync,
             zoom_factor: zoom,
             mode: self.mode.as_str().to_owned(),
+            auto_save: self.auto_save,
         };
         prefs.save();
     }
@@ -184,6 +187,37 @@ impl RustdownApp {
             return;
         }
         self.refresh_stats_now();
+    }
+
+    pub(crate) fn tick_auto_save(&mut self, ctx: &egui::Context) {
+        if !self.auto_save {
+            self.auto_save_due_at = None;
+            return;
+        }
+        if !self.doc.dirty || self.doc.path.is_none() {
+            self.auto_save_due_at = None;
+            return;
+        }
+        if self.disk.conflict.is_some() || self.disk.reload_in_flight {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let due = *self
+            .auto_save_due_at
+            .get_or_insert(now + AUTO_SAVE_INTERVAL);
+        if now < due {
+            if let Some(remaining) = due.checked_duration_since(now) {
+                ctx.request_repaint_after(remaining);
+            }
+            return;
+        }
+
+        if self.save_doc(false) {
+            self.auto_save_due_at = None;
+        } else {
+            self.auto_save_due_at = Some(now + AUTO_SAVE_RETRY);
+        }
     }
 
     pub(crate) fn note_text_changed(&mut self, defer_stats_recalc: bool) {

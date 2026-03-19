@@ -1,7 +1,7 @@
 use super::*;
 use crate::cli::{LaunchOptions, parse_launch_options};
-use crate::disk::io::{DiskRevision, atomic_write_utf8};
-use crate::disk::sync::{DiskConflict, ReloadKind};
+use crate::disk::io::{DiskRevision, atomic_write_utf8, disk_revision};
+use crate::disk::sync::{DiskConflict, DiskReadMessage, DiskReloadOutcome, ReloadKind};
 use crate::document::{EditorGalleyCache, TrackedTextBuffer, bytecount_newlines};
 use crate::scroll_math;
 use crate::search::replace_all_occurrences;
@@ -10,7 +10,7 @@ use std::{
     cell::Cell,
     ffi::OsString,
     fs,
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Instant, SystemTime},
 };
 
@@ -1032,4 +1032,634 @@ fn bundled_docs_are_parseable_and_loadable() {
     assert!(app.doc.text.len() > 500);
     assert_eq!(app.doc.text.as_str(), app.doc.base_text.as_str());
     assert!(app.doc.edit_seq > seq_before);
+}
+
+// ---------------------------------------------------------------
+// Auto-save unit tests
+// ---------------------------------------------------------------
+
+/// Build an app with a dirty document backed by a real temp file.
+fn auto_save_app(dir: &Path) -> RustdownApp {
+    let path = dir.join("auto.md");
+    let _ = atomic_write_utf8(&path, "base content\n");
+    let rev = disk_revision(&path).ok();
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.doc.path = Some(path);
+    app.doc.text = Arc::new("base content\nedited\n".to_owned());
+    app.doc.base_text = Arc::new("base content\n".to_owned());
+    app.doc.disk_rev = rev;
+    app.doc.dirty = true;
+    app
+}
+
+#[test]
+fn auto_save_fires_after_interval_and_writes_file() {
+    let dir = make_temp_dir("rustdown-autosave-fires");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    let path = app.doc.path.clone().unwrap_or_else(|| unreachable!());
+
+    // Set due_at to the past so it fires immediately.
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+
+    assert!(!app.doc.dirty, "doc should be clean after auto-save");
+    assert!(
+        app.auto_save_due_at.is_none(),
+        "due_at cleared after success"
+    );
+    let on_disk = read_file(&path);
+    assert_eq!(on_disk, "base content\nedited\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_skips_when_not_dirty() {
+    let dir = make_temp_dir("rustdown-autosave-clean");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    app.doc.dirty = false;
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+
+    app.tick_auto_save(&ctx);
+
+    // due_at should be cleared (not dirty → nothing to do).
+    assert!(app.auto_save_due_at.is_none());
+    // File should still have original content.
+    let path = app.doc.path.clone().unwrap_or_else(|| unreachable!());
+    assert_eq!(read_file(&path), "base content\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_skips_untitled_documents() {
+    let ctx = warm_ctx();
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.doc.text = Arc::new("some text".to_owned());
+    app.doc.dirty = true;
+    // No path set.
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+
+    app.tick_auto_save(&ctx);
+
+    // due_at cleared (no path → nothing to save).
+    assert!(app.auto_save_due_at.is_none());
+}
+
+#[test]
+fn auto_save_skips_when_disabled() {
+    let dir = make_temp_dir("rustdown-autosave-disabled");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    app.auto_save = false;
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+
+    app.tick_auto_save(&ctx);
+
+    // due_at cleared (disabled → no timer).
+    assert!(app.auto_save_due_at.is_none());
+    assert!(app.doc.dirty, "doc should still be dirty");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_skips_when_conflict_pending() {
+    let dir = make_temp_dir("rustdown-autosave-conflict");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.disk.conflict = Some(DiskConflict {
+        disk_text: "d".into(),
+        disk_rev: test_rev(1, 1),
+        conflict_marked: "cm".into(),
+        ours_wins: "ow".into(),
+    });
+
+    app.tick_auto_save(&ctx);
+
+    // due_at preserved (conflict blocks save, but timer stays for retry).
+    assert!(app.auto_save_due_at.is_some());
+    assert!(app.doc.dirty);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_skips_when_reload_in_flight() {
+    let dir = make_temp_dir("rustdown-autosave-inflight");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.disk.reload_in_flight = true;
+
+    app.tick_auto_save(&ctx);
+
+    // due_at preserved (reload in flight blocks save, timer stays).
+    assert!(app.auto_save_due_at.is_some());
+    assert!(app.doc.dirty);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_schedules_due_at_on_first_dirty_tick() {
+    let dir = make_temp_dir("rustdown-autosave-schedule");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+    assert!(app.auto_save_due_at.is_none());
+
+    let before = Instant::now();
+    app.tick_auto_save(&ctx);
+    let after = Instant::now();
+
+    // Should have scheduled a future auto-save.
+    assert!(app.auto_save_due_at.is_some());
+    let due = app.auto_save_due_at.unwrap_or_else(|| unreachable!());
+    assert!(due >= before + AUTO_SAVE_INTERVAL);
+    assert!(due <= after + AUTO_SAVE_INTERVAL);
+    // Doc still dirty (interval hasn't elapsed yet).
+    assert!(app.doc.dirty);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_retries_on_failure() {
+    let ctx = warm_ctx();
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    // Point to a path whose parent directory doesn't exist → write will fail.
+    let dir = make_temp_dir("rustdown-autosave-retry");
+    let bad_path = dir.join("no_such_parent").join("file.md");
+    app.doc.path = Some(bad_path);
+    app.doc.text = Arc::new("content".to_owned());
+    app.doc.base_text = Arc::new(String::new());
+    app.doc.dirty = true;
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+
+    let before = Instant::now();
+    app.tick_auto_save(&ctx);
+
+    // Save failed → doc still dirty, due_at rescheduled with retry delay.
+    assert!(app.doc.dirty);
+    assert!(app.auto_save_due_at.is_some());
+    let retry = app.auto_save_due_at.unwrap_or_else(|| unreachable!());
+    assert!(retry >= before + AUTO_SAVE_RETRY);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manual_save_clears_auto_save_timer() {
+    let dir = make_temp_dir("rustdown-autosave-manual-clears");
+    let ctx = warm_ctx();
+    let mut app = auto_save_app(&dir);
+
+    // Schedule auto-save for the future.
+    app.auto_save_due_at = Some(Instant::now() + Duration::from_secs(100));
+
+    // Manual save.
+    assert!(app.save_doc(false));
+    assert!(!app.doc.dirty);
+
+    // Next tick should clear due_at since doc is no longer dirty.
+    app.tick_auto_save(&ctx);
+    assert!(app.auto_save_due_at.is_none());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_save_preference_persisted_in_round_trip() {
+    let mut app = RustdownApp::default();
+    app.auto_save = false;
+    // Build the prefs struct the same way save_preferences_with_zoom does.
+    let prefs = preferences::UserPreferences {
+        nav_visible: app.nav.visible,
+        heading_color_mode: app.heading_color_mode,
+        side_by_side_scroll_sync: app.side_by_side_scroll_sync,
+        zoom_factor: 1.0,
+        mode: app.mode.as_str().to_owned(),
+        auto_save: app.auto_save,
+    };
+    let serialized = toml::to_string_pretty(&prefs).unwrap_or_default();
+    assert!(serialized.contains("auto_save = false"));
+    let loaded: preferences::UserPreferences = toml::from_str(&serialized).unwrap_or_default();
+    assert!(!loaded.auto_save);
+}
+
+// ---------------------------------------------------------------
+// drain_disk_read_results unit tests
+// ---------------------------------------------------------------
+
+/// Set up an app with a read channel and send a message into it.
+fn app_with_read_message(msg: DiskReadMessage) -> RustdownApp {
+    let mut app = RustdownApp::default();
+    app.doc.path = Some(msg.path.clone());
+    app.disk.reload_nonce = msg.nonce;
+    app.doc.edit_seq = msg.edit_seq;
+    app.disk.reload_in_flight = true;
+    let (tx, rx) = mpsc::channel();
+    tx.send(msg).ok();
+    app.disk.read_tx = Some(tx);
+    app.disk.read_rx = Some(rx);
+    app
+}
+
+#[test]
+fn drain_results_clean_replace() {
+    let rev = test_rev(5, 10);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "new content".into(),
+            disk_rev: rev,
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    app.drain_disk_read_results();
+
+    assert_eq!(app.doc.text.as_str(), "new content");
+    assert_eq!(app.doc.base_text.as_str(), "new content");
+    assert_eq!(app.doc.disk_rev, Some(rev));
+    assert!(!app.doc.dirty);
+    assert!(!app.disk.reload_in_flight);
+}
+
+#[test]
+fn drain_results_merge_clean() {
+    let rev = test_rev(5, 20);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::MergeClean {
+            merged_text: "merged result".into(),
+            disk_text: "disk version".into(),
+            disk_rev: rev,
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    app.drain_disk_read_results();
+
+    assert_eq!(app.doc.text.as_str(), "merged result");
+    assert_eq!(app.doc.base_text.as_str(), "disk version");
+    assert!(app.doc.dirty, "merged state should be dirty");
+    assert!(!app.disk.reload_in_flight);
+}
+
+#[test]
+fn drain_results_merge_conflict() {
+    let rev = test_rev(5, 20);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::MergeConflict {
+            disk_text: "disk".into(),
+            disk_rev: rev,
+            conflict_marked: "<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n".into(),
+            ours_wins: "O\n".into(),
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    app.drain_disk_read_results();
+
+    assert!(app.disk.conflict.is_some());
+    let c = app.disk.conflict.as_ref().unwrap_or_else(|| unreachable!());
+    assert_eq!(c.disk_text, "disk");
+    assert!(c.conflict_marked.contains("<<<<<<<"));
+    assert!(!app.disk.reload_in_flight);
+}
+
+#[test]
+fn drain_results_stale_nonce_ignored() {
+    let rev = test_rev(5, 10);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "stale".into(),
+            disk_rev: rev,
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    // Bump nonce so the message is stale.
+    app.disk.reload_nonce = 99;
+    app.drain_disk_read_results();
+
+    // Text unchanged — stale message was ignored.
+    assert_eq!(app.doc.text.as_str(), "");
+    assert!(app.disk.reload_in_flight, "still in flight (stale ignored)");
+}
+
+#[test]
+fn drain_results_path_mismatch_ignored() {
+    let rev = test_rev(5, 10);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "wrong doc".into(),
+            disk_rev: rev,
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    // Change doc path so the message doesn't match.
+    app.doc.path = Some(PathBuf::from("other.md"));
+    app.drain_disk_read_results();
+
+    assert_eq!(app.doc.text.as_str(), "");
+    assert!(app.disk.reload_in_flight);
+}
+
+#[test]
+fn drain_results_edit_seq_mismatch_reschedules() {
+    let rev = test_rev(5, 10);
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "outdated".into(),
+            disk_rev: rev,
+        }),
+    };
+    let mut app = app_with_read_message(msg);
+    // Simulate user editing after reload started.
+    app.doc.edit_seq = 5;
+    app.drain_disk_read_results();
+
+    // Text unchanged — edit_seq mismatch triggered reschedule.
+    assert_eq!(app.doc.text.as_str(), "");
+    assert!(!app.disk.reload_in_flight, "cleared on seq mismatch");
+    assert!(app.disk.pending_reload_at.is_some(), "reload rescheduled");
+}
+
+#[test]
+fn drain_results_io_error_sets_error() {
+    let msg = DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file gone",
+        )),
+    };
+    let mut app = app_with_read_message(msg);
+    app.drain_disk_read_results();
+
+    assert!(app.error.is_some());
+    assert!(
+        app.error
+            .as_ref()
+            .unwrap_or_else(|| unreachable!())
+            .contains("file gone")
+    );
+    assert!(!app.disk.reload_in_flight);
+}
+
+#[test]
+fn drain_results_channel_disconnect_clears_channels() {
+    let mut app = RustdownApp::default();
+    app.doc.path = Some(PathBuf::from("note.md"));
+    app.disk.reload_in_flight = true;
+
+    // Create channel then immediately drop the sender.
+    let (tx, rx) = mpsc::channel::<DiskReadMessage>();
+    drop(tx);
+    app.disk.read_rx = Some(rx);
+
+    app.drain_disk_read_results();
+
+    assert!(!app.disk.reload_in_flight);
+    assert!(app.disk.read_rx.is_none());
+    assert!(app.disk.read_tx.is_none());
+}
+
+#[test]
+fn drain_results_multiple_messages_processes_matching() {
+    let rev1 = test_rev(1, 5);
+    let rev2 = test_rev(2, 10);
+    let (tx, rx) = mpsc::channel();
+
+    // First message: stale nonce → ignored.
+    tx.send(DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 1,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "stale".into(),
+            disk_rev: rev1,
+        }),
+    })
+    .ok();
+    // Second message: matching nonce → applied.
+    tx.send(DiskReadMessage {
+        path: PathBuf::from("note.md"),
+        nonce: 2,
+        edit_seq: 0,
+        outcome: Ok(DiskReloadOutcome::Replace {
+            disk_text: "current".into(),
+            disk_rev: rev2,
+        }),
+    })
+    .ok();
+
+    let mut app = RustdownApp::default();
+    app.doc.path = Some(PathBuf::from("note.md"));
+    app.disk.reload_nonce = 2;
+    app.doc.edit_seq = 0;
+    app.disk.reload_in_flight = true;
+    app.disk.read_tx = Some(tx);
+    app.disk.read_rx = Some(rx);
+
+    app.drain_disk_read_results();
+
+    assert_eq!(app.doc.text.as_str(), "current");
+    assert!(!app.disk.reload_in_flight);
+}
+
+// ---------------------------------------------------------------
+// Integration tests — auto-save with real files + live editing
+// ---------------------------------------------------------------
+
+#[test]
+fn integration_auto_save_writes_dirty_content_to_disk() {
+    let dir = make_temp_dir("rustdown-int-autosave-write");
+    let path = dir.join("doc.md");
+    let _ = atomic_write_utf8(&path, "original\n");
+    let ctx = warm_ctx();
+
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.load_document(
+        path.clone(),
+        "original\n".to_owned(),
+        disk_revision(&path).ok(),
+    );
+
+    // Simulate user edit.
+    app.doc.text = Arc::new("original\nnew line\n".to_owned());
+    app.note_text_changed(false);
+
+    // Force auto-save to fire.
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+
+    assert!(!app.doc.dirty);
+    assert_eq!(read_file(&path), "original\nnew line\n");
+    assert_eq!(app.doc.base_text.as_str(), "original\nnew line\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn integration_external_change_merged_on_auto_save() {
+    let dir = make_temp_dir("rustdown-int-autosave-merge");
+    let path = dir.join("doc.md");
+    let _ = atomic_write_utf8(&path, "line1\nline2\nline3\n");
+    let ctx = warm_ctx();
+
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.load_document(
+        path.clone(),
+        "line1\nline2\nline3\n".to_owned(),
+        disk_revision(&path).ok(),
+    );
+
+    // User edits line 3.
+    app.doc.text = Arc::new("line1\nline2\nuser-edited\n".to_owned());
+    app.note_text_changed(false);
+
+    // External process edits line 1.
+    let _ = atomic_write_utf8(&path, "external\nline2\nline3\n");
+
+    // Auto-save triggers → pre-save reload detects change → 3-way merge.
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+
+    // Merge should combine both edits.
+    if app.disk.conflict.is_none() {
+        assert!(!app.doc.dirty);
+        let on_disk = read_file(&path);
+        assert!(on_disk.contains("external"), "disk edit preserved");
+        assert!(on_disk.contains("user-edited"), "user edit preserved");
+    }
+    // If conflict occurred (unlikely for disjoint edits), that's also valid.
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn integration_auto_save_blocked_by_conflict_then_resumes() {
+    let dir = make_temp_dir("rustdown-int-autosave-blocked");
+    let path = dir.join("doc.md");
+    let _ = atomic_write_utf8(&path, "shared line\n");
+    let ctx = warm_ctx();
+
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.load_document(
+        path.clone(),
+        "shared line\n".to_owned(),
+        disk_revision(&path).ok(),
+    );
+
+    // Both user and external edit the same line → conflict.
+    app.doc.text = Arc::new("user version\n".to_owned());
+    app.note_text_changed(false);
+    let _ = atomic_write_utf8(&path, "external version\n");
+
+    // Auto-save triggers, pre-save reload detects conflict.
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+
+    if app.disk.conflict.is_some() {
+        // Conflict blocks further auto-saves.
+        app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+        app.tick_auto_save(&ctx);
+        assert!(app.disk.conflict.is_some(), "conflict still pending");
+
+        // Resolve conflict with KeepMine.
+        app.apply_conflict_choice(ConflictChoice::KeepMineWriteSidecar);
+        assert!(app.disk.conflict.is_none());
+
+        // Auto-save can now proceed (doc is dirty after conflict resolution).
+        if app.doc.dirty {
+            app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+            app.tick_auto_save(&ctx);
+            assert!(!app.doc.dirty, "saved after conflict resolution");
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn integration_successive_auto_saves_track_base_text() {
+    let dir = make_temp_dir("rustdown-int-autosave-successive");
+    let path = dir.join("doc.md");
+    let _ = atomic_write_utf8(&path, "v1\n");
+    let ctx = warm_ctx();
+
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.load_document(path.clone(), "v1\n".to_owned(), disk_revision(&path).ok());
+
+    // First edit + auto-save.
+    app.doc.text = Arc::new("v2\n".to_owned());
+    app.note_text_changed(false);
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+    assert_eq!(app.doc.base_text.as_str(), "v2\n");
+    assert_eq!(read_file(&path), "v2\n");
+
+    // Second edit + auto-save.
+    app.doc.text = Arc::new("v3\n".to_owned());
+    app.note_text_changed(false);
+    app.auto_save_due_at = Some(Instant::now() - Duration::from_secs(1));
+    app.tick_auto_save(&ctx);
+    assert_eq!(app.doc.base_text.as_str(), "v3\n");
+    assert_eq!(read_file(&path), "v3\n");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn integration_load_document_clears_auto_save_timer() {
+    let dir = make_temp_dir("rustdown-int-load-clears-timer");
+    let path = dir.join("a.md");
+    let _ = atomic_write_utf8(&path, "aaa");
+    let ctx = warm_ctx();
+
+    let mut app = RustdownApp::default();
+    app.auto_save = true;
+    app.load_document(path.clone(), "aaa".to_owned(), disk_revision(&path).ok());
+    app.doc.text = Arc::new("edited".to_owned());
+    app.note_text_changed(false);
+    app.auto_save_due_at = Some(Instant::now() + Duration::from_secs(100));
+
+    // Load a different document.
+    let path2 = dir.join("b.md");
+    let _ = atomic_write_utf8(&path2, "bbb");
+    app.load_document(path2, "bbb".to_owned(), None);
+
+    // After load, doc is clean → auto-save tick clears the timer.
+    app.tick_auto_save(&ctx);
+    assert!(app.auto_save_due_at.is_none());
+    assert!(!app.doc.dirty);
+
+    let _ = fs::remove_dir_all(&dir);
 }

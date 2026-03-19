@@ -312,7 +312,7 @@ impl RustdownApp {
         });
     }
 
-    fn drain_disk_read_results(&mut self) {
+    pub(crate) fn drain_disk_read_results(&mut self) {
         loop {
             let recv = match self.disk.read_rx.as_ref() {
                 Some(rx) => rx.try_recv(),

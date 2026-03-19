@@ -8,12 +8,14 @@ pub const AUTO_NAV_MIN_HEADINGS: usize = 5;
 /// User preferences persisted between sessions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct UserPreferences {
     pub nav_visible: bool,
     pub heading_color_mode: bool,
     pub side_by_side_scroll_sync: bool,
     pub zoom_factor: f32,
     pub mode: String,
+    pub auto_save: bool,
 }
 
 impl Default for UserPreferences {
@@ -24,6 +26,7 @@ impl Default for UserPreferences {
             side_by_side_scroll_sync: true,
             zoom_factor: 1.0,
             mode: String::new(),
+            auto_save: true,
         }
     }
 }
@@ -77,6 +80,7 @@ mod tests {
         assert!(!prefs.nav_visible);
         assert!(prefs.heading_color_mode);
         assert!(prefs.side_by_side_scroll_sync);
+        assert!(prefs.auto_save);
     }
 
     #[test]
@@ -87,6 +91,7 @@ mod tests {
             side_by_side_scroll_sync: false,
             zoom_factor: 1.5,
             mode: "preview".to_owned(),
+            auto_save: false,
         };
         let serialized = toml::to_string_pretty(&prefs).unwrap_or_default();
         assert!(!serialized.is_empty(), "serialize should produce output");
@@ -94,6 +99,7 @@ mod tests {
         assert!(deserialized.nav_visible);
         assert!(!deserialized.heading_color_mode);
         assert!(!deserialized.side_by_side_scroll_sync);
+        assert!(!deserialized.auto_save);
     }
 
     #[test]
@@ -150,6 +156,7 @@ mod tests {
             side_by_side_scroll_sync: false,
             zoom_factor: 1.5,
             mode: "preview".to_owned(),
+            auto_save: false,
         };
         if let Ok(contents) = toml::to_string_pretty(&prefs) {
             let _ = fs::write(&path, &contents);
@@ -160,6 +167,7 @@ mod tests {
             assert!(loaded.nav_visible);
             assert!(!loaded.heading_color_mode);
             assert!(!loaded.side_by_side_scroll_sync);
+            assert!(!loaded.auto_save);
         }
 
         let _ = fs::remove_dir_all(&dir);
