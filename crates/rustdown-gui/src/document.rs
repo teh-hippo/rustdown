@@ -71,11 +71,6 @@ impl Document {
             .map_or_else(|| Cow::Borrowed("Unsaved"), |path| path.to_string_lossy())
     }
 
-    #[must_use]
-    pub const fn stats(&self) -> DocumentStats {
-        self.stats
-    }
-
     /// Mark the document as having been edited — sets dirty flags and
     /// records the edit timestamp.
     pub fn mark_text_changed(&mut self) {
@@ -123,7 +118,7 @@ impl DocumentStats {
         let lines = if text.is_empty() {
             1
         } else {
-            1 + bytecount_newlines(text)
+            1 + rustdown_md::bytecount_newlines(text.as_bytes())
         };
         let words = text.split_whitespace().count();
         Self { lines, words }
@@ -134,10 +129,6 @@ impl Default for DocumentStats {
     fn default() -> Self {
         Self { lines: 1, words: 0 }
     }
-}
-
-pub fn bytecount_newlines(text: &str) -> usize {
-    rustdown_md::bytecount_newlines(text.as_bytes())
 }
 
 #[derive(Clone)]
@@ -224,9 +215,10 @@ mod tests {
 
     #[test]
     fn bytecount_cases() {
-        assert_eq!(bytecount_newlines(""), 0);
-        assert_eq!(bytecount_newlines("hello world"), 0);
-        assert_eq!(bytecount_newlines("a\nb\nc\n"), 3);
+        let count = |s: &str| rustdown_md::bytecount_newlines(s.as_bytes());
+        assert_eq!(count(""), 0);
+        assert_eq!(count("hello world"), 0);
+        assert_eq!(count("a\nb\nc\n"), 3);
     }
 
     // ── TrackedTextBuffer ─────────────────────────────────────────────

@@ -143,7 +143,7 @@ fn first_markdown_path<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<
 }
 
 #[must_use]
-pub fn default_image_uri_scheme(path: Option<&Path>) -> String {
+pub(crate) fn default_image_uri_scheme(path: Option<&Path>) -> String {
     let Some(parent) = path.and_then(Path::parent) else {
         return "file://".to_owned();
     };

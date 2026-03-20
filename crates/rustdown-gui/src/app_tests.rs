@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::{LaunchOptions, parse_launch_options};
 use crate::disk::io::{DiskRevision, atomic_write_utf8, disk_revision};
 use crate::disk::sync::{DiskConflict, DiskReadMessage, DiskReloadOutcome, ReloadKind};
-use crate::document::{EditorGalleyCache, TrackedTextBuffer, bytecount_newlines};
+use crate::document::{EditorGalleyCache, TrackedTextBuffer};
 use crate::scroll_math;
 use crate::search::replace_all_occurrences;
 use std::{
@@ -216,7 +216,7 @@ fn document_stats_and_path_helpers() {
         );
     }
     assert_eq!(DocumentStats::from_text(""), DocumentStats::default());
-    assert_eq!(Document::default().stats(), DocumentStats::from_text(""));
+    assert_eq!(Document::default().stats, DocumentStats::from_text(""));
 
     assert!(is_markdown_path(Path::new("note.md")));
     assert!(is_markdown_path(Path::new("README.Markdown")));
@@ -498,7 +498,11 @@ fn document_metadata_title_path_debounce_and_bytecount() {
         ("3 nl", "a\nb\nc\n", 3),
         ("all nl", "\n\n\n", 3),
     ] {
-        assert_eq!(bytecount_newlines(text), expected, "{label}");
+        assert_eq!(
+            rustdown_md::bytecount_newlines(text.as_bytes()),
+            expected,
+            "{label}"
+        );
     }
 }
 

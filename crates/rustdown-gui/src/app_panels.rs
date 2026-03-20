@@ -13,6 +13,11 @@ use crate::{
     editor, highlight,
 };
 
+/// Toolbar-scaled proportional font (85% of body size).
+fn toolbar_font(ui: &egui::Ui) -> egui::FontId {
+    egui::FontId::proportional(ui.text_style_height(&egui::TextStyle::Body) * 0.85)
+}
+
 impl RustdownApp {
     /// Read keyboard/mouse input and dispatch the matching actions (open, save,
     /// zoom, search, format, mode-cycle, etc.).  Skipped when a dialog is open
@@ -118,9 +123,8 @@ impl RustdownApp {
     /// format button, and navigation toggle.
     pub(crate) fn show_toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("toolbar").show(ctx, |ui| {
-            let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
-            let toolbar_font = egui::FontId::proportional(toolbar_size);
-            let tb = |text: &str| egui::RichText::new(text).font(toolbar_font.clone());
+            let font = toolbar_font(ui);
+            let tb = |text: &str| egui::RichText::new(text).font(font.clone());
 
             ui.horizontal(|ui| {
                 for mode in [Mode::Edit, Mode::Preview, Mode::SideBySide] {
@@ -247,19 +251,17 @@ impl RustdownApp {
     pub(crate) fn show_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let mut clear_error = false;
-
-            let toolbar_size = ui.text_style_height(&egui::TextStyle::Body) * 0.85;
-            let toolbar_font = egui::FontId::proportional(toolbar_size);
-            let tb = |text: &str| egui::RichText::new(text).font(toolbar_font.clone());
+            let font = toolbar_font(ui);
+            let tb = |text: &str| egui::RichText::new(text).font(font.clone());
 
             ui.horizontal(|ui| {
                 ui.label(tb(&self.doc.path_label()));
-                let stats = self.doc.stats();
+                let stats = self.doc.stats;
 
                 ui.separator();
                 ui.label(
                     egui::RichText::new(format!("{} lines · {} words", stats.lines, stats.words))
-                        .font(toolbar_font.clone()),
+                        .font(font.clone()),
                 );
 
                 if self.doc.dirty {
@@ -476,24 +478,21 @@ impl RustdownApp {
         let uri = &self.doc.image_uri_scheme;
         let c = &self.preview_style_cache;
 
-        let needs_rebuild = match &c.style {
-            Some(_) => c.dark_mode != dark || c.colored != colored || c.image_uri != *uri,
-            None => true,
-        };
-
-        if needs_rebuild {
-            let mut style = if colored {
-                MarkdownStyle::colored(visuals)
-            } else {
-                MarkdownStyle::from_visuals(visuals)
-            };
-            style.image_base_uri.clone_from(uri);
-            let c = &mut self.preview_style_cache;
-            c.dark_mode = dark;
-            c.colored = colored;
-            c.image_uri.clone_from(uri);
-            c.style = Some(style);
+        if c.style.is_some() && c.dark_mode == dark && c.colored == colored && c.image_uri == *uri {
+            return;
         }
+
+        let mut style = if colored {
+            MarkdownStyle::colored(visuals)
+        } else {
+            MarkdownStyle::from_visuals(visuals)
+        };
+        style.image_base_uri.clone_from(uri);
+        let c = &mut self.preview_style_cache;
+        c.dark_mode = dark;
+        c.colored = colored;
+        c.image_uri.clone_from(uri);
+        c.style = Some(style);
     }
 
     pub(crate) fn show_preview(&mut self, ui: &mut egui::Ui) {

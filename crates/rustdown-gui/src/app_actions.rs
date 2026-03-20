@@ -128,14 +128,12 @@ impl RustdownApp {
         prefs.save();
     }
 
-    #[allow(clippy::unused_self)]
     pub(crate) fn adjust_zoom(&self, ctx: &egui::Context, delta: f32) {
         let z = zoom_with_step(ctx.zoom_factor(), delta);
         ctx.set_zoom_factor(z);
         self.save_preferences_with_zoom(z);
     }
 
-    #[allow(clippy::unused_self)]
     pub(crate) fn adjust_zoom_factor(&self, ctx: &egui::Context, factor: f32) {
         let z = zoom_with_factor(ctx.zoom_factor(), factor);
         ctx.set_zoom_factor(z);

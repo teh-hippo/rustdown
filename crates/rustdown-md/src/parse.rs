@@ -97,7 +97,7 @@ const NO_LINK: u8 = u8::MAX;
 impl SpanStyle {
     #[cfg(test)]
     #[must_use]
-    pub const fn plain() -> Self {
+    pub(crate) const fn plain() -> Self {
         Self {
             flags: 0,
             link_idx: NO_LINK,
@@ -117,7 +117,7 @@ impl SpanStyle {
     }
 
     #[cfg(test)]
-    pub const fn set_strong(&mut self) {
+    pub(crate) const fn set_strong(&mut self) {
         self.flags |= FLAG_STRONG;
     }
 
@@ -128,7 +128,7 @@ impl SpanStyle {
     }
 
     #[cfg(test)]
-    pub const fn set_emphasis(&mut self) {
+    pub(crate) const fn set_emphasis(&mut self) {
         self.flags |= FLAG_EMPHASIS;
     }
 
@@ -145,7 +145,7 @@ impl SpanStyle {
     }
 
     #[cfg(test)]
-    pub const fn set_code(&mut self) {
+    pub(crate) const fn set_code(&mut self) {
         self.flags |= FLAG_CODE;
     }
 }
@@ -271,7 +271,7 @@ impl Default for StyledText {
 
 /// Parse markdown source into blocks (convenience wrapper for tests).
 #[cfg(test)]
-pub fn parse_markdown(source: &str) -> Vec<Block> {
+pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     parse_markdown_into(source, &mut blocks);
     blocks

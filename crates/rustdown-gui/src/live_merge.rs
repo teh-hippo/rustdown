@@ -93,8 +93,6 @@ pub fn merge_three_way(base: &str, ours: &str, theirs: &str) -> Merge3Outcome {
             pos = next_start;
         }
 
-        let next_ours = ours_edits.get(i_ours);
-        let next_theirs = theirs_edits.get(i_theirs);
         let (Some(oe), Some(te)) = (next_ours, next_theirs) else {
             if let Some(oe) = next_ours {
                 push_both(&mut ours_wins, &mut conflict_marked, &oe.replacement);
