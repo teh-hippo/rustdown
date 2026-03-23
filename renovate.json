@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
+  "forkProcessing": "enabled",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 7am on Monday"],
+    "commitMessageAction": "upgrade",
+    "automerge": true
+  },
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    }
+  ],
+  "commitMessagePrefix": "build(deps):",
+  "dependencyDashboard": true
+}
