@@ -1,14 +1,16 @@
-pub(super) use crate::parse::{Alignment, Block, ListItem, Span, SpanStyle, StyledText, TableData};
-pub(super) use crate::render::blocks::{
+pub(super) use crate::md::parse::{
+    Alignment, Block, ListItem, Span, SpanStyle, StyledText, TableData,
+};
+pub(super) use crate::md::render::blocks::{
     contains_dot_dot_segment, render_blocks, resolve_image_url,
 };
-pub(super) use crate::render::height::{
+pub(super) use crate::md::render::height::{
     self, estimate_block_height, estimate_table_height, estimate_text_height,
 };
-pub(super) use crate::render::layout::RenderContext;
-pub(super) use crate::render::table::compute_table_col_widths;
-pub(super) use crate::render::text::{build_layout_job, strengthen_color};
-pub(super) use crate::render::*;
+pub(super) use crate::md::render::layout::RenderContext;
+pub(super) use crate::md::render::table::compute_table_col_widths;
+pub(super) use crate::md::render::text::{build_layout_job, strengthen_color};
+pub(super) use crate::md::render::*;
 pub(super) use std::fmt::Write;
 
 pub(super) fn dark_style() -> MarkdownStyle {

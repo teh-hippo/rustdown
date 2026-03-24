@@ -94,6 +94,7 @@ impl MarkdownStyle {
     }
 
     /// Set heading font scales.
+    #[allow(dead_code)]
     pub fn set_heading_scales(&mut self, scales: [f32; 6]) {
         for (h, s) in self.headings.iter_mut().zip(scales) {
             h.font_scale = s;

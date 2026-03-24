@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::md::MarkdownCache;
 use eframe::egui;
-use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, SearchState, default_image_uri_scheme,

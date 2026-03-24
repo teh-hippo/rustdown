@@ -6,8 +6,8 @@ use super::blocks::render_blocks;
 use super::layout::RenderContext;
 use super::layout::RenderMetrics;
 use super::text::render_styled_text;
-use crate::parse::ListItem;
-use crate::style::MarkdownStyle;
+use crate::md::parse::ListItem;
+use crate::md::style::MarkdownStyle;
 
 /// Compute the number column width for an ordered list.
 ///

@@ -1,10 +1,17 @@
 [package]
-name = "rustdown"
+name = "rustdown-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "A native markdown editor with live preview, built with egui"
+keywords = ["markdown", "editor", "egui", "preview"]
+categories = ["text-editors", "gui"]
+
+[[bin]]
+name = "rustdown"
+path = "src/main.rs"
 
 [lints]
 workspace = true
@@ -13,8 +20,8 @@ workspace = true
 eframe = { version = "0.33", default-features = false, features = [
   "glow",
 ] }
+egui = { version = "0.33", default-features = false }
 egui_extras = { version = "0.33", default-features = false, features = ["file", "image", "http"] }
-rustdown-md = { path = "../rustdown-md" }
 pulldown-cmark = { version = "0.13", default-features = false }
 memchr = "2"
 rfd = { version = "0.17", default-features = false }

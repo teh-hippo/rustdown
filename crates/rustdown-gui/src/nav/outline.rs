@@ -1,5 +1,5 @@
+use crate::md::heading_level_to_u8;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use rustdown_md::heading_level_to_u8;
 
 /// A single heading extracted from a Markdown document.
 ///
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn heading_count_matches_render_heading_y_ordinals() {
-        use rustdown_md::{MarkdownCache, MarkdownStyle};
+        use crate::md::{MarkdownCache, MarkdownStyle};
         let style = MarkdownStyle::from_visuals(&eframe::egui::Visuals::dark());
         for md in [
             "# \n\n## Real\n",

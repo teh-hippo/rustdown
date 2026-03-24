@@ -6,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::md::MarkdownCache;
 use eframe::egui;
-use rustdown_md::MarkdownCache;
 
 use crate::disk::io::DiskRevision;
 
@@ -118,7 +118,7 @@ impl DocumentStats {
         let lines = if text.is_empty() {
             1
         } else {
-            1 + rustdown_md::bytecount_newlines(text.as_bytes())
+            1 + crate::md::bytecount_newlines(text.as_bytes())
         };
         let words = text.split_whitespace().count();
         Self { lines, words }
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn bytecount_cases() {
-        let count = |s: &str| rustdown_md::bytecount_newlines(s.as_bytes());
+        let count = |s: &str| crate::md::bytecount_newlines(s.as_bytes());
         assert_eq!(count(""), 0);
         assert_eq!(count("hello world"), 0);
         assert_eq!(count("a\nb\nc\n"), 3);

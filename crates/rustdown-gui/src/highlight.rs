@@ -21,9 +21,9 @@ pub fn heading_color(visuals: &egui::Visuals, level: usize, color_mode: bool) ->
     }
 
     let palette = if visuals.dark_mode {
-        &rustdown_md::DARK_HEADING_COLORS
+        &crate::md::DARK_HEADING_COLORS
     } else {
-        &rustdown_md::LIGHT_HEADING_COLORS
+        &crate::md::LIGHT_HEADING_COLORS
     };
     palette[level.saturating_sub(1).min(palette.len() - 1)]
 }
@@ -84,7 +84,7 @@ pub fn markdown_layout_job(
         w.color = visuals.weak_text_color();
         w
     };
-    let heading_scales = rustdown_md::HEADING_FONT_SCALES;
+    let heading_scales = crate::md::HEADING_FONT_SCALES;
     let heading_formats = std::array::from_fn(|idx| {
         let mut format = base.clone();
         format.font_id.size *= heading_scales[idx];

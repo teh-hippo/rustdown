@@ -5,7 +5,7 @@ fn cache_behavior() {
     // Invalidates on text change
     let mut cache = MarkdownCache::default();
     let h1 = simple_hash("# Hello");
-    cache.blocks = crate::parse::parse_markdown("# Hello");
+    cache.blocks = crate::md::parse::parse_markdown("# Hello");
     cache.text_hash = h1;
     assert_eq!(cache.blocks.len(), 1);
     assert_eq!(h1, simple_hash("# Hello"));
@@ -403,7 +403,7 @@ fn render_various_inputs_no_panic() {
     }
 
     // Smart quotes
-    let blocks = crate::parse::parse_markdown(r#"He said "hello" and she said 'world'."#);
+    let blocks = crate::md::parse::parse_markdown(r#"He said "hello" and she said 'world'."#);
     match &blocks[0] {
         Block::Paragraph(text) => {
             assert!(text.text.contains('\u{201c}') || text.text.contains('\u{201d}'));
@@ -432,7 +432,7 @@ fn render_various_inputs_no_panic() {
 fn heading_style_and_rendering() {
     // Colors applied
     let style = dark_colored_style();
-    for (i, expected) in crate::DARK_HEADING_COLORS.iter().enumerate() {
+    for (i, expected) in crate::md::DARK_HEADING_COLORS.iter().enumerate() {
         assert_eq!(style.headings[i].color, *expected, "heading {i} colour");
     }
     // Scales descend
@@ -730,12 +730,12 @@ fn scrollable_render_basics() {
 
     // Stress docs: full render + 1KB parse
     let generators: Vec<(&str, fn(usize) -> String)> = vec![
-        ("large_mixed", crate::stress::large_mixed_doc),
-        ("unicode", crate::stress::unicode_stress_doc),
-        ("table_heavy", crate::stress::table_heavy_doc),
-        ("emoji", crate::stress::emoji_heavy_doc),
-        ("task_list", crate::stress::task_list_doc),
-        ("pathological", crate::stress::pathological_doc),
+        ("large_mixed", crate::md::stress::large_mixed_doc),
+        ("unicode", crate::md::stress::unicode_stress_doc),
+        ("table_heavy", crate::md::stress::table_heavy_doc),
+        ("emoji", crate::md::stress::emoji_heavy_doc),
+        ("task_list", crate::md::stress::task_list_doc),
+        ("pathological", crate::md::stress::pathological_doc),
     ];
     for (label, generator) in &generators {
         let doc = generator(100);
@@ -744,13 +744,13 @@ fn scrollable_render_basics() {
         assert!(height > 0.0, "{label}: should have positive height");
         let doc1 = generator(1);
         assert!(!doc1.is_empty(), "{label}: 1KB doc should be non-empty");
-        let parsed = crate::parse::parse_markdown(&doc1);
+        let parsed = crate::md::parse::parse_markdown(&doc1);
         assert!(!parsed.is_empty(), "{label}: should produce blocks");
     }
-    for (label, doc) in crate::stress::minimal_docs() {
+    for (label, doc) in crate::md::stress::minimal_docs() {
         let (_, height) = headless_render(&doc);
         assert!(height >= 0.0, "minimal doc '{label}' should render");
-        let blocks = crate::parse::parse_markdown(&doc);
+        let blocks = crate::md::parse::parse_markdown(&doc);
         assert!(
             !doc.is_empty() || blocks.is_empty(),
             "minimal '{label}': non-empty doc should parse"
@@ -780,7 +780,7 @@ fn viewport_culling_and_monotonicity() {
     assert_eq!(c1.blocks.len(), c2.blocks.len());
 
     // cum_y monotonically increases on large mixed doc
-    let doc = crate::stress::large_mixed_doc(50);
+    let doc = crate::md::stress::large_mixed_doc(50);
     let mut cache = MarkdownCache::default();
     cache.ensure_parsed(&doc);
     cache.ensure_heights(14.0, 900.0, &style);
@@ -794,7 +794,7 @@ fn viewport_culling_and_monotonicity() {
 
 #[test]
 fn render_comprehensive_stress_test() {
-    let md = include_str!("../../../../../test-assets/stress-test.md");
+    let md = include_str!("../../../../../../test-assets/stress-test.md");
     let (blocks, height) = headless_render(md);
     assert!(blocks.len() > 30);
     assert!(height > 1000.0);
@@ -1291,7 +1291,7 @@ fn strikethrough_color_matches_strong_text_color() {
     let _ = ctx.run(raw_input_1024x768(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Parse markdown with both strong and strikethrough.
-            let blocks = crate::parse::parse_markdown("**~~bold strike~~**");
+            let blocks = crate::md::parse::parse_markdown("**~~bold strike~~**");
             let st = match &blocks[0] {
                 Block::Paragraph(st) => st,
                 other => panic!("expected Paragraph, got {other:?}"),
@@ -1367,7 +1367,7 @@ fn strengthen_color_near_extremes_identity() {
 #[test]
 fn code_inside_link_has_background() {
     // Parse: [`code_text`](url) — code inside a link.
-    let blocks = crate::parse::parse_markdown("[`code_text`](https://example.com)");
+    let blocks = crate::md::parse::parse_markdown("[`code_text`](https://example.com)");
     let st = match &blocks[0] {
         Block::Paragraph(st) => st,
         other => panic!("expected Paragraph, got {other:?}"),
@@ -1581,10 +1581,10 @@ fn viewport_structural_invariants() {
     // Structural invariants across doc types
     let test_docs: Vec<(&str, String)> = vec![
         ("uniform_10k", uniform_paragraph_doc(10_500)),
-        ("mixed", crate::stress::large_mixed_doc(200)),
+        ("mixed", crate::md::stress::large_mixed_doc(200)),
         ("single", "# H\n".to_owned()),
         ("many", uniform_paragraph_doc(500)),
-        ("pathological", crate::stress::pathological_doc(50)),
+        ("pathological", crate::md::stress::pathological_doc(50)),
     ];
     for (label, doc) in &test_docs {
         let cache = build_cache(doc);
@@ -1626,7 +1626,7 @@ fn viewport_structural_invariants() {
     );
 
     // Pathological doc viewport sweep
-    let cache = build_cache(&crate::stress::pathological_doc(50));
+    let cache = build_cache(&crate::md::stress::pathological_doc(50));
     let step = cache.total_height / 100.0;
     for i in 0..=110 {
         let vis_top = step * i as f32;
@@ -1739,7 +1739,7 @@ fn viewport_edge_cases() {
 #[test]
 fn viewport_stress_tests() {
     // Multiple viewport widths with stress test
-    let md = include_str!("../../../../../test-assets/stress-test.md");
+    let md = include_str!("../../../../../../test-assets/stress-test.md");
     let style = dark_colored_style();
     for &width in &[320.0_f32, 768.0, 1024.0, 1920.0] {
         let ctx = headless_ctx();
@@ -2106,12 +2106,12 @@ fn height_accuracy_and_scrollable_stress() {
 
     // Scrollable stress across doc types
     let generators: Vec<(&str, String)> = vec![
-        ("large_mixed", crate::stress::large_mixed_doc(20)),
-        ("unicode", crate::stress::unicode_stress_doc(10)),
-        ("table_heavy", crate::stress::table_heavy_doc(10)),
-        ("emoji", crate::stress::emoji_heavy_doc(10)),
-        ("task_list", crate::stress::task_list_doc(10)),
-        ("pathological", crate::stress::pathological_doc(10)),
+        ("large_mixed", crate::md::stress::large_mixed_doc(20)),
+        ("unicode", crate::md::stress::unicode_stress_doc(10)),
+        ("table_heavy", crate::md::stress::table_heavy_doc(10)),
+        ("emoji", crate::md::stress::emoji_heavy_doc(10)),
+        ("task_list", crate::md::stress::task_list_doc(10)),
+        ("pathological", crate::md::stress::pathological_doc(10)),
     ];
     for (label, doc) in &generators {
         for &frac in &[0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -2622,7 +2622,7 @@ fn hash_correctness() {
 #[test]
 fn tight_loop_no_drift() {
     let style = dark_style();
-    let doc = crate::stress::large_mixed_doc(10);
+    let doc = crate::md::stress::large_mixed_doc(10);
     let mut cache = MarkdownCache::default();
     cache.ensure_parsed(&doc);
     cache.ensure_heights(14.0, 600.0, &style);
@@ -2910,10 +2910,10 @@ fn render_edge_case_structures_no_panic() {
     // Bad spans should not panic.
     let st = StyledText {
         text: "hello".to_owned(),
-        spans: vec![crate::parse::Span {
+        spans: vec![crate::md::parse::Span {
             start: 0,
             end: 100,
-            style: crate::parse::SpanStyle::default(),
+            style: crate::md::parse::SpanStyle::default(),
         }],
         ..StyledText::default()
     };
@@ -3190,7 +3190,7 @@ fn issue2_list_child_blocks_ignore_indent() {
         "\n",
         "2. Second item\n",
     );
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
 
     // The first block should be an ordered list.
     match &blocks[0] {
@@ -3231,7 +3231,7 @@ fn issue2_list_child_blocks_ignore_indent() {
 fn issue3_link_text_per_span_widgets() {
     // Parse text with an inline link — confirm spans and link presence.
     let md = "Click [here](https://example.com) to continue.\n";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Paragraph(st) => {
             assert!(st.has_links, "should detect links");
@@ -3257,7 +3257,7 @@ fn issue4_table_alignment_layouts() {
         "|:-----|:------:|------:|\n",
         "| a    | b      | c     |\n",
     );
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Table(table) => {
             assert_eq!(table.alignments.len(), 3);
@@ -3319,7 +3319,7 @@ fn issue6_heading_spacing_values() {
 
 #[test]
 fn issue7_demo_md_medium_image_url() {
-    let demo = include_str!("../../../../rustdown-gui/src/bundled/demo.md");
+    let demo = include_str!("../../../bundled/demo.md");
     // Find the line with "Medium test image".
     let medium_line = demo
         .lines()
@@ -3339,7 +3339,7 @@ fn issue7_demo_md_medium_image_url() {
 #[test]
 fn issue8_empty_heading_renders_spacing() {
     // Parse an empty H2 heading.
-    let blocks = crate::parse::parse_markdown("##\n");
+    let blocks = crate::md::parse::parse_markdown("##\n");
     match &blocks[0] {
         Block::Heading { level, text } => {
             assert_eq!(*level, 2);

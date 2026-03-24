@@ -1,7 +1,7 @@
 use std::cell::Cell;
 
+use crate::md::{MarkdownStyle, MarkdownViewer};
 use eframe::egui;
-use rustdown_md::{MarkdownStyle, MarkdownViewer};
 
 use super::{
     BundledDoc, ConflictChoice, DEBOUNCE, Mode, PANEL_EDGE_PADDING, PendingAction, RustdownApp,
