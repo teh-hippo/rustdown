@@ -4,8 +4,8 @@
 
 use super::layout::RenderMetrics;
 use super::text::{render_styled_text, render_styled_text_ex, strengthen_color};
-use crate::parse::{Alignment, StyledText};
-use crate::style::MarkdownStyle;
+use crate::md::parse::{Alignment, StyledText};
+use crate::md::style::MarkdownStyle;
 
 /// Compute column widths for a table from content, with optional
 /// normalisation to fill available space.
@@ -178,8 +178,8 @@ pub(super) fn render_table_cell(
 #[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
-    use crate::parse::StyledText;
-    use crate::style::MarkdownStyle;
+    use crate::md::parse::StyledText;
+    use crate::md::style::MarkdownStyle;
 
     fn empty_styled() -> StyledText {
         StyledText::default()

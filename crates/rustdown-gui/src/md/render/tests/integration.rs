@@ -24,7 +24,7 @@ fn integration_nested_list_in_blockquote_height() {
     let md = "> - Parent\n>   - Child A\n>   - Child B\n>     - Grandchild\n";
     let style = dark_style();
 
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     let estimated = estimate_block_height(&blocks[0], 14.0, 600.0, &style);
     let (_, _, rendered) = headless_render_at_width(md, 616.0); // 600 + margin
 
@@ -43,8 +43,8 @@ fn integration_wide_table_scrollbar() {
     let narrow_md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
 
     let style = dark_style();
-    let wide_blocks = crate::parse::parse_markdown(wide_md);
-    let narrow_blocks = crate::parse::parse_markdown(narrow_md);
+    let wide_blocks = crate::md::parse::parse_markdown(wide_md);
+    let narrow_blocks = crate::md::parse::parse_markdown(narrow_md);
 
     let h_wide = estimate_block_height(&wide_blocks[0], 14.0, 400.0, &style);
     let h_narrow = estimate_block_height(&narrow_blocks[0], 14.0, 400.0, &style);
@@ -106,7 +106,7 @@ Another paragraph.
 
 #[test]
 fn integration_verification_doc_height_accuracy() {
-    let md = include_str!("../../../../rustdown-gui/src/bundled/verification.md");
+    let md = include_str!("../../../bundled/verification.md");
 
     let style = dark_colored_style();
     let mut cache = MarkdownCache::default();
@@ -143,8 +143,8 @@ fn integration_verification_doc_height_accuracy() {
 
 #[test]
 fn integration_verification_doc_block_types() {
-    let md = include_str!("../../../../rustdown-gui/src/bundled/verification.md");
-    let blocks = crate::parse::parse_markdown(md);
+    let md = include_str!("../../../bundled/verification.md");
+    let blocks = crate::md::parse::parse_markdown(md);
 
     let has = |pred: fn(&Block) -> bool| blocks.iter().any(pred);
     assert!(has(|b| matches!(b, Block::Heading { .. })), "headings");

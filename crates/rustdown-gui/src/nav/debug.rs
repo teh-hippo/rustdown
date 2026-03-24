@@ -5,8 +5,8 @@
 
 use std::{io, path::Path, sync::Arc, time::Instant};
 
+use crate::md::MarkdownCache;
 use eframe::egui;
-use rustdown_md::MarkdownCache;
 
 use crate::{
     Document, DocumentStats, Mode, RustdownApp, default_image_uri_scheme,

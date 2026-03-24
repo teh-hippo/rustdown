@@ -296,7 +296,7 @@ impl RustdownApp {
             stats_dirty: false,
             preview_dirty: false,
             dirty: false,
-            preview_cache: rustdown_md::MarkdownCache::default(),
+            preview_cache: crate::md::MarkdownCache::default(),
             last_edit_at: None,
             edit_seq: next_seq,
             editor_galley_cache: None,

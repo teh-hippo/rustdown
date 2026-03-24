@@ -499,7 +499,7 @@ fn document_metadata_title_path_debounce_and_bytecount() {
         ("all nl", "\n\n\n", 3),
     ] {
         assert_eq!(
-            rustdown_md::bytecount_newlines(text.as_bytes()),
+            crate::md::bytecount_newlines(text.as_bytes()),
             expected,
             "{label}"
         );

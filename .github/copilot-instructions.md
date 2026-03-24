@@ -1,16 +1,16 @@
 # Copilot instructions for rustdown
 
 ## Build, test, and lint commands
-- Build: `cargo build -p rustdown`
-- Run locally: `cargo run -p rustdown`
+- Build: `cargo build -p rustdown-app`
+- Run locally: `cargo run -p rustdown-app`
 - Formatting check: `cargo fmt --all -- --check`
 - Lint: `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - Full tests: `cargo test --workspace --locked`
-- Run one test by exact name: `cargo test -p rustdown parse_launch_options_covers_modes_paths_and_diagnostics -- --exact`
-- Run one module-scoped test: `cargo test -p rustdown live_merge::tests::merge_three_way_conflict_cases`
+- Run one test by exact name: `cargo test -p rustdown-app parse_launch_options_covers_modes_paths_and_diagnostics -- --exact`
+- Run one module-scoped test: `cargo test -p rustdown-app live_merge::tests::merge_three_way_conflict_cases`
 
 ## High-level architecture
-- This workspace currently has one package, `rustdown`, in `crates/rustdown-gui`; it is a native `eframe/egui` app, and `wasm32` builds are explicitly blocked.
+- This workspace has one package: `rustdown-app` (in `crates/rustdown-gui`). The markdown module (`src/md/`) provides parsing and rendering. The app; it is a native `eframe/egui` app, and `wasm32` builds are explicitly blocked.
 - `crates/rustdown-gui/src/main.rs` owns the app shell (`RustdownApp`) and orchestrates UI modes, shortcuts, open/save/export flows, dirty-state prompts, search/replace, and status UI.
 - Document state is centralized in `Document` (`text`, `base_text`, `disk_rev`, stats, preview cache flags, `edit_seq`), and the editor path uses `TrackedTextBuffer` + `EditorGalleyCache` to avoid expensive relayouts.
 - Markdown rendering is split:
@@ -30,7 +30,7 @@
 - Prefer low-allocation edits: document text is stored as `Arc<String>` and mutated via `Arc::make_mut`; when text changes, keep `edit_seq`, dirty flags, and stats/preview invalidation in sync.
 - Preserve formatter semantics in `format.rs`: only `.editorconfig` keys `trim_trailing_whitespace`, `insert_final_newline`, and `end_of_line` are honored, with fenced block content intentionally preserved.
 - If merge/conflict behavior changes, keep `live_merge.rs` tests and `main.rs` conflict-choice tests aligned; both conflict-marker and ours-wins outputs are intentional.
-- eframe dependency versions must stay aligned: eframe 0.31 pairs with egui_commonmark 0.20. Upgrading one requires upgrading the other. On Linux, both `wayland` and `x11` eframe features are enabled.
+- eframe dependency versions must stay aligned: eframe 0.33 pairs with egui 0.33 and egui_extras 0.33. On Linux, both `wayland` and `x11` eframe features are enabled.
 - CI runs with `--locked`, so `Cargo.lock` must be committed and up to date after any dependency change.
 - The release workflow triggers on tag pushes matching `v*`. Tags containing `-` (e.g. `v0.3.0-alpha.1`) are marked as pre-releases.
 - Versioning follows Rust/Cargo convention: `Cargo.toml` uses `X.Y.Z` (no `v` prefix), Git tags and GitHub releases use `vX.Y.Z`. The binary `--version` output always matches `Cargo.toml` (`X.Y.Z`).

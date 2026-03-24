@@ -7,10 +7,10 @@ mod tests {
     use std::fmt::Write;
     use std::time::{Duration, Instant};
 
-    use crate::parse::parse_markdown;
-    use crate::render::{MarkdownCache, MarkdownViewer, simple_hash};
-    use crate::stress;
-    use crate::style::MarkdownStyle;
+    use crate::md::parse::parse_markdown;
+    use crate::md::render::{MarkdownCache, MarkdownViewer, simple_hash};
+    use crate::md::stress;
+    use crate::md::style::MarkdownStyle;
 
     fn bench<F: FnMut()>(label: &str, iterations: u32, mut f: F) -> Duration {
         f();
@@ -438,11 +438,11 @@ mod tests {
         let blocks = parse_markdown(&stress::unicode_stress_doc(10));
         let hc = blocks
             .iter()
-            .filter(|b| matches!(b, crate::parse::Block::Heading { .. }))
+            .filter(|b| matches!(b, crate::md::parse::Block::Heading { .. }))
             .count();
         assert!(hc >= 5, "headings: {hc}");
         for block in &blocks {
-            if let crate::parse::Block::Paragraph(st) = block {
+            if let crate::md::parse::Block::Paragraph(st) = block {
                 assert!(!st.text.is_empty());
             }
         }
@@ -455,7 +455,7 @@ mod tests {
         assert!(
             blocks
                 .iter()
-                .any(|b| matches!(b, crate::parse::Block::UnorderedList(_)))
+                .any(|b| matches!(b, crate::md::parse::Block::UnorderedList(_)))
         );
     }
 
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(
             blocks
                 .iter()
-                .filter(|b| matches!(b, crate::parse::Block::Table(_)))
+                .filter(|b| matches!(b, crate::md::parse::Block::Table(_)))
                 .count(),
             1000
         );
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(
             parse_markdown(&doc)
                 .iter()
-                .filter(|b| matches!(b, crate::parse::Block::Code { .. }))
+                .filter(|b| matches!(b, crate::md::parse::Block::Code { .. }))
                 .count(),
             500
         );
@@ -573,7 +573,7 @@ mod tests {
             .ok();
         }
         match &parse_markdown(&doc)[0] {
-            crate::parse::Block::Table(t) => {
+            crate::md::parse::Block::Table(t) => {
                 assert_eq!(t.header.len(), 5);
                 assert_eq!(t.rows.len(), 500);
             }

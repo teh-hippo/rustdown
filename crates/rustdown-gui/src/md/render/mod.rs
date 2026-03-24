@@ -14,8 +14,8 @@ mod text;
 #[cfg(test)]
 mod tests;
 
-use crate::parse::{Block, parse_markdown_into};
-use crate::style::MarkdownStyle;
+use crate::md::parse::{Block, parse_markdown_into};
+use crate::md::style::MarkdownStyle;
 
 use blocks::{render_block, render_blocks};
 pub use height::bytecount_newlines;
@@ -268,6 +268,7 @@ impl MarkdownViewer {
     }
 
     /// Render markdown inline (no scroll area, no culling).
+    #[allow(dead_code, clippy::unused_self)]
     pub fn show(
         &self,
         ui: &mut egui::Ui,

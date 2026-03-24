@@ -5,6 +5,7 @@ This repo is a native (non-webview) Markdown editor in Rust (no wasm/web build).
 ## Project structure
 - `crates/rustdown-gui`: eframe/egui native GUI app
   - `src/main.rs` — app shell, shortcuts, UI modes, open/save/export
+  - `src/md/` — markdown parsing and rendering (egui widgets)
   - `src/preferences.rs` — user settings persistence (`~/.config/rustdown/settings.toml`)
   - `src/bundled/` — embedded demo and verification markdown files
   - `src/nav_panel.rs` / `src/nav_outline.rs` — navigation panel and heading extraction
@@ -12,7 +13,7 @@ This repo is a native (non-webview) Markdown editor in Rust (no wasm/web build).
   - `src/format.rs` — `.editorconfig`-aware formatter
   - `src/disk_io.rs` / `src/disk_sync.rs` / `src/disk_watcher.rs` — file I/O and live reload
   - `src/live_merge.rs` — 3-way merge for external changes
-- `crates/rustdown-md`: Markdown parsing and rendering library (egui widgets)
+
 
 ## Dev commands
 ```bash
@@ -23,7 +24,7 @@ cargo test --all
 
 ## Quickstart
 ```bash
-cargo run -p rustdown
+cargo run -p rustdown-app
 ```
 
 ## Conventions

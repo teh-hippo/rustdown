@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 
+use crate::md::MarkdownStyle;
 use eframe::egui;
-use rustdown_md::MarkdownStyle;
 
 mod app_actions;
 mod app_panels;
@@ -32,6 +32,7 @@ mod format;
 mod highlight;
 mod live_merge;
 mod markdown_fence;
+mod md;
 mod nav;
 mod preferences;
 mod scroll_math;

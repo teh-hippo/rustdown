@@ -4,8 +4,8 @@ use super::layout::{RenderContext, RenderMetrics};
 use super::lists::{render_ordered_list, render_unordered_list};
 use super::table::render_table;
 use super::text::{render_styled_text, render_styled_text_ex};
-use crate::parse::{Block, StyledText};
-use crate::style::MarkdownStyle;
+use crate::md::parse::{Block, StyledText};
+use crate::md::style::MarkdownStyle;
 
 // ── Block rendering ────────────────────────────────────────────────
 

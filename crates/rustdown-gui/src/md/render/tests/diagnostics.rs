@@ -3,7 +3,7 @@ use super::helpers::*;
 #[test]
 fn diag_list_inside_blockquote_double_indent() {
     // Parse: blockquote containing a list.
-    let blocks = crate::parse::parse_markdown("> - Item A\n> - Item B\n");
+    let blocks = crate::md::parse::parse_markdown("> - Item A\n> - Item B\n");
     match &blocks[0] {
         Block::Quote(inner) => {
             assert!(
@@ -37,7 +37,7 @@ fn diag_list_inside_blockquote_double_indent() {
 #[test]
 fn diag_bullet_style_inside_blockquote() {
     // Parse a first-level list inside a blockquote.
-    let blocks = crate::parse::parse_markdown("> - Item\n");
+    let blocks = crate::md::parse::parse_markdown("> - Item\n");
     match &blocks[0] {
         Block::Quote(inner) => match &inner[0] {
             Block::UnorderedList(items) => {
@@ -51,7 +51,7 @@ fn diag_bullet_style_inside_blockquote() {
     }
 
     // Nested list inside blockquote: list_depth increments correctly.
-    let blocks = crate::parse::parse_markdown("> - Parent\n>   - Child\n>     - Grandchild\n");
+    let blocks = crate::md::parse::parse_markdown("> - Parent\n>   - Child\n>     - Grandchild\n");
     match &blocks[0] {
         Block::Quote(inner) => match &inner[0] {
             Block::UnorderedList(items) => {
@@ -79,7 +79,7 @@ fn diag_height_estimation_ignores_indent_px() {
     let long_text = "word ".repeat(100);
     let md =
         format!("- Level 0\n  - Level 1\n    - Level 2\n      - Level 3\n        - {long_text}\n");
-    let blocks = crate::parse::parse_markdown(&md);
+    let blocks = crate::md::parse::parse_markdown(&md);
 
     // Estimate height at 400px wide.
     let estimated = estimate_block_height(&blocks[0], 14.0, 400.0, &style);
@@ -132,7 +132,7 @@ fn diag_mixed_list_type_nesting_indent() {
   2. Ordered 2
 - Bullet B
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::UnorderedList(items) => {
             assert_eq!(items.len(), 2, "top-level should have 2 items");
@@ -163,7 +163,7 @@ fn diag_blockquote_list_blockquote_nesting() {
 >   > with more text
 > - Another item
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Quote(outer) => {
             assert!(
@@ -211,7 +211,7 @@ fn diag_code_in_blockquote_in_list() {
 
 - Another item
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::UnorderedList(items) => {
             assert!(!items.is_empty());
@@ -252,7 +252,7 @@ fn diag_loose_list_multiple_paragraphs() {
 
   Second paragraph of item two.
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::UnorderedList(items) => {
             assert_eq!(items.len(), 2);
@@ -285,7 +285,7 @@ fn diag_table_inside_blockquote() {
 > | Cell 1   | Cell 2   |
 > | Cell 3   | Cell 4   |
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Quote(inner) => {
             assert!(
@@ -313,7 +313,7 @@ fn diag_image_inside_list_item() {
 
 - Normal item
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::UnorderedList(items) => {
             assert!(!items.is_empty());
@@ -346,7 +346,7 @@ fn diag_task_list_inside_ordered_list() {
 3. Normal item
 4. [x] Another done
 ";
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::OrderedList { start, items } => {
             assert_eq!(*start, 1);
@@ -414,7 +414,7 @@ fn diag_very_deep_list_nesting() {
         writeln!(md, "{indent}- Level {d}").ok();
     }
 
-    let blocks = crate::parse::parse_markdown(&md);
+    let blocks = crate::md::parse::parse_markdown(&md);
     // Count actual nesting depth.
     fn count_depth(block: &Block) -> usize {
         match block {
@@ -479,7 +479,7 @@ fn diag_list_items_with_all_child_block_types() {
     ];
 
     for (label, md) in &cases {
-        let blocks = crate::parse::parse_markdown(md);
+        let blocks = crate::md::parse::parse_markdown(md);
         match &blocks[0] {
             Block::UnorderedList(items) => {
                 assert!(
@@ -527,7 +527,7 @@ fn diag_table_height_ignores_scrollbar() {
 #[test]
 fn diag_hr_syntaxes_produce_identical_blocks() {
     for syntax in ["---\n", "***\n", "___\n"] {
-        let blocks = crate::parse::parse_markdown(syntax);
+        let blocks = crate::md::parse::parse_markdown(syntax);
         assert!(
             blocks.iter().any(|b| matches!(b, Block::ThematicBreak)),
             "'{syntax}' should produce ThematicBreak"
@@ -543,7 +543,7 @@ fn diag_hr_syntaxes_produce_identical_blocks() {
 
 #[test]
 fn diag_code_block_whitespace_only_preserved() {
-    let blocks = crate::parse::parse_markdown("```\n   \n```\n");
+    let blocks = crate::md::parse::parse_markdown("```\n   \n```\n");
     match &blocks[0] {
         Block::Code { code, .. } => {
             let trimmed = code.trim_end_matches('\n');
@@ -559,7 +559,7 @@ fn diag_code_block_whitespace_only_preserved() {
 
 #[test]
 fn diag_code_block_only_newlines_falls_back() {
-    let blocks = crate::parse::parse_markdown("```\n\n\n\n```\n");
+    let blocks = crate::md::parse::parse_markdown("```\n\n\n\n```\n");
     match &blocks[0] {
         Block::Code { code, .. } => {
             let trimmed = code.trim_end_matches('\n');
@@ -645,7 +645,7 @@ fn diag_styled_content_in_table_cells() {
         "|-------|\n",
         "| **bold** *italic* `code` [link](url) ~~strike~~ |\n",
     );
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Table(t) => {
             let cell = &t.rows[0][0];
@@ -662,7 +662,7 @@ fn diag_styled_content_in_table_cells() {
 #[test]
 fn diag_image_parse_fidelity() {
     // Empty URL.
-    match &crate::parse::parse_markdown("![alt]()\n")[0] {
+    match &crate::md::parse::parse_markdown("![alt]()\n")[0] {
         Block::Image { url, alt } => {
             assert!(url.is_empty(), "empty URL preserved");
             assert_eq!(&**alt, "alt");
@@ -672,7 +672,7 @@ fn diag_image_parse_fidelity() {
     // Very long alt text.
     let long_alt = "A".repeat(500);
     let md = format!("![{long_alt}](img.png)");
-    match &crate::parse::parse_markdown(&md)[0] {
+    match &crate::md::parse::parse_markdown(&md)[0] {
         Block::Image { alt, url } => {
             assert_eq!(alt.len(), 500);
             assert_eq!(&**url, "img.png");
@@ -702,7 +702,7 @@ fn diag_code_block_language_tags() {
         ("```\ncode\n```\n", ""),
         ("    indented code\n", ""),
     ] {
-        let blocks = crate::parse::parse_markdown(md);
+        let blocks = crate::md::parse::parse_markdown(md);
         match &blocks[0] {
             Block::Code { language, .. } => {
                 assert_eq!(&**language, expected_lang, "language tag for {md:?}");
@@ -719,7 +719,7 @@ fn diag_table_alignment_parse_all_combos() {
         "|------|:-----|:------:|------:|\n",
         "| a    | b    | c      | d     |\n",
     );
-    let blocks = crate::parse::parse_markdown(md);
+    let blocks = crate::md::parse::parse_markdown(md);
     match &blocks[0] {
         Block::Table(t) => {
             assert_eq!(t.alignments[0], Alignment::None);

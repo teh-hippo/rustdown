@@ -2,8 +2,8 @@
 
 #![allow(clippy::cast_precision_loss)] // UI math — counts/dimensions are small
 
-use crate::parse::{Block, ListItem, StyledText, TableData};
-use crate::style::MarkdownStyle;
+use crate::md::parse::{Block, ListItem, StyledText, TableData};
+use crate::md::style::MarkdownStyle;
 
 use super::layout::RenderMetrics;
 

@@ -18,7 +18,7 @@ that structure alone cannot guarantee.
 
 ## Generating reference screenshots
 
-1. `cargo run -p rustdown`
+1. `cargo run -p rustdown-app`
 2. Open a `.md` file from this directory (Ctrl+O or drag-and-drop)
 3. Switch to Preview mode (Ctrl+Enter)
 4. Take a screenshot (OS shortcut or Rustdown export if available)
@@ -29,7 +29,7 @@ that structure alone cannot guarantee.
 
 When the renderer changes intentionally:
 
-1. Re-run the structural tests: `cargo test -p rustdown-md --test snapshot_tests`
+1. Re-run the structural tests: `cargo test -p rustdown-app md::snapshot_tests`
 2. If tests pass, regenerate screenshots using the steps above
 3. Commit both the updated snapshots and any test changes together
 

@@ -1,7 +1,7 @@
 //! Inline text rendering — `SpanFormat`, styled text, layout jobs.
 
-use crate::parse::{SpanStyle, StyledText};
-use crate::style::MarkdownStyle;
+use crate::md::parse::{SpanStyle, StyledText};
+use crate::md::style::MarkdownStyle;
 
 /// Snap `pos` to a valid UTF-8 char boundary in `text`, rounding down.
 /// If `pos` is already on a boundary (or at 0 / `text.len()`), returns it unchanged.
@@ -26,7 +26,7 @@ fn effective_is_ascii(st: &StyledText) -> bool {
 #[inline]
 fn span_byte_range(
     text: &str,
-    span: &crate::parse::Span,
+    span: &crate::md::parse::Span,
     is_ascii: bool,
 ) -> Option<std::ops::Range<usize>> {
     let len = text.len();
@@ -195,7 +195,7 @@ pub(super) fn render_text_with_links(
 /// Build a `LayoutJob` for non-link text spans.
 pub(super) fn build_layout_job(
     st: &StyledText,
-    spans: &[crate::parse::Span],
+    spans: &[crate::md::parse::Span],
     style: &MarkdownStyle,
     base_color: egui::Color32,
     size: f32,
@@ -358,7 +358,7 @@ mod tests {
             text: "hello".to_owned(),
             ..StyledText::default()
         };
-        let span = crate::parse::Span {
+        let span = crate::md::parse::Span {
             start: 1,
             end: 4,
             style: SpanStyle::default(),
@@ -372,7 +372,7 @@ mod tests {
             text: "éx".to_owned(),
             ..StyledText::default()
         };
-        let span = crate::parse::Span {
+        let span = crate::md::parse::Span {
             start: 1,
             end: 3,
             style: SpanStyle::default(),
