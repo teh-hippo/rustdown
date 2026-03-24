@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "rustdown-app"
-version = "0.26.1"
+version = "0.26.2"
 dependencies = [
  "dirs",
  "eframe",
