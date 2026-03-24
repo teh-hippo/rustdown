@@ -43,10 +43,22 @@
 
 ## 📦 Install
 
-Download a pre-built binary from [**Releases**](https://github.com/teh-hippo/rustdown/releases/latest), or build from source:
+### From crates.io
 
 ```bash
-cargo install --git https://github.com/teh-hippo/rustdown.git rustdown
+cargo install rustdown-app
+```
+
+The binary installs as `rustdown`.
+
+### Pre-built binary
+
+Download a pre-built binary from [**Releases**](https://github.com/teh-hippo/rustdown/releases/latest).
+
+### Build from source
+
+```bash
+cargo install --git https://github.com/teh-hippo/rustdown.git rustdown-app
 ```
 
 <details>
