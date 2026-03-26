@@ -25,7 +25,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -52,7 +52,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - run: cargo package -p rustdown-app --locked --no-verify
 
@@ -69,7 +69,7 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install Linux dependencies
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libgtk-3-dev
