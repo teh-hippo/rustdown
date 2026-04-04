@@ -21,7 +21,7 @@ eframe = { version = "0.33", default-features = false, features = [
   "glow",
 ] }
 egui = { version = "0.33", default-features = false }
-egui_extras = { version = "0.33", default-features = false, features = ["file", "image", "http"] }
+egui_extras = { version = "0.34", default-features = false, features = ["file", "image", "http"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 memchr = "2"
 rfd = { version = "0.17", default-features = false }
