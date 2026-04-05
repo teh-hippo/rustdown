@@ -2,6 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
+  "timezone": "Australia/Sydney",
+  "schedule": ["before 7am on Monday"],
   "forkProcessing": "enabled",
   "lockFileMaintenance": {
     "enabled": true,
@@ -11,10 +13,14 @@
   },
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "all non-major",
       "automerge": true
+    },
+    {
+      "matchPackageNames": ["eframe", "egui", "egui_extras"],
+      "groupName": "egui ecosystem"
     }
   ],
-  "commitMessagePrefix": "build(deps):",
-  "dependencyDashboard": true
+  "commitMessagePrefix": "build(deps):"
 }
