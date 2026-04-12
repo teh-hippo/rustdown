@@ -17,11 +17,11 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-eframe = { version = "0.33", default-features = false, features = [
+eframe = { version = "0.34", default-features = false, features = [
   "glow",
 ] }
-egui = { version = "0.33", default-features = false }
-egui_extras = { version = "0.33", default-features = false, features = ["file", "image", "http"] }
+egui = { version = "0.34", default-features = false }
+egui_extras = { version = "0.34", default-features = false, features = ["file", "image", "http"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 memchr = "2"
 rfd = { version = "0.17", default-features = false }
@@ -32,7 +32,7 @@ toml = { version = ">=0.8, <2", default-features = false, features = ["parse", "
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.33", default-features = false, features = [
+eframe = { version = "0.34", default-features = false, features = [
   "glow",
   "wayland",
   "x11",
